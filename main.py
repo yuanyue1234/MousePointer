@@ -72,7 +72,7 @@ CURSOR_ROLES: list[CursorRole] = [
 ]
 
 ROLE_BY_REG = {role.reg_name: role for role in CURSOR_ROLES}
-DEFAULT_SCHEME_NAMES = ["01方案", "02方案"]
+DEFAULT_SCHEME_NAMES = ["01方案", "02方案", "03方案", "04方案"]
 SUPPORTED_TYPES = (
     ("图片和光标", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.ico *.cur *.ani"),
     ("图片", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.ico"),
@@ -267,13 +267,15 @@ def parse_drop_paths(data: str, tk_root: Tk) -> list[Path]:
 
 
 def cursor_preview_image(path: Path, box: tuple[int, int] = (180, 140)) -> Image.Image:
+    margin = 8
     if path.suffix.lower() in {".cur", ".ani"}:
-        rendered = render_cursor_with_windows(path, 96)
+        size = max(24, min(box) - margin * 2)
+        rendered = render_cursor_with_windows(path, size)
         if rendered:
             bg = Image.new("RGBA", box, (248, 250, 252, 255))
             bg.alpha_composite(rendered, ((box[0] - rendered.width) // 2, (box[1] - rendered.height) // 2))
             return bg
-    image = centered_rgba(image_from_path(path), min(box) - 28)
+    image = centered_rgba(image_from_path(path), max(16, min(box) - margin * 2))
     bg = Image.new("RGBA", box, (248, 250, 252, 255))
     bg.alpha_composite(image, ((box[0] - image.width) // 2, (box[1] - image.height) // 2))
     return bg
@@ -349,6 +351,15 @@ def map_files_to_roles(files: list[Path]) -> dict[str, Path]:
             if any(key in name for key in keys):
                 mapping[reg] = path
                 break
+    numbered = {p.stem: p for p, name in names if p.stem.isdigit()}
+    number_roles = [
+        "Arrow", "Help", "AppStarting", "Wait", "Crosshair", "IBeam", "NWPen", "No",
+        "SizeNS", "SizeWE", "SizeNWSE", "SizeNESW", "SizeAll", "UpArrow", "Hand",
+    ]
+    for index, reg in enumerate(number_roles, start=1):
+        key = f"{index:02d}"
+        if reg not in mapping and key in numbered:
+            mapping[reg] = numbered[key]
     return mapping
 
 
@@ -371,7 +382,13 @@ def parse_inf_mapping(root: Path) -> dict[str, Path]:
     for reg in ROLE_BY_REG:
         match = re.search(rf"HKCU,\s*\"Control Panel\\Cursors\",\s*{reg}\s*,[^,]*,\s*\"?([^\"\\r\\n]+)\"?", text, re.I)
         if match:
-            name = Path(match.group(1).strip()).name.lower()
+            raw_name = match.group(1).strip()
+            var_match = re.fullmatch(r".*%([^%]+)%", raw_name)
+            if var_match:
+                variable = var_match.group(1)
+                string_match = re.search(rf"^\s*{re.escape(variable)}\s*=\s*\"?([^\"\\r\\n]+)\"?", text, re.I | re.M)
+                raw_name = string_match.group(1).strip() if string_match else raw_name
+            name = Path(raw_name).name.lower()
             if name in by_name:
                 mapping[reg] = by_name[name]
     mapping.update({k: v for k, v in map_files_to_roles(files).items() if k not in mapping})
@@ -1911,14 +1928,15 @@ def _v3_show_scheme_page(self) -> None:
     right = ttk.Frame(split, style="Card.TFrame", padding=(18, 0, 0, 0))
     right.pack(side=RIGHT, fill=BOTH)
     canvas = Canvas(left, bg="#ffffff", highlightthickness=1, highlightbackground="#dbeafe")
-    scrollbar = ttk.Scrollbar(left, orient=VERTICAL, command=canvas.yview)
     self.rows = ttk.Frame(canvas, style="Card.TFrame")
     self.rows.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
     row_window = canvas.create_window((0, 0), window=self.rows, anchor="nw")
     canvas.bind("<Configure>", lambda event: canvas.itemconfigure(row_window, width=event.width))
-    canvas.configure(yscrollcommand=scrollbar.set)
     canvas.pack(side=LEFT, fill=BOTH, expand=True)
-    scrollbar.pack(side=RIGHT, fill="y")
+    def wheel(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    canvas.bind("<MouseWheel>", wheel)
+    self.rows.bind("<MouseWheel>", wheel)
     self.path_vars = {}
     self.preview_labels = {}
     self.row_frames = {}
@@ -1946,7 +1964,7 @@ def _v3_add_row(self, index: int, role: CursorRole) -> None:
     style_name = "Even.TFrame" if index % 2 else "Odd.TFrame"
     row = ttk.Frame(self.rows, style=style_name, padding=(8, 6))
     row.grid(row=index, column=0, sticky="ew")
-    row.columnconfigure(2, weight=1)
+    row.columnconfigure(2, weight=1, minsize=260)
     self.row_frames[role.reg_name] = (row, style_name)
     ref = ttk.Label(row, width=6, anchor="center")
     ref.grid(row=0, column=0, sticky="w")
@@ -1954,15 +1972,15 @@ def _v3_add_row(self, index: int, role: CursorRole) -> None:
     if ref_image:
         self.ref_images[role.reg_name] = ref_image
         ref.configure(image=ref_image)
-    ttk.Label(row, text=role.label, width=17).grid(row=0, column=1, sticky="w", padx=(6, 6))
+    ttk.Label(row, text=role.label, width=16).grid(row=0, column=1, sticky="w", padx=(6, 6))
     var = StringVar(value="未配置")
     self.path_vars[role.reg_name] = var
-    path_label = ttk.Label(row, textvariable=var, style="Muted.TLabel")
+    path_label = ttk.Label(row, textvariable=var, style="Muted.TLabel", wraplength=520)
     path_label.grid(row=0, column=2, sticky="ew")
     choose = ttk.Label(row, text="选择", foreground="#2563eb", cursor="hand2")
     choose.grid(row=0, column=3, padx=(10, 8))
     choose.bind("<Button-1>", lambda _e, r=role: self.pick_file(r))
-    preview = ttk.Label(row, text="", width=8, anchor="center")
+    preview = ttk.Label(row, text="", width=7, anchor="center")
     preview.grid(row=0, column=4, sticky="e")
     self.preview_labels[role.reg_name] = preview
     def enter(_event=None, r=role):
@@ -1975,6 +1993,7 @@ def _v3_add_row(self, index: int, role: CursorRole) -> None:
     for widget in (row, ref, path_label, preview, choose):
         widget.bind("<Enter>", enter)
         widget.bind("<Leave>", leave)
+        widget.bind("<MouseWheel>", lambda event: self.rows.master.yview_scroll(int(-1 * (event.delta / 120)), "units"))
         if DND_FILES:
             widget.drop_target_register(DND_FILES)
             widget.dnd_bind("<<Drop>>", lambda event, r=role: self.drop_file(event, r))
@@ -1990,7 +2009,7 @@ def _v3_load_reference_icon(self, role: CursorRole) -> ImageTk.PhotoImage | None
 
 
 def _v3_update_preview(self, role: CursorRole, path: Path) -> None:
-    image = cursor_preview_image(path, (42, 42))
+    image = cursor_preview_image(path, (54, 54))
     photo = ImageTk.PhotoImage(image)
     self.preview_images[role.reg_name] = photo
     self.preview_labels[role.reg_name].configure(image=photo, text="")
@@ -2003,9 +2022,9 @@ def _v3_update_large_preview(self, path: Path) -> None:
     frames = []
     if path.suffix.lower() == ".ani":
         for frame in ani_frame_paths(path):
-            frames.append(cursor_preview_image(frame, (132, 132)))
+            frames.append(cursor_preview_image(frame, (118, 118)))
     if not frames:
-        frames = [cursor_preview_image(path, (132, 132))]
+        frames = [cursor_preview_image(path, (118, 118))]
     self.animation_frames = [ImageTk.PhotoImage(frame) for frame in frames]
     self.animation_index = 0
     self.preview_x = int(self.preview_canvas.winfo_width() / 2) if hasattr(self, "preview_canvas") else 180
