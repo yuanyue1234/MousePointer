@@ -1807,5 +1807,313 @@ CursorThemeBuilder.show_week_page = _show_week_page
 CursorThemeBuilder.save_week_page = _save_week_page
 
 
+def _v3_available_values() -> list[str]:
+    return _available_scheme_values()
+
+
+def _v3_build_ui(self) -> None:
+    self.root.title("鼠标指针配置生成器")
+    self.root.geometry("1280x820")
+    self.root.minsize(1180, 760)
+    self.animation_after = None
+    self.animation_frames = []
+    self.animation_index = 0
+    self.row_frames = {}
+    self.autostart_enabled = IntVar(value=1 if self.is_auto_start_enabled() else 0)
+    self.import_tip = StringVar(value="")
+
+    icon_path = resource_path("icon.png")
+    if icon_path.exists():
+        icon = ImageTk.PhotoImage(Image.open(icon_path).convert("RGBA").resize((32, 32)))
+        self.preview_images["_window_icon"] = icon
+        self.root.iconphoto(True, icon)
+
+    shell = ttk.Frame(self.root, style="Shell.TFrame")
+    shell.pack(fill=BOTH, expand=True)
+    side = ttk.Frame(shell, style="Side.TFrame", padding=(12, 14))
+    side.pack(side=LEFT, fill="y")
+    ttk.Label(side, text="鼠标配置", style="Side.TLabel", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w", pady=(0, 18))
+    self.nav_buttons = {}
+    for key, text, icon_name, command in (
+        ("scheme", "鼠标方案", "mouse", self.show_scheme_page),
+        ("time", "时间切换", "clock", self.show_time_page),
+        ("week", "星期切换", "calendar", self.show_week_page),
+    ):
+        btn = ttk.Button(side, text=f"  {text}", image=self._ui_icon(icon_name), compound=LEFT, style="Nav.TButton", command=command)
+        btn.pack(fill="x", pady=4)
+        self.nav_buttons[key] = btn
+
+    main = ttk.Frame(shell, style="Page.TFrame", padding=22)
+    main.pack(side=LEFT, fill=BOTH, expand=True)
+    self.page_title = ttk.Label(main, text="", style="Title.TLabel")
+    self.page_title.pack(anchor="w")
+    self.page_subtitle = ttk.Label(main, text="", style="Muted.TLabel")
+    self.page_subtitle.pack(anchor="w", pady=(4, 18))
+    self.content = ttk.Frame(main, style="Page.TFrame")
+    self.content.pack(fill=BOTH, expand=True)
+    self.status = StringVar(value="请选择方案。")
+    ttk.Label(main, textvariable=self.status, style="Muted.TLabel").pack(anchor="e", pady=(10, 0))
+    self.show_scheme_page()
+
+
+def _v3_configure_style(self) -> None:
+    _v2_configure_style(self)
+    style = ttk.Style()
+    style.configure("Yellow.TButton", padding=(15, 9), background="#fff3c4", foreground="#314056", borderwidth=0)
+    style.map("Yellow.TButton", background=[("active", "#ffe7a3")])
+    style.configure("Blue.TButton", padding=(15, 9), background="#dceeff", foreground="#1f4f82", borderwidth=0)
+    style.map("Blue.TButton", background=[("active", "#c9e4ff")])
+
+
+class CheckMark:
+    def __init__(self, variable: IntVar, command) -> None:
+        self.variable = variable
+        self.command = command
+        self.button = None
+
+    def attach(self, parent) -> None:
+        self.button = ttk.Button(parent, text=self.text(), style="Soft.TButton", command=self.toggle)
+        self.button.pack(side=RIGHT)
+
+    def text(self) -> str:
+        return ("✓" if self.variable.get() else "□") + " 自启动后台"
+
+    def toggle(self) -> None:
+        self.variable.set(0 if self.variable.get() else 1)
+        self.button.configure(text=self.text())
+        self.command()
+
+
+def _v3_show_scheme_page(self) -> None:
+    self._clean_page()
+    self.page_title.configure(text="鼠标方案")
+    self.page_subtitle.configure(text="选择方案、导入配置或编辑每个鼠标状态。悬停行会实时预览。")
+    top = ttk.Frame(self.content, style="Card.TFrame")
+    top.pack(fill="x", pady=(0, 12))
+    ttk.Label(top, text="方案", font=("Microsoft YaHei UI", 11, "bold")).pack(side=LEFT)
+    self.scheme_combo = ttk.Combobox(top, textvariable=self.theme_name, width=18, state="readonly")
+    self.scheme_combo.pack(side=LEFT, padx=(10, 8))
+    self.scheme_combo.bind("<<ComboboxSelected>>", lambda _e: self.load_scheme_to_ui(self.theme_name.get()))
+    ttk.Button(top, text="新建", image=self._ui_icon("plus"), compound=LEFT, style="Soft.TButton", command=self.new_scheme).pack(side=LEFT, padx=3)
+    ttk.Button(top, text="重命名", style="Soft.TButton", command=self.rename_scheme).pack(side=LEFT, padx=3)
+    ttk.Button(top, text="删除", image=self._ui_icon("trash"), compound=LEFT, style="Danger.TButton", command=self.delete_scheme).pack(side=LEFT, padx=3)
+    import_btn = ttk.Button(top, text="导入", image=self._ui_icon("upload"), compound=LEFT, style="Soft.TButton", command=self.import_package)
+    import_btn.pack(side=LEFT, padx=3)
+    import_btn.bind("<Enter>", lambda _e: self.import_tip.set("支持直接拖入可执行文件。"))
+    import_btn.bind("<Leave>", lambda _e: self.import_tip.set(""))
+    ttk.Button(top, text="保存", image=self._ui_icon("folder"), compound=LEFT, style="Soft.TButton", command=self.save_current_scheme).pack(side=LEFT, padx=3)
+    ttk.Label(top, textvariable=self.import_tip, style="Muted.TLabel").pack(side=LEFT, padx=(12, 0))
+
+    split = ttk.Frame(self.content, style="Page.TFrame")
+    split.pack(fill=BOTH, expand=True)
+    left = ttk.Frame(split, style="Card.TFrame")
+    left.pack(side=LEFT, fill=BOTH, expand=True)
+    right = ttk.Frame(split, style="Card.TFrame", padding=(18, 0, 0, 0))
+    right.pack(side=RIGHT, fill=BOTH)
+    canvas = Canvas(left, bg="#ffffff", highlightthickness=1, highlightbackground="#dbeafe")
+    scrollbar = ttk.Scrollbar(left, orient=VERTICAL, command=canvas.yview)
+    self.rows = ttk.Frame(canvas, style="Card.TFrame")
+    self.rows.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+    row_window = canvas.create_window((0, 0), window=self.rows, anchor="nw")
+    canvas.bind("<Configure>", lambda event: canvas.itemconfigure(row_window, width=event.width))
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.pack(side=LEFT, fill=BOTH, expand=True)
+    scrollbar.pack(side=RIGHT, fill="y")
+    self.path_vars = {}
+    self.preview_labels = {}
+    self.row_frames = {}
+    for index, role in enumerate(CURSOR_ROLES):
+        self.add_row(index, role)
+    ttk.Label(right, text="实时预览", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
+    self.preview_canvas = Canvas(right, width=360, height=360, bg="#fbfdff", highlightthickness=1, highlightbackground="#dbeafe", cursor="none")
+    self.preview_canvas.pack(fill=BOTH, expand=True, pady=(10, 8))
+    self.preview_canvas.bind("<Motion>", self.preview_motion)
+    self.preview_canvas.bind("<Leave>", self.preview_leave)
+    self.large_preview_name = ttk.Label(right, text="", style="Muted.TLabel", wraplength=330)
+    self.large_preview_name.pack(anchor="w")
+    actions = ttk.Frame(self.content, style="Card.TFrame")
+    actions.pack(fill="x", pady=(12, 0))
+    ttk.Button(actions, text="鼠标大小设置", image=self._ui_icon("settings"), compound=LEFT, style="Yellow.TButton", command=self.open_pointer_settings).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(actions, text="应用", image=self._ui_icon("apply"), compound=LEFT, style="Primary.TButton", command=self.apply_now).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(actions, text="生成安装包", style="Blue.TButton", command=self.build_installer).pack(side=LEFT)
+    self.autostart_check = CheckMark(self.autostart_enabled, lambda: self.apply_autostart())
+    self.autostart_check.attach(actions)
+    ttk.Label(actions, text="建议调整大小后再应用。", style="Muted.TLabel").pack(side=RIGHT, padx=14)
+    self.refresh_scheme_names()
+
+
+def _v3_add_row(self, index: int, role: CursorRole) -> None:
+    style_name = "Even.TFrame" if index % 2 else "Odd.TFrame"
+    row = ttk.Frame(self.rows, style=style_name, padding=(8, 6))
+    row.grid(row=index, column=0, sticky="ew")
+    row.columnconfigure(2, weight=1)
+    self.row_frames[role.reg_name] = (row, style_name)
+    ref = ttk.Label(row, width=6, anchor="center")
+    ref.grid(row=0, column=0, sticky="w")
+    ref_image = self.load_reference_icon(role)
+    if ref_image:
+        self.ref_images[role.reg_name] = ref_image
+        ref.configure(image=ref_image)
+    ttk.Label(row, text=role.label, width=17).grid(row=0, column=1, sticky="w", padx=(6, 6))
+    var = StringVar(value="未配置")
+    self.path_vars[role.reg_name] = var
+    path_label = ttk.Label(row, textvariable=var, style="Muted.TLabel")
+    path_label.grid(row=0, column=2, sticky="ew")
+    choose = ttk.Label(row, text="选择", foreground="#2563eb", cursor="hand2")
+    choose.grid(row=0, column=3, padx=(10, 8))
+    choose.bind("<Button-1>", lambda _e, r=role: self.pick_file(r))
+    preview = ttk.Label(row, text="", width=8, anchor="center")
+    preview.grid(row=0, column=4, sticky="e")
+    self.preview_labels[role.reg_name] = preview
+    def enter(_event=None, r=role):
+        row.configure(style="Hover.TFrame")
+        path = self.selected.get(r.reg_name)
+        if path:
+            self.update_large_preview(path)
+    def leave(_event=None, original=style_name):
+        row.configure(style=original)
+    for widget in (row, ref, path_label, preview, choose):
+        widget.bind("<Enter>", enter)
+        widget.bind("<Leave>", leave)
+        if DND_FILES:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", lambda event, r=role: self.drop_file(event, r))
+
+
+def _v3_load_reference_icon(self, role: CursorRole) -> ImageTk.PhotoImage | None:
+    icon_path = resource_path(f"assets/role_icons/{role.file_stem}.png")
+    if not icon_path.exists():
+        return None
+    image = Image.open(icon_path).convert("RGBA")
+    image = centered_rgba(image, 38)
+    return ImageTk.PhotoImage(image)
+
+
+def _v3_update_preview(self, role: CursorRole, path: Path) -> None:
+    image = cursor_preview_image(path, (42, 42))
+    photo = ImageTk.PhotoImage(image)
+    self.preview_images[role.reg_name] = photo
+    self.preview_labels[role.reg_name].configure(image=photo, text="")
+
+
+def _v3_update_large_preview(self, path: Path) -> None:
+    if getattr(self, "animation_after", None):
+        self.root.after_cancel(self.animation_after)
+        self.animation_after = None
+    frames = []
+    if path.suffix.lower() == ".ani":
+        for frame in ani_frame_paths(path):
+            frames.append(cursor_preview_image(frame, (132, 132)))
+    if not frames:
+        frames = [cursor_preview_image(path, (132, 132))]
+    self.animation_frames = [ImageTk.PhotoImage(frame) for frame in frames]
+    self.animation_index = 0
+    self.preview_x = int(self.preview_canvas.winfo_width() / 2) if hasattr(self, "preview_canvas") else 180
+    self.preview_y = int(self.preview_canvas.winfo_height() / 2) if hasattr(self, "preview_canvas") else 180
+    def tick():
+        if not getattr(self, "preview_canvas", None) or not self.animation_frames:
+            return
+        try:
+            self.preview_canvas.delete("cursor")
+            photo = self.animation_frames[self.animation_index]
+            self.preview_canvas.create_image(self.preview_x, self.preview_y, image=photo, tags="cursor")
+            self.preview_images["_large_current"] = photo
+            self.animation_index = (self.animation_index + 1) % len(self.animation_frames)
+            if len(self.animation_frames) > 1:
+                self.animation_after = self.root.after(120, tick)
+        except Exception:
+            self.animation_after = None
+    tick()
+    self.large_preview_name.configure(text=str(path))
+
+
+def _v3_preview_leave(self, _event=None) -> None:
+    if not getattr(self, "animation_frames", None):
+        return
+    self.preview_x = int(self.preview_canvas.winfo_width() / 2)
+    self.preview_y = int(self.preview_canvas.winfo_height() / 2)
+    self.preview_canvas.delete("cursor")
+    photo = self.animation_frames[self.animation_index % len(self.animation_frames)]
+    self.preview_canvas.create_image(self.preview_x, self.preview_y, image=photo, tags="cursor")
+    self.preview_images["_large_current"] = photo
+
+
+def _rename_scheme(self) -> None:
+    old = self.theme_name.get()
+    if old in DEFAULT_SCHEME_NAMES:
+        messagebox.showwarning("不能重命名", "默认方案不能重命名。")
+        return
+    dialog = Toplevel(self.root)
+    dialog.title("重命名方案")
+    dialog.geometry("320x130")
+    dialog.transient(self.root)
+    frame = ttk.Frame(dialog, padding=14)
+    frame.pack(fill=BOTH, expand=True)
+    name_var = StringVar(value=old)
+    ttk.Label(frame, text="新名称").pack(anchor="w")
+    ttk.Entry(frame, textvariable=name_var).pack(fill="x", pady=8)
+    def save():
+        new = sanitize_name(name_var.get())
+        if not new or new == old:
+            dialog.destroy()
+            return
+        src = SCHEME_LIBRARY / old
+        dst = SCHEME_LIBRARY / new
+        if dst.exists():
+            messagebox.showwarning("名称重复", "该方案名称已经存在。")
+            return
+        if src.exists():
+            src.rename(dst)
+            manifest = dst / "scheme.json"
+            if manifest.exists():
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                data["name"] = new
+                manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.theme_name.set(new)
+        self.refresh_scheme_names()
+        dialog.destroy()
+        self.status.set(f"已重命名为：{new}")
+    ttk.Button(frame, text="确定", style="Primary.TButton", command=save).pack(anchor="e")
+
+
+def _v3_save_time_page(self, vars_by_mode) -> None:
+    _save_time_page(self, vars_by_mode)
+    now = datetime.now().strftime("%H:%M")
+    selected = None
+    for item in sorted(self.schedule_items, key=lambda x: x.get("time", "")):
+        if item.get("time", "") <= now:
+            selected = item.get("scheme")
+    if selected:
+        try:
+            self.apply_saved_scheme(selected)
+            self.status.set(f"时间切换已应用，并已切换到：{selected}")
+        except Exception as exc:
+            log_error("时间切换立即应用失败", exc)
+
+
+def _v3_save_week_page(self, vars_by_day) -> None:
+    _save_week_page(self, vars_by_day)
+    scheme = self.week_items.get(str(datetime.now().weekday()))
+    if scheme:
+        try:
+            self.apply_saved_scheme(scheme)
+            self.status.set(f"星期切换已应用，并已切换到：{scheme}")
+        except Exception as exc:
+            log_error("星期切换立即应用失败", exc)
+
+
+CursorThemeBuilder.configure_style = _v3_configure_style
+CursorThemeBuilder.build_ui = _v3_build_ui
+CursorThemeBuilder.show_scheme_page = _v3_show_scheme_page
+CursorThemeBuilder.add_row = _v3_add_row
+CursorThemeBuilder.load_reference_icon = _v3_load_reference_icon
+CursorThemeBuilder.update_preview = _v3_update_preview
+CursorThemeBuilder.update_large_preview = _v3_update_large_preview
+CursorThemeBuilder.preview_leave = _v3_preview_leave
+CursorThemeBuilder.rename_scheme = _rename_scheme
+CursorThemeBuilder.save_time_page = _v3_save_time_page
+CursorThemeBuilder.save_week_page = _v3_save_week_page
+
+
 if __name__ == "__main__":
     main()

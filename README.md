@@ -21,7 +21,7 @@ Windows 图形化鼠标指针方案工具。可以导入鼠标压缩包或安装
 - 鼠标方案页支持新建方案、删除自定义方案。
 - 时间切换和星期切换在左侧导航中进入，不再弹出新窗口。
 - 右侧预览区支持鼠标移入后跟随鼠标移动，移出后回到中间。
-- UI 图标参考 Bootstrap Icons 的线条风格。Bootstrap Icons 是开源 SVG 图标库：https://icons.getbootstrap.com/
+- UI 图标统一为 Google Material 3 / Material Symbols 的圆角线性风格。Material Symbols 参考：https://github.com/google/material-design-icons
 - 生成安装包时优先生成独立 PyInstaller EXE；检测到 WinRAR 后会再封装 WinRAR 自解压包。
 - 错误会追加到 `错误记录.md`。
 
