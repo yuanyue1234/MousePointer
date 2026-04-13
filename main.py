@@ -1927,6 +1927,7 @@ def _v3_build_ui(self) -> None:
     self.content.pack(fill=BOTH, expand=True)
     self.status = StringVar(value="请选择方案。")
     ttk.Label(main, textvariable=self.status, style="Muted.TLabel").pack(anchor="e", pady=(10, 0))
+    self.root.protocol("WM_DELETE_WINDOW", self.on_close)
     self.show_scheme_page()
 
 
@@ -1950,7 +1951,7 @@ class CheckMark:
         self.button.pack(side=RIGHT)
 
     def text(self) -> str:
-        return ("✓" if self.variable.get() else "□") + " 自启动后台"
+        return ("✓" if self.variable.get() else "□") + " 自启动并保留后台"
 
     def toggle(self) -> None:
         self.variable.set(0 if self.variable.get() else 1)
@@ -2164,7 +2165,6 @@ def _rename_scheme(self) -> None:
 def _run_wait_task(self, title: str, text: str, work, on_success=None) -> None:
     dialog = Toplevel(self.root)
     dialog.title(title)
-    dialog.geometry("340x150")
     dialog.transient(self.root)
     dialog.grab_set()
     dialog.resizable(False, False)
@@ -2174,6 +2174,15 @@ def _run_wait_task(self, title: str, text: str, work, on_success=None) -> None:
     progress = ttk.Progressbar(frame, mode="indeterminate")
     progress.pack(fill="x")
     progress.start(10)
+    dialog.update_idletasks()
+    width, height = 360, 150
+    parent_x = self.root.winfo_rootx()
+    parent_y = self.root.winfo_rooty()
+    parent_w = max(self.root.winfo_width(), 1)
+    parent_h = max(self.root.winfo_height(), 1)
+    x = parent_x + (parent_w - width) // 2
+    y = parent_y + (parent_h - height) // 2
+    dialog.geometry(f"{width}x{height}+{max(x, 0)}+{max(y, 0)}")
     result = {"done": False, "ok": False, "value": None}
 
     def target():
@@ -2265,7 +2274,8 @@ def _v4_build_installer(self) -> None:
         installer_py = package_dir / "install_cursor_theme.py"
         installer_py.write_text(installer_source(theme, files), encoding="utf-8")
         exe_name = f"{theme}_鼠标样式安装器"
-        return self.build_pyinstaller_exe(installer_py, package_dir / "assets", exe_name, output_dir)
+        icon_path = self.installer_icon(package_dir)
+        return self.build_pyinstaller_exe(installer_py, package_dir / "assets", exe_name, output_dir, icon_path)
 
     def done(path):
         self.status.set(f"已生成安装包：{path}")
@@ -2275,7 +2285,21 @@ def _v4_build_installer(self) -> None:
     self._run_wait_task("正在生成", "正在生成安装包，请稍等。", work, done)
 
 
-def _v4_build_pyinstaller_exe(self, installer_py: Path, assets_dir: Path, exe_name: str, output_dir: Path | None = None) -> Path:
+def _installer_icon(self, package_dir: Path) -> Path | None:
+    source = self.selected.get("Arrow") or next(iter(self.selected.values()), None)
+    if not source:
+        return None
+    try:
+        image = cursor_preview_image(source, (64, 64)).convert("RGBA")
+        icon_path = package_dir / "installer_icon.ico"
+        image.save(icon_path, format="ICO", sizes=[(64, 64), (32, 32), (16, 16)])
+        return icon_path
+    except Exception as exc:
+        log_error("生成安装包图标失败", exc)
+        return None
+
+
+def _v4_build_pyinstaller_exe(self, installer_py: Path, assets_dir: Path, exe_name: str, output_dir: Path | None = None, icon_path: Path | None = None) -> Path:
     python = find_python_with_pyinstaller()
     dist_dir = output_dir or configured_output_root()
     dist_dir.mkdir(parents=True, exist_ok=True)
@@ -2296,8 +2320,10 @@ def _v4_build_pyinstaller_exe(self, installer_py: Path, assets_dir: Path, exe_na
         str(WORK_ROOT / "spec"),
         "--add-data",
         f"{assets_dir};assets",
-        str(installer_py),
     ]
+    if icon_path and icon_path.exists():
+        command.extend(["--icon", str(icon_path)])
+    command.append(str(installer_py))
     result = subprocess.run(command, cwd=APP_DIR, text=True, capture_output=True, check=False)
     if result.returncode != 0:
         log_path = WORK_ROOT / "pyinstaller_error.log"
@@ -2308,29 +2334,91 @@ def _v4_build_pyinstaller_exe(self, installer_py: Path, assets_dir: Path, exe_na
 
 
 def _v3_save_time_page(self, vars_by_mode) -> None:
-    _save_time_page(self, vars_by_mode)
-    now = datetime.now().strftime("%H:%M")
-    selected = None
-    for item in sorted(self.schedule_items, key=lambda x: x.get("time", "")):
-        if item.get("time", "") <= now:
-            selected = item.get("scheme")
-    if selected:
-        try:
+    try:
+        items = [item for item in self.schedule_items if item.get("mode") not in {"light", "dark"}]
+        for mode, (time_var, scheme_var) in vars_by_mode.items():
+            at = time_var.get().strip()
+            scheme = scheme_var.get().strip()
+            if scheme:
+                self.validate_time(at)
+                items.append({"mode": mode, "time": at, "scheme": scheme})
+    except Exception as exc:
+        log_error("保存时间切换失败", exc)
+        messagebox.showerror("保存失败", str(exc))
+        return
+
+    def work():
+        self.schedule_items = items
+        self.save_schedule()
+        set_auto_start(bool(self.autostart_enabled.get()))
+        if self.autostart_enabled.get():
+            self.start_scheduler()
+        now = datetime.now().strftime("%H:%M")
+        selected = None
+        for item in sorted(self.schedule_items, key=lambda x: x.get("time", "")):
+            if item.get("time", "") <= now:
+                selected = item.get("scheme")
+        if selected:
             self.apply_saved_scheme(selected)
+        return selected
+
+    def done(selected):
+        if selected:
             self.status.set(f"时间切换已应用，并已切换到：{selected}")
-        except Exception as exc:
-            log_error("时间切换立即应用失败", exc)
+        else:
+            self.status.set("时间切换已应用。")
+
+    self._run_wait_task("正在应用", "正在应用时间切换方案，请稍等。", work, done)
 
 
 def _v3_save_week_page(self, vars_by_day) -> None:
-    _save_week_page(self, vars_by_day)
-    scheme = self.week_items.get(str(datetime.now().weekday()))
-    if scheme:
-        try:
+    week_items = {day: var.get().strip() for day, var in vars_by_day.items() if var.get().strip()}
+
+    def work():
+        self.week_items = week_items
+        self.save_week_schedule()
+        set_auto_start(bool(self.autostart_enabled.get()))
+        if self.autostart_enabled.get():
+            self.start_scheduler()
+        scheme = self.week_items.get(str(datetime.now().weekday()))
+        if scheme:
             self.apply_saved_scheme(scheme)
+        return scheme
+
+    def done(scheme):
+        if scheme:
             self.status.set(f"星期切换已应用，并已切换到：{scheme}")
+        else:
+            self.status.set("星期切换已应用。")
+
+    self._run_wait_task("正在应用", "正在应用星期切换方案，请稍等。", work, done)
+
+
+def _v4_apply_autostart(self) -> None:
+    try:
+        enabled = bool(self.autostart_enabled.get())
+        set_auto_start(enabled)
+        if enabled:
+            self.start_scheduler()
+        else:
+            self.scheduler_running = False
+        self.status.set("自启动和保留后台已开启。" if enabled else "自启动和保留后台已关闭。")
+    except Exception as exc:
+        log_error("设置自启动和保留后台失败", exc)
+        messagebox.showerror("设置失败", str(exc))
+
+
+def _on_close(self) -> None:
+    if hasattr(self, "autostart_enabled") and self.autostart_enabled.get():
+        try:
+            set_auto_start(True)
+            self.start_scheduler()
+            self.root.withdraw()
+            self.status.set("已保留后台运行。")
+            return
         except Exception as exc:
-            log_error("星期切换立即应用失败", exc)
+            log_error("保留后台失败", exc)
+    self.root.destroy()
 
 
 def _default_archives() -> list[Path]:
@@ -2413,9 +2501,21 @@ def _show_resource_page(self) -> None:
     card.pack(fill=BOTH, expand=True)
     ttk.Label(card, text="在线资源库", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
     ttk.Label(card, text="下载后的 zip、rar、7z 或自解压 exe 放到鼠标文件存放位置，点击刷新会自动解压并添加方案。", style="Muted.TLabel", wraplength=720).pack(anchor="w", pady=(6, 16))
-    ttk.Button(card, text="打开资源库网页", image=self._ui_icon("folder"), compound=LEFT, style="Blue.TButton", command=self.open_resource_browser).pack(anchor="w", pady=4)
-    ttk.Button(card, text="打开鼠标文件存放位置", style="Yellow.TButton", command=lambda: os.startfile(RESOURCE_LIBRARY)).pack(anchor="w", pady=4)
-    ttk.Button(card, text="刷新并添加方案", image=self._ui_icon("apply"), compound=LEFT, style="Primary.TButton", command=self.refresh_resource_library).pack(anchor="w", pady=(14, 8))
+    buttons = ttk.Frame(card, style="Card.TFrame")
+    buttons.pack(fill="x", pady=(0, 12))
+    ttk.Button(buttons, text="打开资源库网页", image=self._ui_icon("folder"), compound=LEFT, style="Blue.TButton", command=self.open_resource_browser).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(buttons, text="打开鼠标文件存放位置", style="Yellow.TButton", command=lambda: os.startfile(RESOURCE_LIBRARY)).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(buttons, text="刷新并添加方案", image=self._ui_icon("apply"), compound=LEFT, style="Primary.TButton", command=self.refresh_resource_library).pack(side=LEFT)
+    drop = ttk.Label(card, text="也可以把 zip / rar / 7z / exe 拖到这里导入为新方案", style="Muted.TLabel", anchor="center")
+    drop.pack(fill="x", pady=(2, 12), ipady=18)
+    if DND_FILES:
+        try:
+            drop.drop_target_register(DND_FILES)
+            drop.dnd_bind("<<Drop>>", self.drop_import_resource)
+            card.drop_target_register(DND_FILES)
+            card.dnd_bind("<<Drop>>", self.drop_import_resource)
+        except Exception:
+            pass
     self.resource_status = StringVar(value=f"存放位置：{RESOURCE_LIBRARY}")
     ttk.Label(card, textvariable=self.resource_status, style="Muted.TLabel", wraplength=760).pack(anchor="w", pady=8)
 
@@ -2437,6 +2537,35 @@ def _refresh_resource_library(self) -> None:
         message += f" 有 {len(errors)} 个文件未识别，详情见错误记录。"
     self.resource_status.set(message)
     self.status.set(message)
+
+
+def _drop_import_resource(self, event) -> None:
+    paths = self.root.tk.splitlist(event.data)
+    archives = [Path(path) for path in paths if Path(path).suffix.lower() in {".zip", ".rar", ".7z", ".exe"}]
+    if not archives:
+        self.status.set("拖入的文件不是可识别的资源包。")
+        return
+
+    def work():
+        imported = []
+        for archive in archives:
+            if self._import_archive_as_scheme(archive):
+                imported.append(sanitize_name(archive.stem))
+        return imported
+
+    def done(imported):
+        self.refresh_scheme_names()
+        if imported:
+            self.theme_name.set(imported[-1])
+            self.load_scheme_to_ui(imported[-1])
+            message = f"已导入 {len(imported)} 个资源包。"
+        else:
+            message = "资源包已存在或没有新增方案。"
+        if hasattr(self, "resource_status"):
+            self.resource_status.set(message)
+        self.status.set(message)
+
+    self._run_wait_task("正在导入", "正在解压并添加资源，请稍等。", work, done)
 
 
 def _open_resource_browser(self) -> None:
@@ -2517,6 +2646,7 @@ def _apply_settings_page(self) -> None:
 CursorThemeBuilder.ensure_default_schemes = _v4_ensure_default_schemes
 CursorThemeBuilder.show_resource_page = _show_resource_page
 CursorThemeBuilder.refresh_resource_library = _refresh_resource_library
+CursorThemeBuilder.drop_import_resource = _drop_import_resource
 CursorThemeBuilder.open_resource_browser = _open_resource_browser
 CursorThemeBuilder._import_archive_as_scheme = _import_archive_as_scheme
 CursorThemeBuilder.show_settings_page = _show_settings_page
@@ -2536,6 +2666,9 @@ CursorThemeBuilder.preview_leave = _v3_preview_leave
 CursorThemeBuilder.rename_scheme = _rename_scheme
 CursorThemeBuilder._run_wait_task = _run_wait_task
 CursorThemeBuilder.apply_now = _v4_apply_now
+CursorThemeBuilder.apply_autostart = _v4_apply_autostart
+CursorThemeBuilder.on_close = _on_close
+CursorThemeBuilder.installer_icon = _installer_icon
 CursorThemeBuilder.build_installer = _v4_build_installer
 CursorThemeBuilder.build_pyinstaller_exe = _v4_build_pyinstaller_exe
 CursorThemeBuilder.save_time_page = _v3_save_time_page
