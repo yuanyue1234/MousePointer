@@ -37,6 +37,7 @@ OUTPUT_DIR = APP_DIR if IS_FROZEN else APP_DIR / "dist"
 APP_DATA = Path(os.environ.get("APPDATA", str(Path.home()))) / "MouseCursorThemeBuilder"
 SETTINGS_FILE = APP_DATA / "settings.json"
 DEFAULT_STORAGE_ROOT = APP_DATA / "mouse_files"
+DEFAULT_OUTPUT_ROOT = APP_DATA / "installers"
 SCHEME_LIBRARY = DEFAULT_STORAGE_ROOT / "schemes"
 RESOURCE_LIBRARY = DEFAULT_STORAGE_ROOT / "resources"
 INSTALLED_LIBRARY = DEFAULT_STORAGE_ROOT / "installed"
@@ -144,6 +145,11 @@ def apply_storage_root(path: Path) -> None:
 def configured_storage_root() -> Path:
     value = load_settings().get("storage_root", "")
     return Path(value) if value else DEFAULT_STORAGE_ROOT
+
+
+def configured_output_root() -> Path:
+    value = load_settings().get("output_root", "")
+    return Path(value) if value else DEFAULT_OUTPUT_ROOT
 
 
 apply_storage_root(configured_storage_root())
@@ -1900,12 +1906,16 @@ def _v3_build_ui(self) -> None:
     self.nav_buttons = {}
     for key, text, icon_name, command in (
         ("scheme", "鼠标方案", "mouse", self.show_scheme_page),
+        ("library", "资源库", "folder", self.show_resource_page),
         ("time", "时间切换", "clock", self.show_time_page),
         ("week", "星期切换", "calendar", self.show_week_page),
     ):
         btn = ttk.Button(side, text=f"  {text}", image=self._ui_icon(icon_name), compound=LEFT, style="Nav.TButton", command=command)
         btn.pack(fill="x", pady=4)
         self.nav_buttons[key] = btn
+    settings_btn = ttk.Button(side, text="  设置", image=self._ui_icon("settings"), compound=LEFT, style="Nav.TButton", command=self.show_settings_page)
+    settings_btn.pack(side="bottom", fill="x", pady=4)
+    self.nav_buttons["settings"] = settings_btn
 
     main = ttk.Frame(shell, style="Page.TFrame", padding=22)
     main.pack(side=LEFT, fill=BOTH, expand=True)
@@ -1976,6 +1986,7 @@ def _v3_show_scheme_page(self) -> None:
     right.pack(side=RIGHT, fill=BOTH)
     canvas = Canvas(left, bg="#ffffff", highlightthickness=1, highlightbackground="#dbeafe")
     self.rows = ttk.Frame(canvas, style="Card.TFrame")
+    self.rows.columnconfigure(0, weight=1)
     self.rows.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
     row_window = canvas.create_window((0, 0), window=self.rows, anchor="nw")
     canvas.bind("<Configure>", lambda event: canvas.itemconfigure(row_window, width=event.width))
@@ -2011,7 +2022,11 @@ def _v3_add_row(self, index: int, role: CursorRole) -> None:
     style_name = "Even.TFrame" if index % 2 else "Odd.TFrame"
     row = ttk.Frame(self.rows, style=style_name, padding=(8, 6))
     row.grid(row=index, column=0, sticky="ew")
-    row.columnconfigure(2, weight=1, minsize=260)
+    row.columnconfigure(0, weight=0, minsize=54)
+    row.columnconfigure(1, weight=0, minsize=120)
+    row.columnconfigure(2, weight=1, minsize=180)
+    row.columnconfigure(3, weight=0, minsize=52)
+    row.columnconfigure(4, weight=0, minsize=72)
     self.row_frames[role.reg_name] = (row, style_name)
     ref = ttk.Label(row, width=6, anchor="center")
     ref.grid(row=0, column=0, sticky="w")
@@ -2019,12 +2034,12 @@ def _v3_add_row(self, index: int, role: CursorRole) -> None:
     if ref_image:
         self.ref_images[role.reg_name] = ref_image
         ref.configure(image=ref_image)
-    ttk.Label(row, text=role.label, width=16).grid(row=0, column=1, sticky="w", padx=(6, 6))
+    ttk.Label(row, text=role.label, width=14).grid(row=0, column=1, sticky="w", padx=(6, 6))
     var = StringVar(value="未配置")
     self.path_vars[role.reg_name] = var
-    path_label = ttk.Label(row, textvariable=var, style="Muted.TLabel", wraplength=520)
+    path_label = ttk.Label(row, textvariable=var, style="Muted.TLabel", wraplength=360)
     path_label.grid(row=0, column=2, sticky="ew")
-    row.bind("<Configure>", lambda event, lbl=path_label: lbl.configure(wraplength=max(260, event.width - 360)))
+    row.bind("<Configure>", lambda event, lbl=path_label: lbl.configure(wraplength=max(180, event.width - 310)))
     choose = ttk.Label(row, text="选择", foreground="#2563eb", cursor="hand2")
     choose.grid(row=0, column=3, padx=(10, 8))
     choose.bind("<Button-1>", lambda _e, r=role: self.pick_file(r))
@@ -2043,8 +2058,11 @@ def _v3_add_row(self, index: int, role: CursorRole) -> None:
         widget.bind("<Leave>", leave)
         widget.bind("<MouseWheel>", lambda event: self.rows.master.yview_scroll(int(-1 * (event.delta / 120)), "units"))
         if DND_FILES:
-            widget.drop_target_register(DND_FILES)
-            widget.dnd_bind("<<Drop>>", lambda event, r=role: self.drop_file(event, r))
+            try:
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>", lambda event, r=role: self.drop_file(event, r))
+            except Exception:
+                pass
 
 
 def _v3_load_reference_icon(self, role: CursorRole) -> ImageTk.PhotoImage | None:
@@ -2141,6 +2159,152 @@ def _rename_scheme(self) -> None:
         dialog.destroy()
         self.status.set(f"已重命名为：{new}")
     ttk.Button(frame, text="确定", style="Primary.TButton", command=save).pack(anchor="e")
+
+
+def _run_wait_task(self, title: str, text: str, work, on_success=None) -> None:
+    dialog = Toplevel(self.root)
+    dialog.title(title)
+    dialog.geometry("340x150")
+    dialog.transient(self.root)
+    dialog.grab_set()
+    dialog.resizable(False, False)
+    frame = ttk.Frame(dialog, padding=20)
+    frame.pack(fill=BOTH, expand=True)
+    ttk.Label(frame, text=text, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="center", pady=(4, 12))
+    progress = ttk.Progressbar(frame, mode="indeterminate")
+    progress.pack(fill="x")
+    progress.start(10)
+    result = {"done": False, "ok": False, "value": None}
+
+    def target():
+        try:
+            result["value"] = work()
+            result["ok"] = True
+        except Exception as exc:
+            result["value"] = exc
+            result["ok"] = False
+        finally:
+            result["done"] = True
+
+    def poll():
+        if not result["done"]:
+            self.root.after(80, poll)
+            return
+        progress.stop()
+        dialog.grab_release()
+        dialog.destroy()
+        if result["ok"]:
+            if on_success:
+                on_success(result["value"])
+        else:
+            messagebox.showerror(title, str(result["value"]))
+
+    threading.Thread(target=target, daemon=True).start()
+    poll()
+
+
+def _v4_apply_now(self) -> None:
+    error = self.validate()
+    if error:
+        messagebox.showwarning("还不能应用", error)
+        return
+    theme = sanitize_name(self.theme_name.get())
+    selected = dict(self.selected)
+    backend_autostart = bool(self.autostart_enabled.get()) if hasattr(self, "autostart_enabled") else False
+
+    def work():
+        set_auto_start(backend_autostart)
+        cursor_files = {reg: str(path) for reg, path in selected.items() if path.suffix.lower() in {".cur", ".ani"}}
+        if len(cursor_files) == len(selected):
+            apply_cursor_scheme(theme, cursor_files)
+            return theme
+        package_dir = WORK_ROOT / "current_theme"
+        assets_dir = package_dir / "assets"
+        if assets_dir.exists():
+            shutil.rmtree(assets_dir)
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        files = {}
+        for reg_name, source in selected.items():
+            role = ROLE_BY_REG[reg_name]
+            suffix = source.suffix.lower()
+            output_name = f"{role.file_stem}{suffix if suffix in {'.cur', '.ani'} else '.cur'}"
+            output = assets_dir / output_name
+            convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, DEFAULT_CURSOR_SIZE)
+            files[reg_name] = output_name
+        target_dir = self.install_assets_to_scheme(theme, files, assets_dir)
+        apply_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
+        self.save_library_manifest(theme, files, target_dir)
+        return theme
+
+    def done(name):
+        self.status.set(f"已应用：{name}")
+
+    self._run_wait_task("正在应用", "正在应用鼠标方案，请稍等。", work, done)
+
+
+def _v4_build_installer(self) -> None:
+    error = self.validate()
+    if error:
+        messagebox.showwarning("还不能生成", error)
+        return
+    default_dir = configured_output_root()
+    default_dir.mkdir(parents=True, exist_ok=True)
+    folder = filedialog.askdirectory(title="选择安装包保存位置", initialdir=str(default_dir))
+    if not folder:
+        return
+    output_dir = Path(folder)
+    data = load_settings()
+    data["output_root"] = str(output_dir.resolve())
+    save_settings(data)
+    theme = sanitize_name(self.theme_name.get())
+
+    def work():
+        package_dir = WORK_ROOT / "installer_package"
+        package_dir.mkdir(parents=True, exist_ok=True)
+        files = self.prepare_assets(package_dir)
+        installer_py = package_dir / "install_cursor_theme.py"
+        installer_py.write_text(installer_source(theme, files), encoding="utf-8")
+        exe_name = f"{theme}_鼠标样式安装器"
+        return self.build_pyinstaller_exe(installer_py, package_dir / "assets", exe_name, output_dir)
+
+    def done(path):
+        self.status.set(f"已生成安装包：{path}")
+        os.startfile(path.parent)
+        messagebox.showinfo("生成完成", f"已生成安装包：\n{path}")
+
+    self._run_wait_task("正在生成", "正在生成安装包，请稍等。", work, done)
+
+
+def _v4_build_pyinstaller_exe(self, installer_py: Path, assets_dir: Path, exe_name: str, output_dir: Path | None = None) -> Path:
+    python = find_python_with_pyinstaller()
+    dist_dir = output_dir or configured_output_root()
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        python,
+        "-m",
+        "PyInstaller",
+        "--noconsole",
+        "--onefile",
+        "--clean",
+        "--name",
+        exe_name,
+        "--distpath",
+        str(dist_dir),
+        "--workpath",
+        str(WORK_ROOT / "pyinstaller"),
+        "--specpath",
+        str(WORK_ROOT / "spec"),
+        "--add-data",
+        f"{assets_dir};assets",
+        str(installer_py),
+    ]
+    result = subprocess.run(command, cwd=APP_DIR, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        log_path = WORK_ROOT / "pyinstaller_error.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(result.stdout + "\n" + result.stderr, encoding="utf-8", errors="replace")
+        raise RuntimeError(f"PyInstaller 打包失败，日志：{log_path}")
+    return dist_dir / f"{exe_name}.exe"
 
 
 def _v3_save_time_page(self, vars_by_mode) -> None:
@@ -2298,7 +2462,7 @@ def _open_resource_browser(self) -> None:
 def _show_settings_page(self) -> None:
     self._clean_page()
     self.page_title.configure(text="设置")
-    self.page_subtitle.configure(text="设置鼠标文件存放位置和基础信息。")
+    self.page_subtitle.configure(text="设置鼠标文件存放位置、安装包默认保存位置和基础信息。")
     card = ttk.Frame(self.content, style="Card.TFrame", padding=18)
     card.pack(fill="x")
     ttk.Label(card, text="鼠标文件存放位置", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
@@ -2309,6 +2473,14 @@ def _show_settings_page(self) -> None:
     ttk.Button(row, text="选择文件夹", style="Yellow.TButton", command=self.pick_storage_folder).pack(side=LEFT)
     ttk.Button(row, text="应用设置", style="Primary.TButton", command=self.apply_settings_page).pack(side=LEFT, padx=8)
     ttk.Button(row, text="打开文件夹", style="Blue.TButton", command=lambda: os.startfile(Path(self.storage_path_var.get()))).pack(side=LEFT)
+
+    ttk.Label(card, text="安装包默认保存位置", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(22, 0))
+    self.output_path_var = StringVar(value=str(configured_output_root()))
+    ttk.Entry(card, textvariable=self.output_path_var).pack(fill="x", pady=(8, 10))
+    output_row = ttk.Frame(card, style="Card.TFrame")
+    output_row.pack(fill="x")
+    ttk.Button(output_row, text="选择文件夹", style="Yellow.TButton", command=self.pick_output_folder).pack(side=LEFT)
+    ttk.Button(output_row, text="打开文件夹", style="Blue.TButton", command=lambda: os.startfile(Path(self.output_path_var.get()))).pack(side=LEFT, padx=8)
     ttk.Label(card, text="个人描述：By Asunny", style="Muted.TLabel").pack(anchor="w", pady=(18, 0))
 
 
@@ -2318,13 +2490,22 @@ def _pick_storage_folder(self) -> None:
         self.storage_path_var.set(folder)
 
 
+def _pick_output_folder(self) -> None:
+    folder = filedialog.askdirectory(title="选择安装包默认保存位置", initialdir=str(configured_output_root()))
+    if folder:
+        self.output_path_var.set(folder)
+
+
 def _apply_settings_page(self) -> None:
     try:
         root = Path(self.storage_path_var.get())
+        output_root = Path(self.output_path_var.get())
         apply_storage_root(root)
         data = load_settings()
         data["storage_root"] = str(root.resolve())
+        data["output_root"] = str(output_root.resolve())
         save_settings(data)
+        output_root.mkdir(parents=True, exist_ok=True)
         self.ensure_default_schemes()
         self.refresh_scheme_names()
         self.status.set("设置已应用。")
@@ -2340,6 +2521,7 @@ CursorThemeBuilder.open_resource_browser = _open_resource_browser
 CursorThemeBuilder._import_archive_as_scheme = _import_archive_as_scheme
 CursorThemeBuilder.show_settings_page = _show_settings_page
 CursorThemeBuilder.pick_storage_folder = _pick_storage_folder
+CursorThemeBuilder.pick_output_folder = _pick_output_folder
 CursorThemeBuilder.apply_settings_page = _apply_settings_page
 
 
@@ -2352,6 +2534,10 @@ CursorThemeBuilder.update_preview = _v3_update_preview
 CursorThemeBuilder.update_large_preview = _v3_update_large_preview
 CursorThemeBuilder.preview_leave = _v3_preview_leave
 CursorThemeBuilder.rename_scheme = _rename_scheme
+CursorThemeBuilder._run_wait_task = _run_wait_task
+CursorThemeBuilder.apply_now = _v4_apply_now
+CursorThemeBuilder.build_installer = _v4_build_installer
+CursorThemeBuilder.build_pyinstaller_exe = _v4_build_pyinstaller_exe
 CursorThemeBuilder.save_time_page = _v3_save_time_page
 CursorThemeBuilder.save_week_page = _v3_save_week_page
 

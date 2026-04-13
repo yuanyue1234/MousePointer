@@ -20,13 +20,15 @@ Windows 图形化鼠标指针方案工具。可以导入鼠标压缩包或安装
 - 切换方案时，下方每个鼠标状态的文件配置和右侧实时预览会同步更新。
 - 鼠标方案表格使用整行宽度，滚轮滚动，不显示右侧滚动条。
 - 设置页可以修改鼠标文件存放位置，默认位于 Roaming：`%APPDATA%\MouseCursorThemeBuilder\mouse_files`。
+- 设置页可以修改安装包默认保存位置，默认位于 Roaming：`%APPDATA%\MouseCursorThemeBuilder\installers`。
 - 资源库页面会打开在线资源库，并优先使用 Edge App 模式把下载目录指向鼠标文件存放位置。
 - 鼠标悬停到下方配置行时，右侧预览会立即切换到该行；动态 `.ani` 会循环播放预览。
 - 鼠标方案页支持新建方案、删除自定义方案。
 - 时间切换和星期切换在左侧导航中进入，不再弹出新窗口。
 - 右侧预览区支持鼠标移入后跟随鼠标移动，移出后回到中间。
 - UI 图标统一为 Google Material 3 / Material Symbols 的圆角线性风格。Material Symbols 参考：https://github.com/google/material-design-icons
-- 生成安装包时优先生成独立 PyInstaller EXE；检测到 WinRAR 后会再封装 WinRAR 自解压包。
+- 生成安装包时会先选择保存位置，只使用 Python/PyInstaller 生成独立 EXE，完成后自动打开对应文件夹。
+- 应用方案和生成安装包会显示等待窗口，耗时任务在后台执行。
 - 错误会追加到 `错误记录.md`。
 
 ## 运行
