@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import traceback
+import webbrowser
 import winreg
 import zipfile
 from dataclasses import dataclass
@@ -33,13 +34,18 @@ IS_FROZEN = bool(getattr(sys, "frozen", False))
 APP_DIR = Path(sys.executable).resolve().parent if IS_FROZEN else Path(__file__).resolve().parent
 WORK_ROOT = APP_DIR / "_build" if IS_FROZEN else APP_DIR / "build"
 OUTPUT_DIR = APP_DIR if IS_FROZEN else APP_DIR / "dist"
-APP_DATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "MouseCursorThemeBuilder"
-SCHEME_LIBRARY = APP_DATA / "schemes"
+APP_DATA = Path(os.environ.get("APPDATA", str(Path.home()))) / "MouseCursorThemeBuilder"
+SETTINGS_FILE = APP_DATA / "settings.json"
+DEFAULT_STORAGE_ROOT = APP_DATA / "mouse_files"
+SCHEME_LIBRARY = DEFAULT_STORAGE_ROOT / "schemes"
+RESOURCE_LIBRARY = DEFAULT_STORAGE_ROOT / "resources"
+INSTALLED_LIBRARY = DEFAULT_STORAGE_ROOT / "installed"
 SCHEDULE_FILE = APP_DATA / "schedule.json"
 WEEK_SCHEDULE_FILE = APP_DATA / "week_schedule.json"
 ERROR_LOG = APP_DIR / "错误记录.md"
 DEFAULT_CURSOR_SIZE = 64
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RESOURCE_URL = "https://yvtgt-my.sharepoint.com/:f:/g/personal/asunny_yvtgt_onmicrosoft_com/IgAikChiblmJQqSfaLGiF-ZEAXMNYeBJLh_IlV2F8M-GVhs?e=OKbO42"
 
 
 @dataclass(frozen=True)
@@ -72,7 +78,8 @@ CURSOR_ROLES: list[CursorRole] = [
 ]
 
 ROLE_BY_REG = {role.reg_name: role for role in CURSOR_ROLES}
-DEFAULT_SCHEME_NAMES = ["01方案", "02方案", "03方案", "04方案"]
+DEFAULT_SCHEME_NAMES = ["01方案", "02方案"]
+DEFAULT_ARCHIVE_KEYWORDS = ["小垚", "鼠鼠"]
 SUPPORTED_TYPES = (
     ("图片和光标", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.ico *.cur *.ani"),
     ("图片", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.ico"),
@@ -104,6 +111,42 @@ def bundled_archives() -> list[Path]:
     if base:
         archives.extend(Path(base).glob("*.zip"))
     return list(dict.fromkeys(archives))
+
+
+def load_settings() -> dict[str, str]:
+    try:
+        if SETTINGS_FILE.exists():
+            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception as exc:
+        log_error("读取设置失败", exc)
+    return {}
+
+
+def save_settings(data: dict[str, str]) -> None:
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def apply_storage_root(path: Path) -> None:
+    global SCHEME_LIBRARY, RESOURCE_LIBRARY, INSTALLED_LIBRARY
+    root = path.expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    SCHEME_LIBRARY = root / "schemes"
+    RESOURCE_LIBRARY = root / "resources"
+    INSTALLED_LIBRARY = root / "installed"
+    SCHEME_LIBRARY.mkdir(parents=True, exist_ok=True)
+    RESOURCE_LIBRARY.mkdir(parents=True, exist_ok=True)
+    INSTALLED_LIBRARY.mkdir(parents=True, exist_ok=True)
+
+
+def configured_storage_root() -> Path:
+    value = load_settings().get("storage_root", "")
+    return Path(value) if value else DEFAULT_STORAGE_ROOT
+
+
+apply_storage_root(configured_storage_root())
 
 
 def sanitize_name(name: str) -> str:
@@ -189,7 +232,7 @@ def log_error(exc):
 
 
 def install():
-    target_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "MouseCursorThemes" / THEME_NAME
+    target_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "MouseCursorThemes" / THEME_NAME
     target_dir.mkdir(parents=True, exist_ok=True)
     installed = {{}}
     for reg_name, file_name in CURSOR_FILES.items():
@@ -736,7 +779,7 @@ class CursorThemeBuilder:
         return files
 
     def install_assets_to_scheme(self, theme: str, files: dict[str, str], assets_dir: Path) -> Path:
-        target_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "MouseCursorThemes" / theme
+        target_dir = INSTALLED_LIBRARY / theme
         target_dir.mkdir(parents=True, exist_ok=True)
         for name in files.values():
             shutil.copy2(assets_dir / name, target_dir / name)
@@ -1497,12 +1540,16 @@ def _v2_build_ui(self) -> None:
     self.nav_buttons = {}
     for key, text, icon_name, command in (
         ("scheme", "鼠标方案", "mouse", self.show_scheme_page),
+        ("library", "资源库", "folder", self.show_resource_page),
         ("time", "时间切换", "clock", self.show_time_page),
         ("week", "星期切换", "calendar", self.show_week_page),
     ):
         btn = ttk.Button(side, text=f"  {text}", image=self._ui_icon(icon_name), compound=LEFT, style="Nav.TButton", command=command)
         btn.pack(fill="x", pady=4)
         self.nav_buttons[key] = btn
+    settings_btn = ttk.Button(side, text="  设置", image=self._ui_icon("settings"), compound=LEFT, style="Nav.TButton", command=self.show_settings_page)
+    settings_btn.pack(side="bottom", fill="x", pady=4)
+    self.nav_buttons["settings"] = settings_btn
     ttk.Label(side, text="清爽简约风格\n淡蓝与淡黄背景", style="Side.TLabel", wraplength=140).pack(side="bottom", anchor="w", pady=12)
 
     main = ttk.Frame(shell, style="Page.TFrame", padding=22)
@@ -1977,6 +2024,7 @@ def _v3_add_row(self, index: int, role: CursorRole) -> None:
     self.path_vars[role.reg_name] = var
     path_label = ttk.Label(row, textvariable=var, style="Muted.TLabel", wraplength=520)
     path_label.grid(row=0, column=2, sticky="ew")
+    row.bind("<Configure>", lambda event, lbl=path_label: lbl.configure(wraplength=max(260, event.width - 360)))
     choose = ttk.Label(row, text="选择", foreground="#2563eb", cursor="hand2")
     choose.grid(row=0, column=3, padx=(10, 8))
     choose.bind("<Button-1>", lambda _e, r=role: self.pick_file(r))
@@ -2119,6 +2167,180 @@ def _v3_save_week_page(self, vars_by_day) -> None:
             self.status.set(f"星期切换已应用，并已切换到：{scheme}")
         except Exception as exc:
             log_error("星期切换立即应用失败", exc)
+
+
+def _default_archives() -> list[Path]:
+    archives = bundled_archives()
+    selected: list[Path] = []
+    for keyword in DEFAULT_ARCHIVE_KEYWORDS:
+        match = next((archive for archive in archives if keyword in archive.name), None)
+        if match:
+            selected.append(match)
+    if len(selected) < 2:
+        for archive in archives:
+            if archive not in selected:
+                selected.append(archive)
+            if len(selected) >= 2:
+                break
+    return selected[:2]
+
+
+def _resource_archives() -> list[Path]:
+    paths = []
+    for folder in (RESOURCE_LIBRARY, APP_DIR):
+        if folder.exists():
+            paths.extend([p for p in folder.iterdir() if p.suffix.lower() in {".zip", ".rar", ".7z", ".exe"}])
+    defaults = set(_default_archives())
+    return [p for p in dict.fromkeys(paths) if p not in defaults]
+
+
+def _v4_ensure_default_schemes(self) -> None:
+    SCHEME_LIBRARY.mkdir(parents=True, exist_ok=True)
+    archives = _default_archives()
+    for index, archive in enumerate(archives):
+        name = DEFAULT_SCHEME_NAMES[index]
+        scheme_dir = SCHEME_LIBRARY / name
+        if (scheme_dir / "scheme.json").exists():
+            continue
+        try:
+            extracted = extract_import_package(archive)
+            mapping = parse_inf_mapping(extracted)
+            scheme_dir.mkdir(parents=True, exist_ok=True)
+            files = {}
+            for reg_name, source in mapping.items():
+                role = ROLE_BY_REG.get(reg_name)
+                if role:
+                    output_name = f"{role.file_stem}{source.suffix.lower()}"
+                    shutil.copy2(source, scheme_dir / output_name)
+                    files[reg_name] = output_name
+            self.save_library_manifest(name, files, scheme_dir)
+        except Exception as exc:
+            log_error(f"导入默认方案失败：{archive.name}", exc)
+
+
+def _import_archive_as_scheme(self, archive: Path) -> bool:
+    name = sanitize_name(archive.stem)
+    if name in DEFAULT_SCHEME_NAMES:
+        name = f"{name}_资源"
+    scheme_dir = SCHEME_LIBRARY / name
+    if (scheme_dir / "scheme.json").exists():
+        return False
+    extracted = extract_import_package(archive)
+    mapping = parse_inf_mapping(extracted)
+    if not mapping:
+        raise RuntimeError(f"{archive.name} 没有识别到鼠标方案。")
+    scheme_dir.mkdir(parents=True, exist_ok=True)
+    files = {}
+    for reg_name, source in mapping.items():
+        role = ROLE_BY_REG.get(reg_name)
+        if role:
+            output_name = f"{role.file_stem}{source.suffix.lower()}"
+            shutil.copy2(source, scheme_dir / output_name)
+            files[reg_name] = output_name
+    self.save_library_manifest(name, files, scheme_dir)
+    return True
+
+
+def _show_resource_page(self) -> None:
+    self._clean_page()
+    self.page_title.configure(text="资源库")
+    self.page_subtitle.configure(text="打开在线资源库下载鼠标包，或把压缩包放进存储目录后点击刷新。")
+    card = ttk.Frame(self.content, style="Card.TFrame", padding=18)
+    card.pack(fill=BOTH, expand=True)
+    ttk.Label(card, text="在线资源库", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
+    ttk.Label(card, text="下载后的 zip、rar、7z 或自解压 exe 放到鼠标文件存放位置，点击刷新会自动解压并添加方案。", style="Muted.TLabel", wraplength=720).pack(anchor="w", pady=(6, 16))
+    ttk.Button(card, text="打开资源库网页", image=self._ui_icon("folder"), compound=LEFT, style="Blue.TButton", command=self.open_resource_browser).pack(anchor="w", pady=4)
+    ttk.Button(card, text="打开鼠标文件存放位置", style="Yellow.TButton", command=lambda: os.startfile(RESOURCE_LIBRARY)).pack(anchor="w", pady=4)
+    ttk.Button(card, text="刷新并添加方案", image=self._ui_icon("apply"), compound=LEFT, style="Primary.TButton", command=self.refresh_resource_library).pack(anchor="w", pady=(14, 8))
+    self.resource_status = StringVar(value=f"存放位置：{RESOURCE_LIBRARY}")
+    ttk.Label(card, textvariable=self.resource_status, style="Muted.TLabel", wraplength=760).pack(anchor="w", pady=8)
+
+
+def _refresh_resource_library(self) -> None:
+    imported = 0
+    errors = []
+    RESOURCE_LIBRARY.mkdir(parents=True, exist_ok=True)
+    for archive in _resource_archives():
+        try:
+            if self._import_archive_as_scheme(archive):
+                imported += 1
+        except Exception as exc:
+            errors.append(f"{archive.name}: {exc}")
+            log_error(f"资源库导入失败：{archive.name}", exc)
+    self.refresh_scheme_names()
+    message = f"已添加 {imported} 个方案。"
+    if errors:
+        message += f" 有 {len(errors)} 个文件未识别，详情见错误记录。"
+    self.resource_status.set(message)
+    self.status.set(message)
+
+
+def _open_resource_browser(self) -> None:
+    RESOURCE_LIBRARY.mkdir(parents=True, exist_ok=True)
+    edge = shutil.which("msedge") or shutil.which("msedge.exe")
+    edge_paths = [
+        Path(os.environ.get("ProgramFiles(x86)", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+        Path(os.environ.get("ProgramFiles", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+    ]
+    if not edge:
+        edge = str(next((p for p in edge_paths if p.exists()), ""))
+    if edge:
+        subprocess.Popen([
+            edge,
+            f"--app={RESOURCE_URL}",
+            f"--user-data-dir={APP_DATA / 'resource_browser'}",
+            f"--download-default-directory={RESOURCE_LIBRARY}",
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        webbrowser.open(RESOURCE_URL)
+
+
+def _show_settings_page(self) -> None:
+    self._clean_page()
+    self.page_title.configure(text="设置")
+    self.page_subtitle.configure(text="设置鼠标文件存放位置和基础信息。")
+    card = ttk.Frame(self.content, style="Card.TFrame", padding=18)
+    card.pack(fill="x")
+    ttk.Label(card, text="鼠标文件存放位置", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
+    self.storage_path_var = StringVar(value=str(configured_storage_root()))
+    ttk.Entry(card, textvariable=self.storage_path_var).pack(fill="x", pady=(8, 10))
+    row = ttk.Frame(card, style="Card.TFrame")
+    row.pack(fill="x")
+    ttk.Button(row, text="选择文件夹", style="Yellow.TButton", command=self.pick_storage_folder).pack(side=LEFT)
+    ttk.Button(row, text="应用设置", style="Primary.TButton", command=self.apply_settings_page).pack(side=LEFT, padx=8)
+    ttk.Button(row, text="打开文件夹", style="Blue.TButton", command=lambda: os.startfile(Path(self.storage_path_var.get()))).pack(side=LEFT)
+    ttk.Label(card, text="个人描述：By Asunny", style="Muted.TLabel").pack(anchor="w", pady=(18, 0))
+
+
+def _pick_storage_folder(self) -> None:
+    folder = filedialog.askdirectory(title="选择鼠标文件存放位置", initialdir=str(configured_storage_root()))
+    if folder:
+        self.storage_path_var.set(folder)
+
+
+def _apply_settings_page(self) -> None:
+    try:
+        root = Path(self.storage_path_var.get())
+        apply_storage_root(root)
+        data = load_settings()
+        data["storage_root"] = str(root.resolve())
+        save_settings(data)
+        self.ensure_default_schemes()
+        self.refresh_scheme_names()
+        self.status.set("设置已应用。")
+    except Exception as exc:
+        log_error("应用设置失败", exc)
+        messagebox.showerror("设置失败", str(exc))
+
+
+CursorThemeBuilder.ensure_default_schemes = _v4_ensure_default_schemes
+CursorThemeBuilder.show_resource_page = _show_resource_page
+CursorThemeBuilder.refresh_resource_library = _refresh_resource_library
+CursorThemeBuilder.open_resource_browser = _open_resource_browser
+CursorThemeBuilder._import_archive_as_scheme = _import_archive_as_scheme
+CursorThemeBuilder.show_settings_page = _show_settings_page
+CursorThemeBuilder.pick_storage_folder = _pick_storage_folder
+CursorThemeBuilder.apply_settings_page = _apply_settings_page
 
 
 CursorThemeBuilder.configure_style = _v3_configure_style
