@@ -16,6 +16,7 @@ import traceback
 import webbrowser
 import winreg
 import zipfile
+import zlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -466,6 +467,9 @@ def extract_import_package(source: Path) -> Path:
             return target
         except Exception:
             pass
+    if source.suffix.lower() == ".exe":
+        if extract_pyinstaller_assets(source, target):
+            return target
     result = subprocess.run(["tar", "-xf", str(source), "-C", str(target)], text=True, capture_output=True, check=False)
     if result.returncode == 0:
         return target
@@ -473,10 +477,7 @@ def extract_import_package(source: Path) -> Path:
 
 
 def set_auto_start(enabled: bool) -> None:
-    if IS_FROZEN:
-        command = f'"{Path(sys.executable).resolve()}" --background'
-    else:
-        command = f'"{Path(sys.executable).resolve()}" "{Path(__file__).resolve()}" --background'
+    command = subprocess.list2cmdline(background_command())
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
         if enabled:
             winreg.SetValueEx(key, "MouseCursorThemeBuilder", 0, winreg.REG_SZ, command)
@@ -485,6 +486,101 @@ def set_auto_start(enabled: bool) -> None:
                 winreg.DeleteValue(key, "MouseCursorThemeBuilder")
             except FileNotFoundError:
                 pass
+
+
+def background_command() -> list[str]:
+    if IS_FROZEN:
+        return [str(Path(sys.executable).resolve()), "--background"]
+    return [str(Path(sys.executable).resolve()), str(Path(__file__).resolve()), "--background"]
+
+
+def start_background_process() -> None:
+    APP_DATA.mkdir(parents=True, exist_ok=True)
+    creationflags = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        creationflags |= subprocess.CREATE_NO_WINDOW
+    if hasattr(subprocess, "DETACHED_PROCESS"):
+        creationflags |= subprocess.DETACHED_PROCESS
+    subprocess.Popen(
+        background_command(),
+        cwd=str(APP_DIR),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
+
+
+def acquire_background_lock():
+    pid_file = APP_DATA / "background.pid"
+    APP_DATA.mkdir(parents=True, exist_ok=True)
+    while True:
+        try:
+            fd = os.open(pid_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            return fd
+        except FileExistsError:
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8").strip() or "0")
+            except Exception:
+                pid = 0
+            if not pid:
+                time.sleep(0.1)
+                continue
+            if pid and process_exists(pid):
+                return None
+            try:
+                pid_file.unlink()
+            except FileNotFoundError:
+                pass
+        except Exception:
+            return None
+
+
+def process_exists(pid: int) -> bool:
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if handle:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    return False
+
+
+def extract_pyinstaller_assets(source: Path, target: Path) -> bool:
+    data = source.read_bytes()
+    magic = b"MEI\014\013\012\013\016"
+    cookie_offset = data.rfind(magic)
+    if cookie_offset < 0:
+        return False
+    cookie_format = "!8sIIII64s"
+    cookie_size = struct.calcsize(cookie_format)
+    if cookie_offset + cookie_size > len(data):
+        return False
+    _, archive_length, toc_offset, toc_length, _pyvers, _pylib = struct.unpack(cookie_format, data[cookie_offset:cookie_offset + cookie_size])
+    archive_start = cookie_offset + cookie_size - archive_length
+    toc_start = archive_start + toc_offset
+    toc_end = toc_start + toc_length
+    if archive_start < 0 or toc_start < 0 or toc_end > len(data):
+        return False
+    entry_format = "!IIIIBc"
+    entry_size = struct.calcsize(entry_format)
+    pos = toc_start
+    extracted = 0
+    while pos < toc_end:
+        entry_length, entry_offset, data_length, _uncompressed_length, compression_flag, _typecode = struct.unpack(entry_format, data[pos:pos + entry_size])
+        pos += entry_size
+        name_length = entry_length - entry_size
+        name = data[pos:pos + name_length].rstrip(b"\0").decode("utf-8", errors="replace")
+        pos += name_length
+        normalized = name.replace("\\", "/")
+        if normalized.startswith("assets/") and Path(normalized).suffix.lower() in {".cur", ".ani", ".png", ".ico"}:
+            payload = data[archive_start + entry_offset:archive_start + entry_offset + data_length]
+            if compression_flag:
+                payload = zlib.decompress(payload)
+            output = target / normalized
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(payload)
+            extracted += 1
+    return extracted > 0
 
 
 class CursorThemeBuilder:
@@ -1080,6 +1176,9 @@ def main() -> None:
 
 
 def run_background() -> None:
+    lock = acquire_background_lock()
+    if lock is None:
+        return
     last_key = ""
     while True:
         try:
@@ -2246,6 +2345,8 @@ def _v4_apply_now(self) -> None:
         return theme
 
     def done(name):
+        if backend_autostart:
+            self.start_scheduler()
         self.status.set(f"已应用：{name}")
 
     self._run_wait_task("正在应用", "正在应用鼠标方案，请稍等。", work, done)
@@ -2412,9 +2513,8 @@ def _on_close(self) -> None:
     if hasattr(self, "autostart_enabled") and self.autostart_enabled.get():
         try:
             set_auto_start(True)
-            self.start_scheduler()
-            self.root.withdraw()
-            self.status.set("已保留后台运行。")
+            start_background_process()
+            self.root.destroy()
             return
         except Exception as exc:
             log_error("保留后台失败", exc)
@@ -2568,6 +2668,31 @@ def _drop_import_resource(self, event) -> None:
     self._run_wait_task("正在导入", "正在解压并添加资源，请稍等。", work, done)
 
 
+def _v4_drop_file(self, event, role: CursorRole) -> None:
+    paths = [Path(path) for path in self.root.tk.splitlist(event.data)]
+    if not paths:
+        return
+    source = paths[0]
+    if source.suffix.lower() in {".zip", ".rar", ".7z", ".exe"}:
+        def work():
+            if not self._import_archive_as_scheme(source):
+                return None
+            return sanitize_name(source.stem)
+
+        def done(name):
+            self.refresh_scheme_names()
+            if name:
+                self.theme_name.set(name)
+                self.load_scheme_to_ui(name)
+                self.status.set(f"已导入为新方案：{name}")
+            else:
+                self.status.set("该资源包已存在或没有新增方案。")
+
+        self._run_wait_task("正在导入", "正在解压并添加资源，请稍等。", work, done)
+        return
+    self.assign_file(role, source)
+
+
 def _open_resource_browser(self) -> None:
     RESOURCE_LIBRARY.mkdir(parents=True, exist_ok=True)
     edge = shutil.which("msedge") or shutil.which("msedge.exe")
@@ -2664,6 +2789,7 @@ CursorThemeBuilder.update_preview = _v3_update_preview
 CursorThemeBuilder.update_large_preview = _v3_update_large_preview
 CursorThemeBuilder.preview_leave = _v3_preview_leave
 CursorThemeBuilder.rename_scheme = _rename_scheme
+CursorThemeBuilder.drop_file = _v4_drop_file
 CursorThemeBuilder._run_wait_task = _run_wait_task
 CursorThemeBuilder.apply_now = _v4_apply_now
 CursorThemeBuilder.apply_autostart = _v4_apply_autostart
