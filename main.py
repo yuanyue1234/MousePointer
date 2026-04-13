@@ -72,7 +72,7 @@ CURSOR_ROLES: list[CursorRole] = [
 ]
 
 ROLE_BY_REG = {role.reg_name: role for role in CURSOR_ROLES}
-DEFAULT_SCHEME_NAMES = ["我的鼠标样式", "亮色指针", "暗色指针", "游戏指针", "办公指针", "演示大指针"]
+DEFAULT_SCHEME_NAMES = ["01方案", "02方案"]
 SUPPORTED_TYPES = (
     ("图片和光标", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.ico *.cur *.ani"),
     ("图片", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.ico"),
@@ -1049,6 +1049,361 @@ def apply_library_scheme(theme: str) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     files = manifest.get("files", {})
     apply_cursor_scheme(theme, {reg_name: str(scheme_dir / name) for reg_name, name in files.items()})
+
+
+def ani_frame_paths(path: Path) -> list[Path]:
+    data = path.read_bytes()
+    frames: list[Path] = []
+    offset = 0
+    cache_dir = WORK_ROOT / "ani_frames" / sanitize_name(path.stem)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    while True:
+        index = data.find(b"icon", offset)
+        if index < 0 or index + 8 > len(data):
+            break
+        size = int.from_bytes(data[index + 4:index + 8], "little", signed=False)
+        payload = data[index + 8:index + 8 + size]
+        if len(payload) > 22:
+            frame_path = cache_dir / f"frame_{len(frames):03d}.cur"
+            frame_path.write_bytes(payload)
+            frames.append(frame_path)
+        offset = index + 8 + size + (size % 2)
+    return frames[:60]
+
+
+def scheme_manifest(theme: str) -> tuple[Path, dict[str, str]]:
+    scheme_dir = SCHEME_LIBRARY / theme
+    manifest_path = scheme_dir / "scheme.json"
+    if not manifest_path.exists():
+        return scheme_dir, {}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return scheme_dir, manifest.get("files", {})
+
+
+def _new_configure_style(self) -> None:
+    style = ttk.Style()
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+    self.root.configure(bg="#f7f7f7")
+    style.configure("TFrame", background="#f7f7f7")
+    style.configure("Side.TFrame", background="#f4f4f4")
+    style.configure("Panel.TFrame", background="#ffffff")
+    style.configure("Row.TFrame", background="#ffffff")
+    style.configure("Hover.Row.TFrame", background="#f1f6ff")
+    style.configure("TLabel", background="#f7f7f7", foreground="#202020", font=("Segoe UI", 10))
+    style.configure("Side.TLabel", background="#f4f4f4", foreground="#1f1f1f", font=("Segoe UI", 10))
+    style.configure("Panel.TLabel", background="#ffffff", foreground="#202020", font=("Segoe UI", 10))
+    style.configure("Muted.Panel.TLabel", background="#ffffff", foreground="#666666", font=("Segoe UI", 9))
+    style.configure("Title.TLabel", background="#ffffff", foreground="#1f1f1f", font=("Segoe UI", 20, "bold"))
+    style.configure("Nav.TButton", anchor="w", padding=(14, 8))
+    style.configure("Primary.TButton", font=("Segoe UI", 10, "bold"), padding=(14, 8))
+    style.configure("TButton", padding=(10, 6))
+
+
+def _new_build_ui(self) -> None:
+    self.root.title("鼠标指针配置生成器")
+    self.root.geometry("1180x760")
+    self.root.minsize(1040, 680)
+    self.animation_after = None
+    self.animation_frames = []
+    self.animation_index = 0
+    self.row_frames = {}
+    self.autostart_enabled = IntVar(value=1 if self.is_auto_start_enabled() else 0)
+
+    icon_path = resource_path("icon.png")
+    if icon_path.exists():
+        try:
+            icon = ImageTk.PhotoImage(Image.open(icon_path).convert("RGBA").resize((32, 32)))
+            self.preview_images["_window_icon"] = icon
+            self.root.iconphoto(True, icon)
+        except Exception as exc:
+            log_error("加载窗口图标失败", exc)
+
+    shell = ttk.Frame(self.root)
+    shell.pack(fill=BOTH, expand=True)
+    sidebar = ttk.Frame(shell, style="Side.TFrame", padding=(0, 10))
+    sidebar.pack(side=LEFT, fill="y")
+    ttk.Label(sidebar, text="  Mouse Theme", style="Side.TLabel", font=("Segoe UI", 11, "bold")).pack(fill="x", pady=(0, 16))
+    for text, command in (
+        ("  鼠标方案", lambda: None),
+        ("  定时切换", self.open_time_schedule),
+        ("  星期切换", self.open_week_schedule),
+        ("  鼠标大小设置", self.open_pointer_settings),
+    ):
+        ttk.Button(sidebar, text=text, style="Nav.TButton", command=command).pack(fill="x", padx=8, pady=2)
+    ttk.Label(sidebar, text="  建议调整大小后再应用。", style="Side.TLabel", wraplength=140).pack(side="bottom", fill="x", padx=8, pady=14)
+
+    main = ttk.Frame(shell, style="Panel.TFrame", padding=18)
+    main.pack(side=LEFT, fill=BOTH, expand=True)
+    header = ttk.Frame(main, style="Panel.TFrame")
+    header.pack(fill="x")
+    ttk.Label(header, text="Personalization", style="Title.TLabel").pack(side=LEFT)
+    ttk.Button(header, text="定时切换", command=self.open_time_schedule).pack(side=RIGHT, padx=(8, 0))
+    ttk.Button(header, text="星期切换", command=self.open_week_schedule).pack(side=RIGHT)
+
+    controls = ttk.Frame(main, style="Panel.TFrame")
+    controls.pack(fill="x", pady=(18, 10))
+    ttk.Label(controls, text="方案", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
+    self.scheme_combo = ttk.Combobox(controls, textvariable=self.theme_name, width=22, state="readonly")
+    self.scheme_combo.grid(row=0, column=1, padx=(8, 12), sticky="w")
+    self.scheme_combo.bind("<<ComboboxSelected>>", lambda _e: self.load_scheme_to_ui(self.theme_name.get()))
+    ttk.Checkbutton(controls, text="自启动后台", variable=self.autostart_enabled, command=self.apply_autostart).grid(row=0, column=2, padx=(0, 12))
+    ttk.Label(controls, text="Tips：建议调整大小后再应用。", style="Muted.Panel.TLabel").grid(row=0, column=3, sticky="w")
+    ttk.Button(controls, text="导入", command=self.import_package).grid(row=0, column=4, padx=(12, 0))
+    ttk.Button(controls, text="保存方案", command=self.save_current_scheme).grid(row=0, column=5, padx=(8, 0))
+    controls.columnconfigure(3, weight=1)
+
+    content = ttk.Frame(main, style="Panel.TFrame")
+    content.pack(fill=BOTH, expand=True)
+    list_panel = ttk.Frame(content, style="Panel.TFrame")
+    list_panel.pack(side=LEFT, fill=BOTH, expand=True)
+    ttk.Label(list_panel, text="Select mouse pointers", style="Panel.TLabel", font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 8))
+    canvas = Canvas(list_panel, bg="#ffffff", highlightthickness=1, highlightbackground="#e3e3e3")
+    scrollbar = ttk.Scrollbar(list_panel, orient=VERTICAL, command=canvas.yview)
+    self.rows = ttk.Frame(canvas, style="Panel.TFrame")
+    self.rows.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.create_window((0, 0), window=self.rows, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.pack(side=LEFT, fill=BOTH, expand=True)
+    scrollbar.pack(side=RIGHT, fill="y")
+    for index, role in enumerate(CURSOR_ROLES):
+        self.add_row(index, role)
+
+    preview = ttk.Frame(content, style="Panel.TFrame", padding=(16, 0, 0, 0))
+    preview.pack(side=RIGHT, fill="y")
+    ttk.Label(preview, text="Live preview", style="Panel.TLabel", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+    self.large_preview = ttk.Label(preview, text="悬停或选择一行", style="Panel.TLabel", anchor="center")
+    self.large_preview.pack(fill="both", expand=True, pady=(10, 8))
+    self.large_preview_name = ttk.Label(preview, text="", style="Muted.Panel.TLabel", wraplength=260)
+    self.large_preview_name.pack(anchor="w")
+
+    actions = ttk.Frame(main, style="Panel.TFrame")
+    actions.pack(fill="x", pady=(12, 0))
+    ttk.Button(actions, text="应用", style="Primary.TButton", command=self.apply_now).pack(side=LEFT)
+    ttk.Button(actions, text="生成安装包", command=self.build_installer).pack(side=LEFT, padx=8)
+    ttk.Button(actions, text="打开输出", command=lambda: os.startfile(OUTPUT_DIR)).pack(side=LEFT)
+    self.status = StringVar(value="选择方案或导入鼠标包。悬停下方配置会实时切换预览。")
+    ttk.Label(actions, textvariable=self.status, style="Muted.Panel.TLabel").pack(side=RIGHT)
+
+
+def _new_add_row(self, index: int, role: CursorRole) -> None:
+    row = ttk.Frame(self.rows, style="Row.TFrame", padding=(10, 8))
+    row.grid(row=index, column=0, sticky="ew")
+    row.columnconfigure(2, weight=1)
+    self.row_frames[role.reg_name] = row
+    ref = ttk.Label(row, style="Panel.TLabel", width=6, anchor="center")
+    ref.grid(row=0, column=0, sticky="w")
+    ref_image = self.load_reference_icon(role)
+    if ref_image:
+        ref.configure(image=ref_image)
+        self.ref_images[role.reg_name] = ref_image
+    ttk.Label(row, text=role.label, style="Panel.TLabel", width=18).grid(row=0, column=1, sticky="w", padx=(8, 8))
+    var = StringVar(value="未配置")
+    self.path_vars[role.reg_name] = var
+    path_label = ttk.Label(row, textvariable=var, style="Muted.Panel.TLabel", width=42)
+    path_label.grid(row=0, column=2, sticky="ew")
+    ttk.Button(row, text="选择", command=lambda r=role: self.pick_file(r)).grid(row=0, column=3, padx=8)
+    preview = ttk.Label(row, text="", style="Panel.TLabel", width=12, anchor="center")
+    preview.grid(row=0, column=4)
+    self.preview_labels[role.reg_name] = preview
+
+    def enter(_event=None, r=role):
+        row.configure(style="Hover.Row.TFrame")
+        path = self.selected.get(r.reg_name)
+        if path:
+            self.update_large_preview(path)
+            self.status.set(f"预览：{r.label}")
+
+    def leave(_event=None):
+        row.configure(style="Row.TFrame")
+
+    for widget in (row, ref, path_label, preview):
+        widget.bind("<Enter>", enter)
+        widget.bind("<Leave>", leave)
+        if DND_FILES:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", lambda event, r=role: self.drop_file(event, r))
+
+
+def _new_update_preview(self, role: CursorRole, path: Path) -> None:
+    label = self.preview_labels[role.reg_name]
+    image = cursor_preview_image(path, (92, 54))
+    photo = ImageTk.PhotoImage(image)
+    self.preview_images[role.reg_name] = photo
+    label.configure(image=photo, text="")
+
+
+def _new_update_large_preview(self, path: Path) -> None:
+    if getattr(self, "animation_after", None):
+        self.root.after_cancel(self.animation_after)
+        self.animation_after = None
+    frames = []
+    if path.suffix.lower() == ".ani":
+        for frame in ani_frame_paths(path):
+            frames.append(cursor_preview_image(frame, (260, 220)))
+    if not frames:
+        frames = [cursor_preview_image(path, (260, 220))]
+    self.animation_frames = [ImageTk.PhotoImage(frame) for frame in frames]
+    self.animation_index = 0
+
+    def tick():
+        if not self.animation_frames:
+            return
+        self.large_preview.configure(image=self.animation_frames[self.animation_index], text="")
+        self.preview_images["_large_current"] = self.animation_frames[self.animation_index]
+        self.animation_index = (self.animation_index + 1) % len(self.animation_frames)
+        if len(self.animation_frames) > 1:
+            self.animation_after = self.root.after(120, tick)
+
+    tick()
+    self.large_preview_name.configure(text=str(path))
+
+
+def _new_refresh_scheme_names(self) -> None:
+    names = list(DEFAULT_SCHEME_NAMES)
+    if SCHEME_LIBRARY.exists():
+        names.extend(path.name for path in SCHEME_LIBRARY.iterdir() if path.is_dir() and path.name not in names)
+    self.scheme_combo.configure(values=names)
+    if self.theme_name.get() not in names and names:
+        self.theme_name.set(names[0])
+    if hasattr(self, "schedule_combo"):
+        self.schedule_combo.configure(values=names)
+    if names:
+        self.load_scheme_to_ui(self.theme_name.get())
+
+
+def _new_ensure_default_schemes(self) -> None:
+    SCHEME_LIBRARY.mkdir(parents=True, exist_ok=True)
+    archives = bundled_archives()[:2]
+    old_names = [sanitize_name(path.stem) for path in archives]
+    for old in old_names:
+        old_dir = SCHEME_LIBRARY / old
+        if old_dir.exists():
+            shutil.rmtree(old_dir, ignore_errors=True)
+    for index, archive in enumerate(archives):
+        name = DEFAULT_SCHEME_NAMES[index]
+        scheme_dir = SCHEME_LIBRARY / name
+        if (scheme_dir / "scheme.json").exists():
+            continue
+        try:
+            extracted = extract_import_package(archive)
+            mapping = parse_inf_mapping(extracted)
+            scheme_dir.mkdir(parents=True, exist_ok=True)
+            files = {}
+            for reg_name, source in mapping.items():
+                role = ROLE_BY_REG.get(reg_name)
+                if role:
+                    output_name = f"{role.file_stem}{source.suffix.lower()}"
+                    shutil.copy2(source, scheme_dir / output_name)
+                    files[reg_name] = output_name
+            self.save_library_manifest(name, files, scheme_dir)
+        except Exception as exc:
+            log_error(f"导入默认方案失败：{archive.name}", exc)
+
+
+def _new_load_scheme_to_ui(self, theme: str) -> None:
+    scheme_dir, files = scheme_manifest(theme)
+    if not files:
+        return
+    self.clear_all()
+    for reg_name, file_name in files.items():
+        role = ROLE_BY_REG.get(reg_name)
+        path = scheme_dir / file_name
+        if role and path.exists():
+            self.selected[reg_name] = path
+            self.path_vars[reg_name].set(path.name)
+            self.update_preview(role, path)
+    first = next(iter(self.selected.values()), None)
+    if first:
+        self.update_large_preview(first)
+    self.status.set(f"已切换方案：{theme}")
+
+
+def _new_assign_file(self, role: CursorRole, path: Path) -> None:
+    try:
+        self.update_preview(role, path)
+        self.update_large_preview(path)
+    except Exception as exc:
+        log_error("读取素材失败", exc)
+        messagebox.showerror("无法读取素材", str(exc))
+        return
+    self.selected[role.reg_name] = path
+    self.path_vars[role.reg_name].set(path.name)
+    self.status.set(f"已选择：{role.label} -> {path.name}")
+
+
+def _new_apply_now(self) -> None:
+    overlay = Toplevel(self.root)
+    overlay.title("正在应用")
+    overlay.geometry("320x140")
+    overlay.transient(self.root)
+    overlay.grab_set()
+    frame = ttk.Frame(overlay, style="Panel.TFrame", padding=24)
+    frame.pack(fill=BOTH, expand=True)
+    ttk.Label(frame, text="正在应用鼠标方案...", style="Panel.TLabel", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+    progress = ttk.Progressbar(frame, mode="indeterminate")
+    progress.pack(fill="x", pady=18)
+    progress.start(12)
+    self.root.update_idletasks()
+
+    def work():
+        try:
+            set_auto_start(bool(self.autostart_enabled.get()))
+            theme = sanitize_name(self.theme_name.get())
+            if not self.selected:
+                self.load_scheme_to_ui(theme)
+            error = self.validate()
+            if error:
+                raise RuntimeError(error)
+            package_dir = WORK_ROOT / "current_theme"
+            files = self.prepare_assets(package_dir)
+            target_dir = self.install_assets_to_scheme(theme, files, package_dir / "assets")
+            apply_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
+            self.save_library_manifest(theme, files, target_dir)
+            self.root.after(0, lambda: self.status.set(f"已应用：{theme}"))
+        except Exception as exc:
+            log_error("应用失败", exc)
+            self.root.after(0, lambda e=exc: messagebox.showerror("应用失败", str(e)))
+        finally:
+            self.root.after(0, overlay.destroy)
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _is_auto_start_enabled(self) -> bool:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ) as key:
+            winreg.QueryValueEx(key, "MouseCursorThemeBuilder")
+            return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
+def _apply_autostart(self) -> None:
+    try:
+        set_auto_start(bool(self.autostart_enabled.get()))
+        self.status.set("自启动已开启。" if self.autostart_enabled.get() else "自启动已关闭。")
+    except Exception as exc:
+        log_error("设置自启动失败", exc)
+        messagebox.showerror("设置失败", str(exc))
+
+
+CursorThemeBuilder.configure_style = _new_configure_style
+CursorThemeBuilder.build_ui = _new_build_ui
+CursorThemeBuilder.add_row = _new_add_row
+CursorThemeBuilder.update_preview = _new_update_preview
+CursorThemeBuilder.update_large_preview = _new_update_large_preview
+CursorThemeBuilder.refresh_scheme_names = _new_refresh_scheme_names
+CursorThemeBuilder.ensure_default_schemes = _new_ensure_default_schemes
+CursorThemeBuilder.load_scheme_to_ui = _new_load_scheme_to_ui
+CursorThemeBuilder.assign_file = _new_assign_file
+CursorThemeBuilder.apply_now = _new_apply_now
+CursorThemeBuilder.is_auto_start_enabled = _is_auto_start_enabled
+CursorThemeBuilder.apply_autostart = _apply_autostart
 
 
 if __name__ == "__main__":
