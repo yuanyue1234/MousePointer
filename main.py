@@ -216,7 +216,25 @@ def apply_cursor_scheme(theme_name: str, cursor_files: dict[str, str]) -> None:
     ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\Cursors", 0, 1000, None)
 
 
-def installer_source(theme_name: str, files: dict[str, str]) -> str:
+def refresh_mouse_parameters() -> None:
+    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
+    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\\\Cursors", 0, 1000, None)
+
+
+def set_system_cursor_size_pixels(pixels: int) -> None:
+    pixels = max(32, min(256, int(pixels)))
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\\Cursors", 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "CursorBaseSize", 0, winreg.REG_DWORD, pixels)
+
+
+def apply_cursor_size_and_scheme(theme_name: str, cursor_files: dict[str, str], pixels: int | None = None) -> None:
+    refresh_mouse_parameters()
+    if pixels:
+        set_system_cursor_size_pixels(pixels)
+    apply_cursor_scheme(theme_name, cursor_files)
+
+
+def installer_source(theme_name: str, files: dict[str, str], cursor_size_pixels: int | None = None) -> str:
     return f'''import ctypes
 import os
 import shutil
@@ -229,6 +247,7 @@ from tkinter import Tk, messagebox
 
 THEME_NAME = {json.dumps(theme_name, ensure_ascii=False)}
 CURSOR_FILES = {json.dumps(files, ensure_ascii=False, indent=4)}
+CURSOR_SIZE_PIXELS = {json.dumps(cursor_size_pixels)}
 
 
 def resource_path(relative):
@@ -254,7 +273,10 @@ def install():
         shutil.copy2(src, dst)
         installed[reg_name] = str(dst)
 
+    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\\Cursors", 0, winreg.KEY_SET_VALUE) as key:
+        if CURSOR_SIZE_PIXELS:
+            winreg.SetValueEx(key, "CursorBaseSize", 0, winreg.REG_DWORD, int(CURSOR_SIZE_PIXELS))
         winreg.SetValueEx(key, "", 0, winreg.REG_SZ, THEME_NAME)
         winreg.SetValueEx(key, "Scheme Source", 0, winreg.REG_DWORD, 2)
         for reg_name, file_path in installed.items():
@@ -911,7 +933,7 @@ class CursorThemeBuilder:
             package_dir = WORK_ROOT / "current_theme"
             files = self.prepare_assets(package_dir)
             target_dir = self.install_assets_to_scheme(theme, files, package_dir / "assets")
-            apply_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
+            apply_cursor_size_and_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()}, DEFAULT_CURSOR_SIZE)
             self.save_library_manifest(theme, files, target_dir)
         except Exception as exc:
             log_error("应用失败", exc)
@@ -952,7 +974,7 @@ class CursorThemeBuilder:
             raise RuntimeError(f"方案库中没有找到：{theme}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         files = manifest.get("files", {})
-        apply_cursor_scheme(theme, {reg_name: str(scheme_dir / name) for reg_name, name in files.items()})
+        apply_cursor_size_and_scheme(theme, {reg_name: str(scheme_dir / name) for reg_name, name in files.items()}, self.active_preview_pixels() if hasattr(self, "active_preview_pixels") else DEFAULT_CURSOR_SIZE)
 
     def build_installer(self) -> None:
         error = self.validate()
@@ -965,7 +987,7 @@ class CursorThemeBuilder:
             package_dir.mkdir(parents=True, exist_ok=True)
             files = self.prepare_assets(package_dir)
             installer_py = package_dir / "install_cursor_theme.py"
-            installer_py.write_text(installer_source(theme, files), encoding="utf-8")
+            installer_py.write_text(installer_source(theme, files, self.active_preview_pixels() if hasattr(self, "active_preview_pixels") else DEFAULT_CURSOR_SIZE), encoding="utf-8")
             exe_name = f"{theme}_鼠标样式安装器"
             installer_exe = self.build_pyinstaller_exe(installer_py, package_dir / "assets", exe_name)
             winrar = find_winrar()
@@ -1227,7 +1249,8 @@ def apply_library_scheme(theme: str) -> None:
         raise RuntimeError(f"方案库中没有找到：{theme}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     files = manifest.get("files", {})
-    apply_cursor_scheme(theme, {reg_name: str(scheme_dir / name) for reg_name, name in files.items()})
+    size = int(manifest.get("size", DEFAULT_CURSOR_SIZE) or DEFAULT_CURSOR_SIZE)
+    apply_cursor_size_and_scheme(theme, {reg_name: str(scheme_dir / name) for reg_name, name in files.items()}, size)
 
 
 def ani_frame_paths(path: Path) -> list[Path]:
@@ -1539,7 +1562,7 @@ def _new_apply_now(self) -> None:
             package_dir = WORK_ROOT / "current_theme"
             files = self.prepare_assets(package_dir)
             target_dir = self.install_assets_to_scheme(theme, files, package_dir / "assets")
-            apply_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
+            apply_cursor_size_and_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()}, DEFAULT_CURSOR_SIZE)
             self.save_library_manifest(theme, files, target_dir)
             self.root.after(0, lambda: self.status.set(f"已应用：{theme}"))
         except Exception as exc:
@@ -2414,7 +2437,7 @@ def _v4_apply_now(self) -> None:
         set_auto_start(backend_autostart)
         cursor_files = {reg: str(path) for reg, path in selected.items() if path.suffix.lower() in {".cur", ".ani"}}
         if len(cursor_files) == len(selected):
-            apply_cursor_scheme(theme, cursor_files)
+            apply_cursor_size_and_scheme(theme, cursor_files, output_cursor_size)
             return theme
         package_dir = WORK_ROOT / "current_theme"
         assets_dir = package_dir / "assets"
@@ -2430,7 +2453,7 @@ def _v4_apply_now(self) -> None:
             convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, output_cursor_size)
             files[reg_name] = output_name
         target_dir = self.install_assets_to_scheme(theme, files, assets_dir)
-        apply_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
+        apply_cursor_size_and_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()}, output_cursor_size)
         self.save_library_manifest(theme, files, target_dir)
         return theme
 
@@ -2465,7 +2488,7 @@ def _v4_build_installer(self) -> None:
         package_dir.mkdir(parents=True, exist_ok=True)
         files = self.prepare_assets(package_dir)
         installer_py = package_dir / "install_cursor_theme.py"
-        installer_py.write_text(installer_source(theme, files), encoding="utf-8")
+        installer_py.write_text(installer_source(theme, files, self.active_preview_pixels()), encoding="utf-8")
         exe_name = f"{theme}_鼠标样式安装器"
         icon_path = self.installer_icon(package_dir)
         return self.build_pyinstaller_exe(installer_py, package_dir / "assets", exe_name, output_dir, icon_path)
