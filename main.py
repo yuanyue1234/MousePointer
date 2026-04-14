@@ -20,7 +20,7 @@ import zlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from tkinter import BOTH, LEFT, RIGHT, VERTICAL, Canvas, IntVar, Scale, StringVar, Tk, Toplevel, filedialog, messagebox, ttk
+from tkinter import BOTH, LEFT, RIGHT, VERTICAL, Canvas, IntVar, StringVar, Tk, Toplevel, filedialog, messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
@@ -51,7 +51,6 @@ SCHEDULE_FILE = APP_DATA / "schedule.json"
 WEEK_SCHEDULE_FILE = APP_DATA / "week_schedule.json"
 ERROR_LOG = APP_DIR / "错误记录.md"
 DEFAULT_CURSOR_SIZE = 64
-DEFAULT_PREVIEW_SIZE_LEVEL = 7
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RESOURCE_URL = "https://yvtgt-my.sharepoint.com/:f:/g/personal/asunny_yvtgt_onmicrosoft_com/IgAikChiblmJQqSfaLGiF-ZEAXMNYeBJLh_IlV2F8M-GVhs?e=OKbO42"
 
@@ -216,37 +215,17 @@ def apply_cursor_scheme(theme_name: str, cursor_files: dict[str, str]) -> None:
     ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\Cursors", 0, 1000, None)
 
 
-def refresh_mouse_parameters(cursor_size_pixels: int | None = None) -> None:
-    param = ctypes.c_void_p(int(cursor_size_pixels)) if cursor_size_pixels else None
-    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, param, 0x01 | 0x02)
+def refresh_mouse_parameters() -> None:
+    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0x01 | 0x02)
     ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\\\Cursors", 0, 1000, None)
 
 
-def set_system_cursor_size_pixels(pixels: int) -> None:
-    pixels = max(32, min(256, int(pixels)))
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\\Cursors", 0, winreg.KEY_SET_VALUE) as key:
-        winreg.SetValueEx(key, "CursorBaseSize", 0, winreg.REG_DWORD, pixels)
-
-
-def apply_cursor_size_and_scheme(theme_name: str, cursor_files: dict[str, str], pixels: int | None = None) -> None:
+def apply_refreshed_cursor_scheme(theme_name: str, cursor_files: dict[str, str]) -> None:
     refresh_mouse_parameters()
-    if pixels:
-        set_system_cursor_size_pixels(pixels)
-        refresh_mouse_parameters(pixels)
     apply_cursor_scheme(theme_name, cursor_files)
 
 
-def clear_cursor_scheme_to_default() -> None:
-    refresh_mouse_parameters()
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\\Cursors", 0, winreg.KEY_SET_VALUE) as key:
-        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "")
-        winreg.SetValueEx(key, "Scheme Source", 0, winreg.REG_DWORD, 0)
-        for role in CURSOR_ROLES:
-            winreg.SetValueEx(key, role.reg_name, 0, winreg.REG_EXPAND_SZ, "")
-    refresh_mouse_parameters()
-
-
-def installer_source(theme_name: str, files: dict[str, str], cursor_size_pixels: int | None = None) -> str:
+def installer_source(theme_name: str, files: dict[str, str]) -> str:
     return f'''import ctypes
 import os
 import shutil
@@ -259,7 +238,6 @@ from tkinter import Tk, messagebox
 
 THEME_NAME = {json.dumps(theme_name, ensure_ascii=False)}
 CURSOR_FILES = {json.dumps(files, ensure_ascii=False, indent=4)}
-CURSOR_SIZE_PIXELS = {json.dumps(cursor_size_pixels)}
 
 
 def resource_path(relative):
@@ -287,15 +265,11 @@ def install():
 
     ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0x01 | 0x02)
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\\Cursors", 0, winreg.KEY_SET_VALUE) as key:
-        if CURSOR_SIZE_PIXELS:
-            winreg.SetValueEx(key, "CursorBaseSize", 0, winreg.REG_DWORD, int(CURSOR_SIZE_PIXELS))
         winreg.SetValueEx(key, "", 0, winreg.REG_SZ, THEME_NAME)
         winreg.SetValueEx(key, "Scheme Source", 0, winreg.REG_DWORD, 2)
         for reg_name, file_path in installed.items():
             winreg.SetValueEx(key, reg_name, 0, winreg.REG_EXPAND_SZ, file_path)
 
-    if CURSOR_SIZE_PIXELS:
-        ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, ctypes.c_void_p(int(CURSOR_SIZE_PIXELS)), 0x01 | 0x02)
     ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0x01 | 0x02)
     ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\\\Cursors", 0, 1000, None)
     return target_dir
@@ -375,10 +349,6 @@ def cursor_preview_image_sized(path: Path, box: tuple[int, int] = (180, 140), cu
     bg = Image.new("RGBA", box, (248, 250, 252, 255))
     bg.alpha_composite(image, ((box[0] - image.width) // 2, (box[1] - image.height) // 2))
     return bg
-
-
-def size_level_to_pixels(level: int) -> int:
-    return max(1, min(15, int(level))) * 16 + 16
 
 
 def render_cursor_with_windows(path: Path, size: int) -> Image.Image | None:
@@ -920,7 +890,7 @@ class CursorThemeBuilder:
             shutil.rmtree(assets_dir)
         assets_dir.mkdir(parents=True, exist_ok=True)
         files: dict[str, str] = {}
-        size = self.active_preview_pixels() if hasattr(self, "active_preview_pixels") else DEFAULT_CURSOR_SIZE
+        size = DEFAULT_CURSOR_SIZE
         for role in self.selected_roles():
             source = self.selected[role.reg_name]
             suffix = source.suffix.lower()
@@ -947,7 +917,7 @@ class CursorThemeBuilder:
             package_dir = WORK_ROOT / "current_theme"
             files = self.prepare_assets(package_dir)
             target_dir = self.install_assets_to_scheme(theme, files, package_dir / "assets")
-            apply_cursor_size_and_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()}, DEFAULT_CURSOR_SIZE)
+            apply_refreshed_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
             self.save_library_manifest(theme, files, target_dir)
         except Exception as exc:
             log_error("应用失败", exc)
@@ -978,7 +948,7 @@ class CursorThemeBuilder:
 
     def save_library_manifest(self, theme: str, files: dict[str, str], folder: Path) -> None:
         folder.mkdir(parents=True, exist_ok=True)
-        manifest = {"name": theme, "files": files, "size": DEFAULT_CURSOR_SIZE, "saved_at": datetime.now().isoformat()}
+        manifest = {"name": theme, "files": files, "saved_at": datetime.now().isoformat()}
         (folder / "scheme.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def apply_saved_scheme(self, theme: str) -> None:
@@ -988,7 +958,7 @@ class CursorThemeBuilder:
             raise RuntimeError(f"方案库中没有找到：{theme}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         files = manifest.get("files", {})
-        apply_cursor_size_and_scheme(theme, {reg_name: str(scheme_dir / name) for reg_name, name in files.items()}, self.active_preview_pixels() if hasattr(self, "active_preview_pixels") else DEFAULT_CURSOR_SIZE)
+        apply_refreshed_cursor_scheme(theme, {reg_name: str(scheme_dir / name) for reg_name, name in files.items()})
 
     def build_installer(self) -> None:
         error = self.validate()
@@ -1001,7 +971,7 @@ class CursorThemeBuilder:
             package_dir.mkdir(parents=True, exist_ok=True)
             files = self.prepare_assets(package_dir)
             installer_py = package_dir / "install_cursor_theme.py"
-            installer_py.write_text(installer_source(theme, files, self.active_preview_pixels() if hasattr(self, "active_preview_pixels") else DEFAULT_CURSOR_SIZE), encoding="utf-8")
+            installer_py.write_text(installer_source(theme, files), encoding="utf-8")
             exe_name = f"{theme}_鼠标样式安装器"
             installer_exe = self.build_pyinstaller_exe(installer_py, package_dir / "assets", exe_name)
             winrar = find_winrar()
@@ -1263,8 +1233,7 @@ def apply_library_scheme(theme: str) -> None:
         raise RuntimeError(f"方案库中没有找到：{theme}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     files = manifest.get("files", {})
-    size = int(manifest.get("size", DEFAULT_CURSOR_SIZE) or DEFAULT_CURSOR_SIZE)
-    apply_cursor_size_and_scheme(theme, {reg_name: str(scheme_dir / name) for reg_name, name in files.items()}, size)
+    apply_refreshed_cursor_scheme(theme, {reg_name: str(scheme_dir / name) for reg_name, name in files.items()})
 
 
 def ani_frame_paths(path: Path) -> list[Path]:
@@ -1576,7 +1545,7 @@ def _new_apply_now(self) -> None:
             package_dir = WORK_ROOT / "current_theme"
             files = self.prepare_assets(package_dir)
             target_dir = self.install_assets_to_scheme(theme, files, package_dir / "assets")
-            apply_cursor_size_and_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()}, DEFAULT_CURSOR_SIZE)
+            apply_refreshed_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
             self.save_library_manifest(theme, files, target_dir)
             self.root.after(0, lambda: self.status.set(f"已应用：{theme}"))
         except Exception as exc:
@@ -2051,8 +2020,6 @@ def _v3_build_ui(self) -> None:
     self.resource_preview_frames = []
     self.resource_preview_labels = []
     self.resource_preview_index = 0
-    self.cursor_size_level = IntVar(value=DEFAULT_PREVIEW_SIZE_LEVEL)
-    self.live_preview_size = IntVar(value=0)
     self.autostart_enabled = IntVar(value=1 if self.is_auto_start_enabled() else 0)
     self.import_tip = StringVar(value="")
 
@@ -2173,35 +2140,6 @@ def _v3_show_scheme_page(self) -> None:
     for index, role in enumerate(CURSOR_ROLES):
         self.add_row(index, role)
     ttk.Label(right, text="实时预览", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
-    size_panel = ttk.Frame(right, style="Card.TFrame")
-    size_panel.pack(fill="x", pady=(8, 4))
-    size_header = ttk.Frame(size_panel, style="Card.TFrame")
-    size_header.pack(fill="x")
-    ttk.Label(size_header, text="鼠标大小", style="Muted.TLabel").pack(side=LEFT)
-    self.cursor_size_text = StringVar(value="")
-    ttk.Label(size_header, textvariable=self.cursor_size_text, style="Muted.TLabel").pack(side=RIGHT)
-    self.cursor_size_warning = ttk.Label(size_panel, text="推荐范围：2-7", style="Muted.TLabel")
-    self.cursor_size_warning.pack(anchor="w", pady=(4, 0))
-    self.cursor_size_scale = Scale(
-        size_panel,
-        from_=1,
-        to=15,
-        orient="horizontal",
-        showvalue=False,
-        variable=self.cursor_size_level,
-        command=lambda _value: self.cursor_size_changed(),
-        bg="#ffffff",
-        troughcolor="#93c5fd",
-        highlightthickness=0,
-    )
-    self.cursor_size_scale.pack(fill="x")
-    ttk.Checkbutton(
-        size_panel,
-        text="实时更新鼠标大小",
-        variable=self.live_preview_size,
-        command=self.cursor_size_changed,
-    ).pack(anchor="w", pady=(4, 0))
-    self.cursor_size_changed()
     self.preview_canvas = Canvas(right, width=360, height=360, bg="#fbfdff", highlightthickness=1, highlightbackground="#dbeafe", cursor="none")
     self.preview_canvas.pack(fill=BOTH, expand=True, pady=(10, 8))
     self.preview_canvas.bind("<Motion>", self.preview_motion)
@@ -2210,13 +2148,12 @@ def _v3_show_scheme_page(self) -> None:
     self.large_preview_name.pack(anchor="w")
     actions = ttk.Frame(self.content, style="Card.TFrame")
     actions.pack(fill="x", pady=(12, 0))
-    ttk.Button(actions, text="清除", image=self._ui_icon("trash"), compound=LEFT, style="Soft.TButton", command=self.clear_applied_cursor_scheme).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(actions, text="鼠标大小设置", image=self._ui_icon("settings"), compound=LEFT, style="Yellow.TButton", command=self.open_pointer_settings).pack(side=LEFT, padx=(0, 8))
     ttk.Button(actions, text="应用", image=self._ui_icon("apply"), compound=LEFT, style="Primary.TButton", command=self.apply_now).pack(side=LEFT, padx=(0, 8))
     ttk.Button(actions, text="生成安装包", style="Blue.TButton", command=self.build_installer).pack(side=LEFT, padx=(0, 8))
-    ttk.Button(actions, text="鼠标大小设置", image=self._ui_icon("settings"), compound=LEFT, style="Yellow.TButton", command=self.open_pointer_settings).pack(side=LEFT)
+    ttk.Label(actions, text="更改鼠标至对应大小后应用方案", style="Muted.TLabel").pack(side=LEFT, padx=14)
     self.autostart_check = CheckMark(self.autostart_enabled, lambda: self.apply_autostart())
     self.autostart_check.attach(actions)
-    ttk.Label(actions, text="建议调整大小后再应用。", style="Muted.TLabel").pack(side=RIGHT, padx=14)
     self.refresh_scheme_names()
 
 
@@ -2283,41 +2220,17 @@ def _v3_update_preview(self, role: CursorRole, path: Path) -> None:
     self.preview_labels[role.reg_name].configure(image=photo, text="")
 
 
-def _active_preview_pixels(self) -> int:
-    level = self.cursor_size_level.get() if getattr(self, "cursor_size_level", None) else DEFAULT_PREVIEW_SIZE_LEVEL
-    return size_level_to_pixels(level)
-
-
-def _cursor_size_changed(self, _event=None) -> None:
-    if not hasattr(self, "cursor_size_level"):
-        return
-    level = self.cursor_size_level.get()
-    pixels = size_level_to_pixels(level)
-    if hasattr(self, "cursor_size_text"):
-        self.cursor_size_text.set(f"{level} / {pixels}px")
-    warning = level < 2 or level > 7
-    if hasattr(self, "cursor_size_warning"):
-        self.cursor_size_warning.configure(foreground="#dc2626" if warning else "#5f6f82")
-    if hasattr(self, "cursor_size_scale"):
-        self.cursor_size_scale.configure(troughcolor="#ef4444" if warning else "#93c5fd")
-    current = getattr(self, "current_large_preview_path", None)
-    if current and self.live_preview_size.get():
-        self.update_large_preview(current)
-
-
 def _v3_update_large_preview(self, path: Path) -> None:
     self.current_large_preview_path = path
     if getattr(self, "animation_after", None):
         self.root.after_cancel(self.animation_after)
         self.animation_after = None
     frames = []
-    preview_pixels = self.active_preview_pixels()
-    box_size = max(140, min(300, preview_pixels + 24))
     if path.suffix.lower() == ".ani":
         for frame in ani_frame_paths(path):
-            frames.append(cursor_preview_image_sized(frame, (box_size, box_size), preview_pixels))
+            frames.append(cursor_preview_image(frame, (118, 118)))
     if not frames:
-        frames = [cursor_preview_image_sized(path, (box_size, box_size), preview_pixels)]
+        frames = [cursor_preview_image(path, (118, 118))]
     self.animation_frames = [ImageTk.PhotoImage(frame) for frame in frames]
     self.animation_index = 0
     self.preview_x = int(self.preview_canvas.winfo_width() / 2) if hasattr(self, "preview_canvas") else 180
@@ -2446,13 +2359,12 @@ def _v4_apply_now(self) -> None:
     theme = sanitize_name(self.theme_name.get())
     selected = dict(self.selected)
     backend_autostart = bool(self.autostart_enabled.get()) if hasattr(self, "autostart_enabled") else False
-    output_cursor_size = self.active_preview_pixels()
 
     def work():
         set_auto_start(backend_autostart)
         cursor_files = {reg: str(path) for reg, path in selected.items() if path.suffix.lower() in {".cur", ".ani"}}
         if len(cursor_files) == len(selected):
-            apply_cursor_size_and_scheme(theme, cursor_files, output_cursor_size)
+            apply_refreshed_cursor_scheme(theme, cursor_files)
             return theme
         package_dir = WORK_ROOT / "current_theme"
         assets_dir = package_dir / "assets"
@@ -2465,10 +2377,10 @@ def _v4_apply_now(self) -> None:
             suffix = source.suffix.lower()
             output_name = f"{role.file_stem}{suffix if suffix in {'.cur', '.ani'} else '.cur'}"
             output = assets_dir / output_name
-            convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, output_cursor_size)
+            convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, DEFAULT_CURSOR_SIZE)
             files[reg_name] = output_name
         target_dir = self.install_assets_to_scheme(theme, files, assets_dir)
-        apply_cursor_size_and_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()}, output_cursor_size)
+        apply_refreshed_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
         self.save_library_manifest(theme, files, target_dir)
         return theme
 
@@ -2480,17 +2392,6 @@ def _v4_apply_now(self) -> None:
         self.status.set(f"已应用：{name}")
 
     self._run_wait_task("正在应用", "正在应用鼠标方案，请稍等。", work, done)
-
-
-def _clear_applied_cursor_scheme(self) -> None:
-    def work():
-        clear_cursor_scheme_to_default()
-        return True
-
-    def done(_value):
-        self.status.set("已恢复 Windows 默认鼠标指针。")
-
-    self._run_wait_task("正在清除", "正在恢复 Windows 默认鼠标指针，请稍等。", work, done)
 
 
 def _v4_build_installer(self) -> None:
@@ -2514,7 +2415,7 @@ def _v4_build_installer(self) -> None:
         package_dir.mkdir(parents=True, exist_ok=True)
         files = self.prepare_assets(package_dir)
         installer_py = package_dir / "install_cursor_theme.py"
-        installer_py.write_text(installer_source(theme, files, self.active_preview_pixels()), encoding="utf-8")
+        installer_py.write_text(installer_source(theme, files), encoding="utf-8")
         exe_name = f"{theme}_鼠标样式安装器"
         icon_path = self.installer_icon(package_dir)
         return self.build_pyinstaller_exe(installer_py, package_dir / "assets", exe_name, output_dir, icon_path)
@@ -2812,7 +2713,18 @@ def _show_resource_page(self) -> None:
     self._clean_page()
     self.page_title.configure(text="资源库")
     self.page_subtitle.configure(text="打开在线资源库下载鼠标包，或把压缩包放进存储目录后点击刷新。")
-    card = ttk.Frame(self.content, style="Card.TFrame", padding=18)
+    page_canvas = Canvas(self.content, bg="#f3faff", highlightthickness=0)
+    page_canvas.pack(fill=BOTH, expand=True)
+    page_holder = ttk.Frame(page_canvas, style="Page.TFrame")
+    page_window = page_canvas.create_window((0, 0), window=page_holder, anchor="nw")
+    page_holder.bind("<Configure>", lambda _event: page_canvas.configure(scrollregion=page_canvas.bbox("all")))
+    page_canvas.bind("<Configure>", lambda event: page_canvas.itemconfigure(page_window, width=event.width))
+    def page_wheel(event):
+        page_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
+    page_canvas.bind("<MouseWheel>", page_wheel)
+    page_holder.bind("<MouseWheel>", page_wheel)
+    card = ttk.Frame(page_holder, style="Card.TFrame", padding=18)
     card.pack(fill=BOTH, expand=True)
     ttk.Label(card, text="在线资源库", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
     ttk.Label(card, text="下载后的 zip、rar、7z 或自解压 exe 放到鼠标文件存放位置，点击刷新会自动解压并添加方案。", style="Muted.TLabel", wraplength=720).pack(anchor="w", pady=(6, 16))
@@ -2829,22 +2741,24 @@ def _show_resource_page(self) -> None:
             drop.dnd_bind("<<Drop>>", self.drop_import_resource)
             card.drop_target_register(DND_FILES)
             card.dnd_bind("<<Drop>>", self.drop_import_resource)
+            page_canvas.drop_target_register(DND_FILES)
+            page_canvas.dnd_bind("<<Drop>>", self.drop_import_resource)
         except Exception:
             pass
     self.resource_status = StringVar(value=f"存放位置：{RESOURCE_LIBRARY}")
     ttk.Label(card, textvariable=self.resource_status, style="Muted.TLabel", wraplength=760).pack(anchor="w", pady=8)
     ttk.Label(card, text="已有资源", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(14, 8))
-    preview_canvas = Canvas(card, bg="#ffffff", highlightthickness=0, height=320)
-    preview_canvas.pack(fill=BOTH, expand=True)
-    preview_holder = ttk.Frame(preview_canvas, style="Card.TFrame")
-    preview_window = preview_canvas.create_window((0, 0), window=preview_holder, anchor="nw")
-    preview_holder.bind("<Configure>", lambda _event: preview_canvas.configure(scrollregion=preview_canvas.bbox("all")))
-    preview_canvas.bind("<Configure>", lambda event: preview_canvas.itemconfigure(preview_window, width=event.width))
-    preview_canvas.bind("<MouseWheel>", lambda event: preview_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
-    preview_holder.bind("<MouseWheel>", lambda event: preview_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
+    preview_holder = ttk.Frame(card, style="Card.TFrame")
+    preview_holder.pack(fill="x")
+    preview_holder.bind("<MouseWheel>", page_wheel)
     self.resource_preview_container = preview_holder
-    self.resource_preview_canvas = preview_canvas
+    self.resource_page_canvas = page_canvas
     self.render_resource_previews()
+    def bind_page_scroll(widget):
+        widget.bind("<MouseWheel>", page_wheel)
+        for child in widget.winfo_children():
+            bind_page_scroll(child)
+    bind_page_scroll(card)
 
 
 def _refresh_resource_library(self) -> None:
@@ -2902,7 +2816,7 @@ def _render_resource_previews(self) -> None:
         def h_wheel(event, canvas=strip_canvas):
             canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
             return "break"
-        def v_wheel(event, canvas=getattr(self, "resource_preview_canvas", None)):
+        def v_wheel(event, canvas=getattr(self, "resource_page_canvas", None)):
             if canvas:
                 canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
             return "break"
@@ -3111,8 +3025,6 @@ CursorThemeBuilder.show_scheme_page = _v3_show_scheme_page
 CursorThemeBuilder.add_row = _v3_add_row
 CursorThemeBuilder.load_reference_icon = _v3_load_reference_icon
 CursorThemeBuilder.update_preview = _v3_update_preview
-CursorThemeBuilder.active_preview_pixels = _active_preview_pixels
-CursorThemeBuilder.cursor_size_changed = _cursor_size_changed
 CursorThemeBuilder.update_large_preview = _v3_update_large_preview
 CursorThemeBuilder.preview_leave = _v3_preview_leave
 CursorThemeBuilder.rename_scheme = _rename_scheme
@@ -3129,7 +3041,6 @@ CursorThemeBuilder.notify_startup_changed = _notify_startup_changed
 CursorThemeBuilder.installer_icon = _installer_icon
 CursorThemeBuilder.build_installer = _v4_build_installer
 CursorThemeBuilder.build_pyinstaller_exe = _v4_build_pyinstaller_exe
-CursorThemeBuilder.clear_applied_cursor_scheme = _clear_applied_cursor_scheme
 CursorThemeBuilder.save_time_page = _v3_save_time_page
 CursorThemeBuilder.save_week_page = _v3_save_week_page
 
