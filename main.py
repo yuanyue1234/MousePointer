@@ -55,6 +55,10 @@ DEFAULT_PREVIEW_SIZE_LEVEL = 3
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RESOURCE_URL = "https://yvtgt-my.sharepoint.com/:f:/g/personal/asunny_yvtgt_onmicrosoft_com/IgD7nqCXTLudSZoRvpzU-H_7AR_SuUTktWE3NfuAgFpIMdU?e=DPXDw4"
 APP_NAME = "鼠标指针配置管理器"
+AUTO_START_VALUE = APP_NAME
+LEGACY_AUTO_START_VALUE = "MouseCursorThemeBuilder"
+PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
+ASUNNY_URL = "https://asunny.top/"
 
 
 @dataclass(frozen=True)
@@ -501,16 +505,52 @@ def extract_import_package(source: Path) -> Path:
     raise RuntimeError(f"无法解压 {source.name}。该文件可能不是可读取的压缩包，或 EXE 不是自解压格式。")
 
 
+def startup_script_path() -> Path:
+    startup = Path(os.environ.get("APPDATA", str(Path.home()))) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    return startup / f"{APP_NAME}后台.vbs"
+
+
+def write_startup_script(command: str) -> None:
+    script = startup_script_path()
+    script.parent.mkdir(parents=True, exist_ok=True)
+    cwd = str(APP_DIR).replace('"', '""')
+    escaped = command.replace('"', '""')
+    script.write_text(
+        f'Set shell = CreateObject("WScript.Shell")\n'
+        f'shell.CurrentDirectory = "{cwd}"\n'
+        f'shell.Run "{escaped}", 0, False\n',
+        encoding="utf-16",
+    )
+
+
+def remove_startup_script() -> None:
+    for name in (f"{APP_NAME}后台.vbs", "MouseCursorThemeBuilder.vbs"):
+        path = startup_script_path().with_name(name)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def set_auto_start(enabled: bool) -> None:
     command = subprocess.list2cmdline(background_command())
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
         if enabled:
-            winreg.SetValueEx(key, "MouseCursorThemeBuilder", 0, winreg.REG_SZ, command)
-        else:
+            winreg.SetValueEx(key, AUTO_START_VALUE, 0, winreg.REG_SZ, command)
             try:
-                winreg.DeleteValue(key, "MouseCursorThemeBuilder")
+                winreg.DeleteValue(key, LEGACY_AUTO_START_VALUE)
             except FileNotFoundError:
                 pass
+        else:
+            for value_name in (AUTO_START_VALUE, LEGACY_AUTO_START_VALUE):
+                try:
+                    winreg.DeleteValue(key, value_name)
+                except FileNotFoundError:
+                    pass
+    if enabled:
+        write_startup_script(command)
+    else:
+        remove_startup_script()
 
 
 def background_command() -> list[str]:
@@ -1565,10 +1605,17 @@ def _new_apply_now(self) -> None:
 
 
 def _is_auto_start_enabled(self) -> bool:
+    if startup_script_path().exists():
+        return True
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ) as key:
-            winreg.QueryValueEx(key, "MouseCursorThemeBuilder")
-            return True
+            for value_name in (AUTO_START_VALUE, LEGACY_AUTO_START_VALUE):
+                try:
+                    winreg.QueryValueEx(key, value_name)
+                    return True
+                except FileNotFoundError:
+                    continue
+            return False
     except FileNotFoundError:
         return False
     except Exception:
@@ -2032,6 +2079,11 @@ def _v3_build_ui(self) -> None:
     self.resource_grid_mode = IntVar(value=0)
     self.cursor_size_level = DoubleVar(value=DEFAULT_PREVIEW_SIZE_LEVEL)
     self.autostart_enabled = IntVar(value=1 if self.is_auto_start_enabled() else 0)
+    if IS_FROZEN and self.autostart_enabled.get():
+        try:
+            set_auto_start(True)
+        except Exception as exc:
+            log_error("刷新自启动配置失败", exc)
     self.import_tip = StringVar(value="")
 
     icon_path = resource_path("icon终.png")
@@ -3082,7 +3134,11 @@ def _show_settings_page(self) -> None:
     output_row.pack(fill="x")
     ttk.Button(output_row, text="选择文件夹", style="Yellow.TButton", command=self.pick_output_folder).pack(side=LEFT)
     ttk.Button(output_row, text="打开文件夹", style="Blue.TButton", command=lambda: os.startfile(Path(self.output_path_var.get()))).pack(side=LEFT, padx=8)
-    ttk.Label(card, text="个人描述：By Asunny", style="Muted.TLabel").pack(anchor="w", pady=(18, 0))
+    ttk.Label(card, text="跳转链接", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(22, 0))
+    link_row = ttk.Frame(card, style="Card.TFrame")
+    link_row.pack(fill="x", pady=(8, 0))
+    ttk.Button(link_row, text="像素指针指南文章", style="Blue.TButton", command=lambda: webbrowser.open(PIXEL_GUIDE_URL)).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(link_row, text="工具制作 BY ASUNNY", style="Yellow.TButton", command=lambda: webbrowser.open(ASUNNY_URL)).pack(side=LEFT)
 
 
 def _pick_storage_folder(self) -> None:
