@@ -2196,9 +2196,10 @@ def _v3_show_scheme_page(self) -> None:
     self.large_preview_name.pack(anchor="w")
     actions = ttk.Frame(self.content, style="Card.TFrame")
     actions.pack(fill="x", pady=(12, 0))
-    ttk.Button(actions, text="鼠标大小设置", image=self._ui_icon("settings"), compound=LEFT, style="Yellow.TButton", command=self.open_pointer_settings).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(actions, text="清除", image=self._ui_icon("trash"), compound=LEFT, style="Soft.TButton", command=self.clear_all).pack(side=LEFT, padx=(0, 8))
     ttk.Button(actions, text="应用", image=self._ui_icon("apply"), compound=LEFT, style="Primary.TButton", command=self.apply_now).pack(side=LEFT, padx=(0, 8))
-    ttk.Button(actions, text="生成安装包", style="Blue.TButton", command=self.build_installer).pack(side=LEFT)
+    ttk.Button(actions, text="生成安装包", style="Blue.TButton", command=self.build_installer).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(actions, text="鼠标大小设置", image=self._ui_icon("settings"), compound=LEFT, style="Yellow.TButton", command=self.open_pointer_settings).pack(side=LEFT)
     self.autostart_check = CheckMark(self.autostart_enabled, lambda: self.apply_autostart())
     self.autostart_check.attach(actions)
     ttk.Label(actions, text="建议调整大小后再应用。", style="Muted.TLabel").pack(side=RIGHT, padx=14)
@@ -2269,7 +2270,7 @@ def _v3_update_preview(self, role: CursorRole, path: Path) -> None:
 
 
 def _active_preview_pixels(self) -> int:
-    level = self.cursor_size_level.get() if getattr(self, "live_preview_size", None) and self.live_preview_size.get() else DEFAULT_PREVIEW_SIZE_LEVEL
+    level = self.cursor_size_level.get() if getattr(self, "cursor_size_level", None) else DEFAULT_PREVIEW_SIZE_LEVEL
     return size_level_to_pixels(level)
 
 
