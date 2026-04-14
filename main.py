@@ -20,7 +20,7 @@ import zlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from tkinter import BOTH, LEFT, RIGHT, VERTICAL, Canvas, IntVar, StringVar, Tk, Toplevel, filedialog, messagebox, ttk
+from tkinter import BOTH, LEFT, RIGHT, VERTICAL, Canvas, IntVar, Scale, StringVar, Tk, Toplevel, filedialog, messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
@@ -51,6 +51,7 @@ SCHEDULE_FILE = APP_DATA / "schedule.json"
 WEEK_SCHEDULE_FILE = APP_DATA / "week_schedule.json"
 ERROR_LOG = APP_DIR / "错误记录.md"
 DEFAULT_CURSOR_SIZE = 64
+DEFAULT_PREVIEW_SIZE_LEVEL = 7
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RESOURCE_URL = "https://yvtgt-my.sharepoint.com/:f:/g/personal/asunny_yvtgt_onmicrosoft_com/IgAikChiblmJQqSfaLGiF-ZEAXMNYeBJLh_IlV2F8M-GVhs?e=OKbO42"
 
@@ -322,18 +323,26 @@ def parse_drop_paths(data: str, tk_root: Tk) -> list[Path]:
 
 
 def cursor_preview_image(path: Path, box: tuple[int, int] = (180, 140)) -> Image.Image:
+    return cursor_preview_image_sized(path, box)
+
+
+def cursor_preview_image_sized(path: Path, box: tuple[int, int] = (180, 140), cursor_size: int | None = None) -> Image.Image:
     margin = 8
     if path.suffix.lower() in {".cur", ".ani"}:
-        size = max(24, min(box) - margin * 2)
+        size = cursor_size or max(24, min(box) - margin * 2)
         rendered = render_cursor_with_windows(path, size)
         if rendered:
             bg = Image.new("RGBA", box, (248, 250, 252, 255))
             bg.alpha_composite(rendered, ((box[0] - rendered.width) // 2, (box[1] - rendered.height) // 2))
             return bg
-    image = centered_rgba(image_from_path(path), max(16, min(box) - margin * 2))
+    image = centered_rgba(image_from_path(path), cursor_size or max(16, min(box) - margin * 2))
     bg = Image.new("RGBA", box, (248, 250, 252, 255))
     bg.alpha_composite(image, ((box[0] - image.width) // 2, (box[1] - image.height) // 2))
     return bg
+
+
+def size_level_to_pixels(level: int) -> int:
+    return max(1, min(15, int(level))) * 16 + 16
 
 
 def render_cursor_with_windows(path: Path, size: int) -> Image.Image | None:
@@ -875,7 +884,7 @@ class CursorThemeBuilder:
             shutil.rmtree(assets_dir)
         assets_dir.mkdir(parents=True, exist_ok=True)
         files: dict[str, str] = {}
-        size = DEFAULT_CURSOR_SIZE
+        size = self.active_preview_pixels() if hasattr(self, "active_preview_pixels") else DEFAULT_CURSOR_SIZE
         for role in self.selected_roles():
             source = self.selected[role.reg_name]
             suffix = source.suffix.lower()
@@ -2005,6 +2014,8 @@ def _v3_build_ui(self) -> None:
     self.resource_preview_frames = []
     self.resource_preview_labels = []
     self.resource_preview_index = 0
+    self.cursor_size_level = IntVar(value=DEFAULT_PREVIEW_SIZE_LEVEL)
+    self.live_preview_size = IntVar(value=0)
     self.autostart_enabled = IntVar(value=1 if self.is_auto_start_enabled() else 0)
     self.import_tip = StringVar(value="")
 
@@ -2125,6 +2136,35 @@ def _v3_show_scheme_page(self) -> None:
     for index, role in enumerate(CURSOR_ROLES):
         self.add_row(index, role)
     ttk.Label(right, text="实时预览", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
+    size_panel = ttk.Frame(right, style="Card.TFrame")
+    size_panel.pack(fill="x", pady=(8, 4))
+    size_header = ttk.Frame(size_panel, style="Card.TFrame")
+    size_header.pack(fill="x")
+    ttk.Label(size_header, text="鼠标大小", style="Muted.TLabel").pack(side=LEFT)
+    self.cursor_size_text = StringVar(value="")
+    ttk.Label(size_header, textvariable=self.cursor_size_text, style="Muted.TLabel").pack(side=RIGHT)
+    self.cursor_size_warning = ttk.Label(size_panel, text="推荐范围：2-7", style="Muted.TLabel")
+    self.cursor_size_warning.pack(anchor="w", pady=(4, 0))
+    self.cursor_size_scale = Scale(
+        size_panel,
+        from_=1,
+        to=15,
+        orient="horizontal",
+        showvalue=False,
+        variable=self.cursor_size_level,
+        command=lambda _value: self.cursor_size_changed(),
+        bg="#ffffff",
+        troughcolor="#93c5fd",
+        highlightthickness=0,
+    )
+    self.cursor_size_scale.pack(fill="x")
+    ttk.Checkbutton(
+        size_panel,
+        text="实时更新鼠标大小",
+        variable=self.live_preview_size,
+        command=self.cursor_size_changed,
+    ).pack(anchor="w", pady=(4, 0))
+    self.cursor_size_changed()
     self.preview_canvas = Canvas(right, width=360, height=360, bg="#fbfdff", highlightthickness=1, highlightbackground="#dbeafe", cursor="none")
     self.preview_canvas.pack(fill=BOTH, expand=True, pady=(10, 8))
     self.preview_canvas.bind("<Motion>", self.preview_motion)
@@ -2205,16 +2245,41 @@ def _v3_update_preview(self, role: CursorRole, path: Path) -> None:
     self.preview_labels[role.reg_name].configure(image=photo, text="")
 
 
+def _active_preview_pixels(self) -> int:
+    level = self.cursor_size_level.get() if getattr(self, "live_preview_size", None) and self.live_preview_size.get() else DEFAULT_PREVIEW_SIZE_LEVEL
+    return size_level_to_pixels(level)
+
+
+def _cursor_size_changed(self, _event=None) -> None:
+    if not hasattr(self, "cursor_size_level"):
+        return
+    level = self.cursor_size_level.get()
+    pixels = size_level_to_pixels(level)
+    if hasattr(self, "cursor_size_text"):
+        self.cursor_size_text.set(f"{level} / {pixels}px")
+    warning = level < 2 or level > 7
+    if hasattr(self, "cursor_size_warning"):
+        self.cursor_size_warning.configure(foreground="#dc2626" if warning else "#5f6f82")
+    if hasattr(self, "cursor_size_scale"):
+        self.cursor_size_scale.configure(troughcolor="#ef4444" if warning else "#93c5fd")
+    current = getattr(self, "current_large_preview_path", None)
+    if current and self.live_preview_size.get():
+        self.update_large_preview(current)
+
+
 def _v3_update_large_preview(self, path: Path) -> None:
+    self.current_large_preview_path = path
     if getattr(self, "animation_after", None):
         self.root.after_cancel(self.animation_after)
         self.animation_after = None
     frames = []
+    preview_pixels = self.active_preview_pixels()
+    box_size = max(140, min(300, preview_pixels + 24))
     if path.suffix.lower() == ".ani":
         for frame in ani_frame_paths(path):
-            frames.append(cursor_preview_image(frame, (118, 118)))
+            frames.append(cursor_preview_image_sized(frame, (box_size, box_size), preview_pixels))
     if not frames:
-        frames = [cursor_preview_image(path, (118, 118))]
+        frames = [cursor_preview_image_sized(path, (box_size, box_size), preview_pixels)]
     self.animation_frames = [ImageTk.PhotoImage(frame) for frame in frames]
     self.animation_index = 0
     self.preview_x = int(self.preview_canvas.winfo_width() / 2) if hasattr(self, "preview_canvas") else 180
@@ -2343,6 +2408,7 @@ def _v4_apply_now(self) -> None:
     theme = sanitize_name(self.theme_name.get())
     selected = dict(self.selected)
     backend_autostart = bool(self.autostart_enabled.get()) if hasattr(self, "autostart_enabled") else False
+    output_cursor_size = self.active_preview_pixels()
 
     def work():
         set_auto_start(backend_autostart)
@@ -2361,7 +2427,7 @@ def _v4_apply_now(self) -> None:
             suffix = source.suffix.lower()
             output_name = f"{role.file_stem}{suffix if suffix in {'.cur', '.ani'} else '.cur'}"
             output = assets_dir / output_name
-            convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, DEFAULT_CURSOR_SIZE)
+            convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, output_cursor_size)
             files[reg_name] = output_name
         target_dir = self.install_assets_to_scheme(theme, files, assets_dir)
         apply_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
@@ -2713,7 +2779,9 @@ def _show_resource_page(self) -> None:
     preview_holder.bind("<Configure>", lambda _event: preview_canvas.configure(scrollregion=preview_canvas.bbox("all")))
     preview_canvas.bind("<Configure>", lambda event: preview_canvas.itemconfigure(preview_window, width=event.width))
     preview_canvas.bind("<MouseWheel>", lambda event: preview_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
+    preview_holder.bind("<MouseWheel>", lambda event: preview_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
     self.resource_preview_container = preview_holder
+    self.resource_preview_canvas = preview_canvas
     self.render_resource_previews()
 
 
@@ -2742,8 +2810,7 @@ def _resource_scheme_names(self) -> list[str]:
     if not SCHEME_LIBRARY.exists():
         return []
     names = [p.name for p in SCHEME_LIBRARY.iterdir() if p.is_dir()]
-    custom = [name for name in names if name not in DEFAULT_SCHEME_NAMES]
-    return sorted(custom or names)
+    return sorted(names)
 
 
 def _render_resource_previews(self) -> None:
@@ -2764,8 +2831,26 @@ def _render_resource_previews(self) -> None:
         card = ttk.Frame(container, style="Even.TFrame", padding=12)
         card.pack(fill="x", pady=(0, 10))
         ttk.Label(card, text=name, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
-        strip = ttk.Frame(card, style="Even.TFrame")
-        strip.pack(fill="x")
+        strip_canvas = Canvas(card, bg="#f7fbff", highlightthickness=0, height=96)
+        strip_canvas.pack(fill="x")
+        strip = ttk.Frame(strip_canvas, style="Even.TFrame")
+        strip_window = strip_canvas.create_window((0, 0), window=strip, anchor="nw")
+        strip.bind("<Configure>", lambda _event, canvas=strip_canvas: canvas.configure(scrollregion=canvas.bbox("all")))
+        strip_canvas.bind("<Configure>", lambda event, canvas=strip_canvas, window=strip_window: canvas.itemconfigure(window, height=event.height))
+        def h_wheel(event, canvas=strip_canvas):
+            canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+        def v_wheel(event, canvas=getattr(self, "resource_preview_canvas", None)):
+            if canvas:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+        strip_canvas.bind("<Shift-MouseWheel>", h_wheel)
+        strip_canvas.bind("<MouseWheel>", v_wheel)
+        strip.bind("<Shift-MouseWheel>", h_wheel)
+        strip.bind("<MouseWheel>", v_wheel)
+        drag = {"x": 0}
+        strip_canvas.bind("<ButtonPress-1>", lambda event, canvas=strip_canvas, state=drag: (state.update({"x": event.x}), canvas.scan_mark(event.x, event.y)))
+        strip_canvas.bind("<B1-Motion>", lambda event, canvas=strip_canvas: canvas.scan_dragto(event.x, event.y, gain=1))
         for reg_name in ROLE_BY_REG:
             file_name = files.get(reg_name)
             if not file_name:
@@ -2773,13 +2858,18 @@ def _render_resource_previews(self) -> None:
             path = scheme_dir / file_name
             if not path.exists():
                 continue
-            label = ttk.Label(strip, width=8, anchor="center")
-            label.pack(side=LEFT, padx=4, pady=2)
+            cell = ttk.Frame(strip, style="Card.TFrame", padding=4)
+            cell.pack(side=LEFT, padx=5, pady=6)
+            label = ttk.Label(cell, width=8, anchor="center")
+            label.pack()
             frames = self.resource_icon_frames(path)
             if frames:
                 label.configure(image=frames[0])
                 self.resource_preview_labels.append(label)
                 self.resource_preview_frames.append(frames)
+            for widget in (cell, label):
+                widget.bind("<Shift-MouseWheel>", h_wheel)
+                widget.bind("<MouseWheel>", v_wheel)
     self.animate_resource_previews()
 
 
@@ -2959,6 +3049,8 @@ CursorThemeBuilder.show_scheme_page = _v3_show_scheme_page
 CursorThemeBuilder.add_row = _v3_add_row
 CursorThemeBuilder.load_reference_icon = _v3_load_reference_icon
 CursorThemeBuilder.update_preview = _v3_update_preview
+CursorThemeBuilder.active_preview_pixels = _active_preview_pixels
+CursorThemeBuilder.cursor_size_changed = _cursor_size_changed
 CursorThemeBuilder.update_large_preview = _v3_update_large_preview
 CursorThemeBuilder.preview_leave = _v3_preview_leave
 CursorThemeBuilder.rename_scheme = _rename_scheme
