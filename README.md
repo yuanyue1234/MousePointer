@@ -42,3 +42,7 @@ Windows 鼠标指针方案图形化工具。支持导入鼠标资源包、编辑
 dist\鼠标指针配置管理器.exe
 dist\安装鼠标指针配置管理器.exe
 ```
+
+## GitHub Release
+
+推送 `v*` 标签时，GitHub Actions 会把 `release-assets/*.exe` 上传到 Releases。

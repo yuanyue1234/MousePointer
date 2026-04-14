@@ -1,0 +1,28 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: MousePointer ${{ github.ref_name }}
+          body: |
+            鼠标指针配置管理器发布包。
+
+            - 鼠标指针配置管理器.exe：绿色单文件版
+            - 安装鼠标指针配置管理器.exe：安装版入口
+          files: |
+            release-assets/*.exe
