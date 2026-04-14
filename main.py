@@ -53,7 +53,8 @@ ERROR_LOG = APP_DIR / "错误记录.md"
 DEFAULT_CURSOR_SIZE = 64
 DEFAULT_PREVIEW_SIZE_LEVEL = 3
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RESOURCE_URL = "https://yvtgt-my.sharepoint.com/:f:/g/personal/asunny_yvtgt_onmicrosoft_com/IgAikChiblmJQqSfaLGiF-ZEAXMNYeBJLh_IlV2F8M-GVhs?e=OKbO42"
+RESOURCE_URL = "https://yvtgt-my.sharepoint.com/:f:/g/personal/asunny_yvtgt_onmicrosoft_com/IgD7nqCXTLudSZoRvpzU-H_7AR_SuUTktWE3NfuAgFpIMdU?e=DPXDw4"
+APP_NAME = "鼠标指针配置管理器"
 
 
 @dataclass(frozen=True)
@@ -610,7 +611,7 @@ def extract_pyinstaller_assets(source: Path, target: Path) -> bool:
 class CursorThemeBuilder:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        self.root.title("鼠标指针配置生成器")
+        self.root.title(APP_NAME)
         self.root.geometry("1180x780")
         self.root.minsize(980, 680)
 
@@ -1292,7 +1293,7 @@ def _new_configure_style(self) -> None:
 
 
 def _new_build_ui(self) -> None:
-    self.root.title("鼠标指针配置生成器")
+    self.root.title(APP_NAME)
     self.root.geometry("1180x760")
     self.root.minsize(1040, 680)
     self.animation_after = None
@@ -1301,7 +1302,9 @@ def _new_build_ui(self) -> None:
     self.row_frames = {}
     self.autostart_enabled = IntVar(value=1 if self.is_auto_start_enabled() else 0)
 
-    icon_path = resource_path("icon.png")
+    icon_path = resource_path("icon终.png")
+    if not icon_path.exists():
+        icon_path = resource_path("icon.png")
     if icon_path.exists():
         try:
             icon = ImageTk.PhotoImage(Image.open(icon_path).convert("RGBA").resize((32, 32)))
@@ -1652,7 +1655,7 @@ def _v2_configure_style(self) -> None:
 
 
 def _v2_build_ui(self) -> None:
-    self.root.title("鼠标指针配置生成器")
+    self.root.title(APP_NAME)
     self.root.geometry("1200x780")
     self.root.minsize(1060, 700)
     self.animation_after = None
@@ -1661,7 +1664,9 @@ def _v2_build_ui(self) -> None:
     self.row_frames = {}
     self.autostart_enabled = IntVar(value=1 if self.is_auto_start_enabled() else 0)
 
-    icon_path = resource_path("icon.png")
+    icon_path = resource_path("icon终.png")
+    if not icon_path.exists():
+        icon_path = resource_path("icon.png")
     if icon_path.exists():
         icon = ImageTk.PhotoImage(Image.open(icon_path).convert("RGBA").resize((32, 32)))
         self.preview_images["_window_icon"] = icon
@@ -2011,7 +2016,7 @@ def _v3_available_values() -> list[str]:
 
 
 def _v3_build_ui(self) -> None:
-    self.root.title("鼠标指针配置生成器")
+    self.root.title(APP_NAME)
     self.root.geometry("1280x820")
     self.root.minsize(1180, 760)
     self.animation_after = None
@@ -2024,11 +2029,14 @@ def _v3_build_ui(self) -> None:
     self.resource_preview_frames = []
     self.resource_preview_labels = []
     self.resource_preview_index = 0
+    self.resource_grid_mode = IntVar(value=0)
     self.cursor_size_level = DoubleVar(value=DEFAULT_PREVIEW_SIZE_LEVEL)
     self.autostart_enabled = IntVar(value=1 if self.is_auto_start_enabled() else 0)
     self.import_tip = StringVar(value="")
 
-    icon_path = resource_path("icon.png")
+    icon_path = resource_path("icon终.png")
+    if not icon_path.exists():
+        icon_path = resource_path("icon.png")
     if icon_path.exists():
         icon = ImageTk.PhotoImage(Image.open(icon_path).convert("RGBA").resize((32, 32)))
         self.preview_images["_window_icon"] = icon
@@ -2520,7 +2528,8 @@ def _v4_build_pyinstaller_exe(self, installer_py: Path, assets_dir: Path, exe_na
     if icon_path and icon_path.exists():
         command.extend(["--icon", str(icon_path)])
     command.append(str(installer_py))
-    result = subprocess.run(command, cwd=APP_DIR, text=True, capture_output=True, check=False)
+    creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    result = subprocess.run(command, cwd=APP_DIR, text=True, capture_output=True, check=False, creationflags=creationflags)
     if result.returncode != 0:
         log_path = WORK_ROOT / "pyinstaller_error.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2630,7 +2639,9 @@ def _on_close(self) -> None:
 def _ensure_tray_icon(self) -> None:
     if not pystray or getattr(self, "tray_running", False):
         return
-    icon_path = resource_path("icon.png")
+    icon_path = resource_path("icon终.png")
+    if not icon_path.exists():
+        icon_path = resource_path("icon.png")
     if icon_path.exists():
         image = Image.open(icon_path).convert("RGBA")
     else:
@@ -2645,7 +2656,7 @@ def _ensure_tray_icon(self) -> None:
     self.tray_icon = pystray.Icon(
         "MouseCursorThemeBuilder",
         image,
-        "鼠标配置生成器",
+        APP_NAME,
         menu=pystray.Menu(pystray.MenuItem("打开", open_app, default=True), pystray.MenuItem("退出", exit_app)),
     )
     self.tray_icon.on_activate = open_app
@@ -2683,11 +2694,11 @@ def _notify_startup_changed(self) -> None:
     icon = getattr(self, "tray_icon", None)
     if icon:
         try:
-            icon.notify("启动选项已更改", "鼠标配置生成器已允许自启动并保留后台。")
+            icon.notify("启动选项已更改", f"{APP_NAME}已允许自启动并保留后台。")
             return
         except Exception as exc:
             log_error("显示启动项通知失败", exc)
-    messagebox.showinfo("启动选项已更改", "鼠标配置生成器已允许自启动并保留后台。")
+    messagebox.showinfo("启动选项已更改", f"{APP_NAME}已允许自启动并保留后台。")
 
 
 def _default_archives() -> list[Path]:
@@ -2800,8 +2811,11 @@ def _show_resource_page(self) -> None:
             pass
     self.resource_status = StringVar(value=f"存放位置：{RESOURCE_LIBRARY}")
     ttk.Label(card, textvariable=self.resource_status, style="Muted.TLabel", wraplength=760).pack(anchor="w", pady=8)
-    ttk.Label(card, text="已有资源", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(14, 8))
-    ttk.Label(card, text="提示：每个方案图标条支持 Shift + 滚轮横向滚动，也可以按住拖动。", style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
+    resource_head = ttk.Frame(card, style="Card.TFrame")
+    resource_head.pack(fill="x", pady=(14, 8))
+    ttk.Label(resource_head, text="已有资源", font=("Microsoft YaHei UI", 12, "bold")).pack(side=LEFT)
+    ttk.Button(resource_head, text="切换宫格显示", style="Soft.TButton", command=self.toggle_resource_layout).pack(side=RIGHT)
+    ttk.Label(card, text="提示：每个方案图标条支持 Shift + 滚轮横向滚动。", style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
     preview_holder = ttk.Frame(card, style="Card.TFrame")
     preview_holder.pack(fill="x")
     preview_holder.bind("<MouseWheel>", page_wheel)
@@ -2843,6 +2857,15 @@ def _resource_scheme_names(self) -> list[str]:
     return sorted(names)
 
 
+def _toggle_resource_layout(self) -> None:
+    current = getattr(self, "resource_grid_mode", None)
+    if current is None:
+        self.resource_grid_mode = IntVar(value=1)
+    else:
+        current.set(0 if current.get() else 1)
+    self.render_resource_previews()
+
+
 def _render_resource_previews(self) -> None:
     container = getattr(self, "resource_preview_container", None)
     if not container:
@@ -2855,6 +2878,41 @@ def _render_resource_previews(self) -> None:
     names = self.resource_scheme_names()
     if not names:
         ttk.Label(container, text="暂无资源。把资源包拖到上方区域，或点击刷新。", style="Muted.TLabel").pack(anchor="w", pady=12)
+        return
+    page_canvas = getattr(self, "resource_page_canvas", None)
+    def page_wheel(event, canvas=page_canvas):
+        if canvas:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
+    if getattr(self, "resource_grid_mode", None) and self.resource_grid_mode.get():
+        for column in range(3):
+            container.columnconfigure(column, weight=1, uniform="resource_cards")
+        for index, name in enumerate(names):
+            scheme_dir, files = scheme_manifest(name)
+            card = ttk.Frame(container, style="Even.TFrame", padding=12)
+            card.grid(row=index // 3, column=index % 3, sticky="nsew", padx=6, pady=6)
+            card.bind("<MouseWheel>", page_wheel)
+            ttk.Label(card, text=name, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+            icons = ttk.Frame(card, style="Even.TFrame")
+            icons.pack(fill="x")
+            count = 0
+            for reg_name in ROLE_BY_REG:
+                file_name = files.get(reg_name)
+                if not file_name:
+                    continue
+                path = scheme_dir / file_name
+                if not path.exists():
+                    continue
+                label = ttk.Label(icons, width=8, anchor="center")
+                label.grid(row=count // 4, column=count % 4, padx=4, pady=4)
+                frames = self.resource_icon_frames(path)
+                if frames:
+                    label.configure(image=frames[0])
+                    self.resource_preview_labels.append(label)
+                    self.resource_preview_frames.append(frames)
+                label.bind("<MouseWheel>", page_wheel)
+                count += 1
+        self.animate_resource_previews()
         return
     for name in names:
         scheme_dir, files = scheme_manifest(name)
@@ -3061,6 +3119,7 @@ CursorThemeBuilder.ensure_default_schemes = _v4_ensure_default_schemes
 CursorThemeBuilder.show_resource_page = _show_resource_page
 CursorThemeBuilder.refresh_resource_library = _refresh_resource_library
 CursorThemeBuilder.resource_scheme_names = _resource_scheme_names
+CursorThemeBuilder.toggle_resource_layout = _toggle_resource_layout
 CursorThemeBuilder.render_resource_previews = _render_resource_previews
 CursorThemeBuilder.resource_icon_frames = _resource_icon_frames
 CursorThemeBuilder.animate_resource_previews = _animate_resource_previews
