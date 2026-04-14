@@ -30,6 +30,11 @@ except Exception:
     DND_FILES = None
     TkinterDnD = None
 
+try:
+    import pystray
+except Exception:
+    pystray = None
+
 
 IS_FROZEN = bool(getattr(sys, "frozen", False))
 APP_DIR = Path(sys.executable).resolve().parent if IS_FROZEN else Path(__file__).resolve().parent
@@ -1589,6 +1594,12 @@ def _clean_page(self) -> None:
         except Exception:
             pass
         self.animation_after = None
+    if getattr(self, "resource_preview_after", None):
+        try:
+            self.root.after_cancel(self.resource_preview_after)
+        except Exception:
+            pass
+        self.resource_preview_after = None
     for child in self.content.winfo_children():
         child.destroy()
 
@@ -1988,6 +1999,12 @@ def _v3_build_ui(self) -> None:
     self.animation_frames = []
     self.animation_index = 0
     self.row_frames = {}
+    self.tray_icon = None
+    self.tray_running = False
+    self.resource_preview_after = None
+    self.resource_preview_frames = []
+    self.resource_preview_labels = []
+    self.resource_preview_index = 0
     self.autostart_enabled = IntVar(value=1 if self.is_auto_start_enabled() else 0)
     self.import_tip = StringVar(value="")
 
@@ -2033,6 +2050,13 @@ def _v3_build_ui(self) -> None:
 def _v3_configure_style(self) -> None:
     _v2_configure_style(self)
     style = ttk.Style()
+    self.root.configure(bg="#eaf6ff")
+    style.configure("Shell.TFrame", background="#eaf6ff")
+    style.configure("Side.TFrame", background="#f4fbff")
+    style.configure("Page.TFrame", background="#f3faff")
+    style.configure("Card.TFrame", background="#ffffff")
+    style.configure("Muted.TLabel", background="#ffffff", foreground="#5f6f82", font=("Microsoft YaHei UI", 9))
+    style.configure("Title.TLabel", background="#f3faff", foreground="#102033", font=("Microsoft YaHei UI", 20, "bold"))
     style.configure("Yellow.TButton", padding=(15, 9), background="#fff3c4", foreground="#314056", borderwidth=0)
     style.map("Yellow.TButton", background=[("active", "#ffe7a3")])
     style.configure("Blue.TButton", padding=(15, 9), background="#dceeff", foreground="#1f4f82", borderwidth=0)
@@ -2347,6 +2371,8 @@ def _v4_apply_now(self) -> None:
     def done(name):
         if backend_autostart:
             self.start_scheduler()
+            self.ensure_tray_icon()
+            self.notify_startup_changed()
         self.status.set(f"已应用：{name}")
 
     self._run_wait_task("正在应用", "正在应用鼠标方案，请稍等。", work, done)
@@ -2464,6 +2490,9 @@ def _v3_save_time_page(self, vars_by_mode) -> None:
         return selected
 
     def done(selected):
+        if self.autostart_enabled.get():
+            self.ensure_tray_icon()
+            self.notify_startup_changed()
         if selected:
             self.status.set(f"时间切换已应用，并已切换到：{selected}")
         else:
@@ -2487,6 +2516,9 @@ def _v3_save_week_page(self, vars_by_day) -> None:
         return scheme
 
     def done(scheme):
+        if self.autostart_enabled.get():
+            self.ensure_tray_icon()
+            self.notify_startup_changed()
         if scheme:
             self.status.set(f"星期切换已应用，并已切换到：{scheme}")
         else:
@@ -2501,8 +2533,11 @@ def _v4_apply_autostart(self) -> None:
         set_auto_start(enabled)
         if enabled:
             self.start_scheduler()
+            self.ensure_tray_icon()
+            self.notify_startup_changed()
         else:
             self.scheduler_running = False
+            self.stop_tray_icon()
         self.status.set("自启动和保留后台已开启。" if enabled else "自启动和保留后台已关闭。")
     except Exception as exc:
         log_error("设置自启动和保留后台失败", exc)
@@ -2513,12 +2548,64 @@ def _on_close(self) -> None:
     if hasattr(self, "autostart_enabled") and self.autostart_enabled.get():
         try:
             set_auto_start(True)
-            start_background_process()
-            self.root.destroy()
+            self.start_scheduler()
+            self.ensure_tray_icon()
+            self.root.withdraw()
+            self.status.set("已保留后台运行。")
             return
         except Exception as exc:
             log_error("保留后台失败", exc)
     self.root.destroy()
+
+
+def _ensure_tray_icon(self) -> None:
+    if not pystray or getattr(self, "tray_running", False):
+        return
+    icon_path = resource_path("icon.png")
+    if icon_path.exists():
+        image = Image.open(icon_path).convert("RGBA")
+    else:
+        image = Image.new("RGBA", (64, 64), "#5b9dff")
+
+    def exit_app(_icon=None, _item=None):
+        self.root.after(0, self.exit_from_tray)
+
+    self.tray_icon = pystray.Icon(
+        "MouseCursorThemeBuilder",
+        image,
+        "鼠标配置生成器",
+        menu=pystray.Menu(pystray.MenuItem("退出", exit_app)),
+    )
+    self.tray_icon.run_detached()
+    self.tray_running = True
+
+
+def _stop_tray_icon(self) -> None:
+    icon = getattr(self, "tray_icon", None)
+    if icon:
+        try:
+            icon.stop()
+        except Exception:
+            pass
+    self.tray_icon = None
+    self.tray_running = False
+
+
+def _exit_from_tray(self) -> None:
+    self.scheduler_running = False
+    self.stop_tray_icon()
+    self.root.destroy()
+
+
+def _notify_startup_changed(self) -> None:
+    icon = getattr(self, "tray_icon", None)
+    if icon:
+        try:
+            icon.notify("启动选项已更改", "鼠标配置生成器已允许自启动并保留后台。")
+            return
+        except Exception as exc:
+            log_error("显示启动项通知失败", exc)
+    messagebox.showinfo("启动选项已更改", "鼠标配置生成器已允许自启动并保留后台。")
 
 
 def _default_archives() -> list[Path]:
@@ -2605,7 +2692,7 @@ def _show_resource_page(self) -> None:
     buttons.pack(fill="x", pady=(0, 12))
     ttk.Button(buttons, text="打开资源库网页", image=self._ui_icon("folder"), compound=LEFT, style="Blue.TButton", command=self.open_resource_browser).pack(side=LEFT, padx=(0, 8))
     ttk.Button(buttons, text="打开鼠标文件存放位置", style="Yellow.TButton", command=lambda: os.startfile(RESOURCE_LIBRARY)).pack(side=LEFT, padx=(0, 8))
-    ttk.Button(buttons, text="刷新并添加方案", image=self._ui_icon("apply"), compound=LEFT, style="Primary.TButton", command=self.refresh_resource_library).pack(side=LEFT)
+    ttk.Button(buttons, text="刷新", image=self._ui_icon("apply"), compound=LEFT, style="Primary.TButton", command=self.refresh_resource_library).pack(side=LEFT)
     drop = ttk.Label(card, text="也可以把 zip / rar / 7z / exe 拖到这里导入为新方案", style="Muted.TLabel", anchor="center")
     drop.pack(fill="x", pady=(2, 12), ipady=18)
     if DND_FILES:
@@ -2618,6 +2705,16 @@ def _show_resource_page(self) -> None:
             pass
     self.resource_status = StringVar(value=f"存放位置：{RESOURCE_LIBRARY}")
     ttk.Label(card, textvariable=self.resource_status, style="Muted.TLabel", wraplength=760).pack(anchor="w", pady=8)
+    ttk.Label(card, text="已有资源", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(14, 8))
+    preview_canvas = Canvas(card, bg="#ffffff", highlightthickness=0, height=320)
+    preview_canvas.pack(fill=BOTH, expand=True)
+    preview_holder = ttk.Frame(preview_canvas, style="Card.TFrame")
+    preview_window = preview_canvas.create_window((0, 0), window=preview_holder, anchor="nw")
+    preview_holder.bind("<Configure>", lambda _event: preview_canvas.configure(scrollregion=preview_canvas.bbox("all")))
+    preview_canvas.bind("<Configure>", lambda event: preview_canvas.itemconfigure(preview_window, width=event.width))
+    preview_canvas.bind("<MouseWheel>", lambda event: preview_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
+    self.resource_preview_container = preview_holder
+    self.render_resource_previews()
 
 
 def _refresh_resource_library(self) -> None:
@@ -2632,11 +2729,83 @@ def _refresh_resource_library(self) -> None:
             errors.append(f"{archive.name}: {exc}")
             log_error(f"资源库导入失败：{archive.name}", exc)
     self.refresh_scheme_names()
+    if hasattr(self, "resource_preview_container"):
+        self.render_resource_previews()
     message = f"已添加 {imported} 个方案。"
     if errors:
         message += f" 有 {len(errors)} 个文件未识别，详情见错误记录。"
     self.resource_status.set(message)
     self.status.set(message)
+
+
+def _resource_scheme_names(self) -> list[str]:
+    if not SCHEME_LIBRARY.exists():
+        return []
+    names = [p.name for p in SCHEME_LIBRARY.iterdir() if p.is_dir()]
+    custom = [name for name in names if name not in DEFAULT_SCHEME_NAMES]
+    return sorted(custom or names)
+
+
+def _render_resource_previews(self) -> None:
+    container = getattr(self, "resource_preview_container", None)
+    if not container:
+        return
+    for child in container.winfo_children():
+        child.destroy()
+    self.resource_preview_frames = []
+    self.resource_preview_labels = []
+    self.resource_preview_index = 0
+    names = self.resource_scheme_names()
+    if not names:
+        ttk.Label(container, text="暂无资源。把资源包拖到上方区域，或点击刷新。", style="Muted.TLabel").pack(anchor="w", pady=12)
+        return
+    for name in names:
+        scheme_dir, files = scheme_manifest(name)
+        card = ttk.Frame(container, style="Even.TFrame", padding=12)
+        card.pack(fill="x", pady=(0, 10))
+        ttk.Label(card, text=name, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        strip = ttk.Frame(card, style="Even.TFrame")
+        strip.pack(fill="x")
+        for reg_name in ROLE_BY_REG:
+            file_name = files.get(reg_name)
+            if not file_name:
+                continue
+            path = scheme_dir / file_name
+            if not path.exists():
+                continue
+            label = ttk.Label(strip, width=8, anchor="center")
+            label.pack(side=LEFT, padx=4, pady=2)
+            frames = self.resource_icon_frames(path)
+            if frames:
+                label.configure(image=frames[0])
+                self.resource_preview_labels.append(label)
+                self.resource_preview_frames.append(frames)
+    self.animate_resource_previews()
+
+
+def _resource_icon_frames(self, path: Path) -> list[ImageTk.PhotoImage]:
+    try:
+        paths = ani_frame_paths(path)[:12] if path.suffix.lower() == ".ani" else [path]
+        frames = []
+        for item in paths:
+            image = cursor_preview_image(item, (58, 58))
+            frames.append(ImageTk.PhotoImage(image))
+        key = f"_resource_{path}_{len(self.preview_images)}"
+        self.preview_images[key] = frames
+        return frames
+    except Exception as exc:
+        log_error(f"资源预览失败：{path}", exc)
+        return []
+
+
+def _animate_resource_previews(self) -> None:
+    if not getattr(self, "resource_preview_labels", None):
+        return
+    for label, frames in zip(self.resource_preview_labels, self.resource_preview_frames):
+        if frames:
+            label.configure(image=frames[self.resource_preview_index % len(frames)])
+    self.resource_preview_index += 1
+    self.resource_preview_after = self.root.after(140, self.animate_resource_previews)
 
 
 def _drop_import_resource(self, event) -> None:
@@ -2771,6 +2940,10 @@ def _apply_settings_page(self) -> None:
 CursorThemeBuilder.ensure_default_schemes = _v4_ensure_default_schemes
 CursorThemeBuilder.show_resource_page = _show_resource_page
 CursorThemeBuilder.refresh_resource_library = _refresh_resource_library
+CursorThemeBuilder.resource_scheme_names = _resource_scheme_names
+CursorThemeBuilder.render_resource_previews = _render_resource_previews
+CursorThemeBuilder.resource_icon_frames = _resource_icon_frames
+CursorThemeBuilder.animate_resource_previews = _animate_resource_previews
 CursorThemeBuilder.drop_import_resource = _drop_import_resource
 CursorThemeBuilder.open_resource_browser = _open_resource_browser
 CursorThemeBuilder._import_archive_as_scheme = _import_archive_as_scheme
@@ -2794,6 +2967,10 @@ CursorThemeBuilder._run_wait_task = _run_wait_task
 CursorThemeBuilder.apply_now = _v4_apply_now
 CursorThemeBuilder.apply_autostart = _v4_apply_autostart
 CursorThemeBuilder.on_close = _on_close
+CursorThemeBuilder.ensure_tray_icon = _ensure_tray_icon
+CursorThemeBuilder.stop_tray_icon = _stop_tray_icon
+CursorThemeBuilder.exit_from_tray = _exit_from_tray
+CursorThemeBuilder.notify_startup_changed = _notify_startup_changed
 CursorThemeBuilder.installer_icon = _installer_icon
 CursorThemeBuilder.build_installer = _v4_build_installer
 CursorThemeBuilder.build_pyinstaller_exe = _v4_build_pyinstaller_exe

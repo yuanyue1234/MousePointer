@@ -3,3 +3,5 @@ pyinstaller==6.19.0
 tkinterdnd2==0.4.3
 py7zr==1.1.0
 rarfile==4.2
+pystray==0.19.5
+six==1.17.0
