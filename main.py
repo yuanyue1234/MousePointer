@@ -216,8 +216,9 @@ def apply_cursor_scheme(theme_name: str, cursor_files: dict[str, str]) -> None:
     ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\Cursors", 0, 1000, None)
 
 
-def refresh_mouse_parameters() -> None:
-    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
+def refresh_mouse_parameters(cursor_size_pixels: int | None = None) -> None:
+    param = ctypes.c_void_p(int(cursor_size_pixels)) if cursor_size_pixels else None
+    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, param, 0x01 | 0x02)
     ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\\\Cursors", 0, 1000, None)
 
 
@@ -231,7 +232,18 @@ def apply_cursor_size_and_scheme(theme_name: str, cursor_files: dict[str, str], 
     refresh_mouse_parameters()
     if pixels:
         set_system_cursor_size_pixels(pixels)
+        refresh_mouse_parameters(pixels)
     apply_cursor_scheme(theme_name, cursor_files)
+
+
+def clear_cursor_scheme_to_default() -> None:
+    refresh_mouse_parameters()
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\\Cursors", 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "")
+        winreg.SetValueEx(key, "Scheme Source", 0, winreg.REG_DWORD, 0)
+        for role in CURSOR_ROLES:
+            winreg.SetValueEx(key, role.reg_name, 0, winreg.REG_EXPAND_SZ, "")
+    refresh_mouse_parameters()
 
 
 def installer_source(theme_name: str, files: dict[str, str], cursor_size_pixels: int | None = None) -> str:
@@ -273,7 +285,7 @@ def install():
         shutil.copy2(src, dst)
         installed[reg_name] = str(dst)
 
-    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
+    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0x01 | 0x02)
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\\Cursors", 0, winreg.KEY_SET_VALUE) as key:
         if CURSOR_SIZE_PIXELS:
             winreg.SetValueEx(key, "CursorBaseSize", 0, winreg.REG_DWORD, int(CURSOR_SIZE_PIXELS))
@@ -282,7 +294,9 @@ def install():
         for reg_name, file_path in installed.items():
             winreg.SetValueEx(key, reg_name, 0, winreg.REG_EXPAND_SZ, file_path)
 
-    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
+    if CURSOR_SIZE_PIXELS:
+        ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, ctypes.c_void_p(int(CURSOR_SIZE_PIXELS)), 0x01 | 0x02)
+    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0x01 | 0x02)
     ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\\\Cursors", 0, 1000, None)
     return target_dir
 
@@ -1929,7 +1943,7 @@ def _show_time_page(self) -> None:
     self._clean_page()
     self.page_title.configure(text="时间切换")
     self.page_subtitle.configure(text="设置亮色模式和暗色模式在指定时间切换到对应方案。")
-    values = _available_scheme_values()
+    values = [""] + _available_scheme_values()
     current = {item.get("mode"): item for item in self.schedule_items}
     form = ttk.Frame(self.content, style="Card.TFrame")
     form.pack(fill="x")
@@ -1937,7 +1951,7 @@ def _show_time_page(self) -> None:
     for row, (mode, label, default_time) in enumerate((("light", "亮色模式", "08:00"), ("dark", "暗色模式", "18:00"))):
         ttk.Label(form, text=label, font=("Microsoft YaHei UI", 11, "bold")).grid(row=row, column=0, sticky="w", padx=8, pady=12)
         time_var = StringVar(value=current.get(mode, {}).get("time", default_time))
-        scheme_var = StringVar(value=current.get(mode, {}).get("scheme", values[0] if values else ""))
+        scheme_var = StringVar(value=current.get(mode, {}).get("scheme", ""))
         ttk.Combobox(form, textvariable=time_var, values=[f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 15, 30, 45)], width=10, state="readonly").grid(row=row, column=1, padx=8)
         ttk.Combobox(form, textvariable=scheme_var, values=values, width=24, state="readonly").grid(row=row, column=2, padx=8)
         ttk.Button(form, text="×", style="Danger.TButton", width=3, command=lambda m=mode, tv=time_var, sv=scheme_var: self.clear_time_row(m, tv, sv)).grid(row=row, column=3, padx=8)
@@ -2196,7 +2210,7 @@ def _v3_show_scheme_page(self) -> None:
     self.large_preview_name.pack(anchor="w")
     actions = ttk.Frame(self.content, style="Card.TFrame")
     actions.pack(fill="x", pady=(12, 0))
-    ttk.Button(actions, text="清除", image=self._ui_icon("trash"), compound=LEFT, style="Soft.TButton", command=self.clear_all).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(actions, text="清除", image=self._ui_icon("trash"), compound=LEFT, style="Soft.TButton", command=self.clear_applied_cursor_scheme).pack(side=LEFT, padx=(0, 8))
     ttk.Button(actions, text="应用", image=self._ui_icon("apply"), compound=LEFT, style="Primary.TButton", command=self.apply_now).pack(side=LEFT, padx=(0, 8))
     ttk.Button(actions, text="生成安装包", style="Blue.TButton", command=self.build_installer).pack(side=LEFT, padx=(0, 8))
     ttk.Button(actions, text="鼠标大小设置", image=self._ui_icon("settings"), compound=LEFT, style="Yellow.TButton", command=self.open_pointer_settings).pack(side=LEFT)
@@ -2468,6 +2482,17 @@ def _v4_apply_now(self) -> None:
     self._run_wait_task("正在应用", "正在应用鼠标方案，请稍等。", work, done)
 
 
+def _clear_applied_cursor_scheme(self) -> None:
+    def work():
+        clear_cursor_scheme_to_default()
+        return True
+
+    def done(_value):
+        self.status.set("已恢复 Windows 默认鼠标指针。")
+
+    self._run_wait_task("正在清除", "正在恢复 Windows 默认鼠标指针，请稍等。", work, done)
+
+
 def _v4_build_installer(self) -> None:
     error = self.validate()
     if error:
@@ -2660,12 +2685,16 @@ def _ensure_tray_icon(self) -> None:
     def exit_app(_icon=None, _item=None):
         self.root.after(0, self.exit_from_tray)
 
+    def open_app(_icon=None, _item=None):
+        self.root.after(0, self.open_from_tray)
+
     self.tray_icon = pystray.Icon(
         "MouseCursorThemeBuilder",
         image,
         "鼠标配置生成器",
-        menu=pystray.Menu(pystray.MenuItem("退出", exit_app)),
+        menu=pystray.Menu(pystray.MenuItem("打开", open_app, default=True), pystray.MenuItem("退出", exit_app)),
     )
+    self.tray_icon.on_activate = open_app
     self.tray_icon.run_detached()
     self.tray_running = True
 
@@ -2685,6 +2714,15 @@ def _exit_from_tray(self) -> None:
     self.scheduler_running = False
     self.stop_tray_icon()
     self.root.destroy()
+
+
+def _open_from_tray(self) -> None:
+    self.root.deiconify()
+    self.root.lift()
+    try:
+        self.root.focus_force()
+    except Exception:
+        pass
 
 
 def _notify_startup_changed(self) -> None:
@@ -3086,10 +3124,12 @@ CursorThemeBuilder.on_close = _on_close
 CursorThemeBuilder.ensure_tray_icon = _ensure_tray_icon
 CursorThemeBuilder.stop_tray_icon = _stop_tray_icon
 CursorThemeBuilder.exit_from_tray = _exit_from_tray
+CursorThemeBuilder.open_from_tray = _open_from_tray
 CursorThemeBuilder.notify_startup_changed = _notify_startup_changed
 CursorThemeBuilder.installer_icon = _installer_icon
 CursorThemeBuilder.build_installer = _v4_build_installer
 CursorThemeBuilder.build_pyinstaller_exe = _v4_build_pyinstaller_exe
+CursorThemeBuilder.clear_applied_cursor_scheme = _clear_applied_cursor_scheme
 CursorThemeBuilder.save_time_page = _v3_save_time_page
 CursorThemeBuilder.save_week_page = _v3_save_week_page
 
