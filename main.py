@@ -61,12 +61,15 @@ RESOURCE_URL = "https://yvtgt-my.sharepoint.com/:f:/g/personal/asunny_yvtgt_onmi
 APP_NAME = "鼠标指针配置管理器"
 AUTO_START_VALUE = APP_NAME
 LEGACY_AUTO_START_VALUE = "MouseCursorThemeBuilder"
+SCHEDULED_TASK_NAME = "MousePointerBackground"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
 DEFAULT_GITHUB_URL = "https://github.com/yuanyue1234/MousePointer"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
+PORTABLE_EXE_NAME = f"{APP_NAME}.exe"
+INSTALLER_EXE_NAME = f"安装{APP_NAME}.exe"
 
 
 @dataclass(frozen=True)
@@ -150,6 +153,24 @@ def save_settings(data: dict[str, str]) -> None:
     SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def update_setting(key: str, value: str) -> None:
+    data = load_settings()
+    data[key] = value
+    save_settings(data)
+
+
+def configured_current_scheme() -> str:
+    value = load_settings().get("current_scheme", "").strip()
+    if value:
+        return value
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors", 0, winreg.KEY_QUERY_VALUE) as key:
+            current, _type = winreg.QueryValueEx(key, "")
+            return str(current).strip() or "Windows 默认"
+    except Exception:
+        return "未知"
+
+
 def apply_storage_root(path: Path) -> None:
     global SCHEME_LIBRARY, RESOURCE_LIBRARY, INSTALLED_LIBRARY
     root = path.expanduser().resolve()
@@ -207,7 +228,7 @@ def github_repo_api_url(repo_url: str) -> str:
 def fetch_latest_github_commit(repo_url: str) -> dict[str, str]:
     if not repo_url:
         raise RuntimeError("还没有设置 GitHub 源地址。")
-    request = urllib.request.Request(github_repo_api_url(repo_url), headers={"User-Agent": APP_NAME})
+    request = urllib.request.Request(github_repo_api_url(repo_url), headers={"User-Agent": "MousePointer"})
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             data = json.loads(response.read().decode("utf-8"))
@@ -222,6 +243,85 @@ def fetch_latest_github_commit(repo_url: str) -> dict[str, str]:
         "date": str(commit.get("committer", {}).get("date", "")) if commit else "",
         "url": str(data.get("html_url", repo_url)),
     }
+
+
+def github_repo_parts(repo_url: str) -> tuple[str, str]:
+    match = re.search(r"github\.com[:/](?P<owner>[^/\s]+)/(?P<repo>[^/\s#?]+)", repo_url.strip())
+    if not match:
+        raise RuntimeError("GitHub 源地址格式不正确。")
+    return match.group("owner"), match.group("repo").removesuffix(".git")
+
+
+def fetch_latest_release(repo_url: str) -> dict:
+    if not repo_url:
+        raise RuntimeError("还没有设置 GitHub 源地址。")
+    owner, repo = github_repo_parts(repo_url)
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{owner}/{repo}/releases/latest",
+        headers={"User-Agent": "MousePointer", "Accept": "application/vnd.github+json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise RuntimeError("没有找到可用的 GitHub Release。若仓库是私有仓库，自动更新需要公开 Release 或提供访问令牌。") from exc
+        raise RuntimeError(f"GitHub Release 请求失败：HTTP {exc.code}") from exc
+
+
+def version_tuple(value: str) -> tuple[int, ...]:
+    value = value.strip().lstrip("vV")
+    parts = re.findall(r"\d+", value)
+    return tuple(int(part) for part in parts) if parts else (0,)
+
+
+def is_newer_version(latest_tag: str, current_version: str) -> bool:
+    return version_tuple(latest_tag) > version_tuple(current_version)
+
+
+def release_asset_for_current_app(release: dict) -> dict:
+    current_name = Path(sys.executable).name if IS_FROZEN else PORTABLE_EXE_NAME
+    preferred = INSTALLER_EXE_NAME if current_name.startswith("安装") else PORTABLE_EXE_NAME
+    assets = release.get("assets", [])
+    for name in (preferred, PORTABLE_EXE_NAME, INSTALLER_EXE_NAME):
+        for asset in assets:
+            if asset.get("name") == name:
+                return asset
+    raise RuntimeError("Release 中没有找到可下载的程序文件。")
+
+
+def download_release_asset(asset: dict) -> Path:
+    url = asset.get("browser_download_url")
+    name = asset.get("name") or PORTABLE_EXE_NAME
+    if not url:
+        raise RuntimeError("Release 资产缺少下载地址。")
+    target = APP_DATA / "updates" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    request = urllib.request.Request(url, headers={"User-Agent": "MousePointer"})
+    with urllib.request.urlopen(request, timeout=60) as response, target.open("wb") as handle:
+        shutil.copyfileobj(response, handle)
+    return target
+
+
+def launch_update_replacer(downloaded: Path) -> None:
+    if not IS_FROZEN:
+        raise RuntimeError("源码运行模式不能自动替换程序，请使用打包后的 EXE。")
+    current = Path(sys.executable).resolve()
+    script = "\n".join([
+        "Start-Sleep -Seconds 2",
+        f"Copy-Item -LiteralPath {ps_quote(str(downloaded))} -Destination {ps_quote(str(current))} -Force",
+        f"Start-Process -FilePath {ps_quote(str(current))}",
+        f"Remove-Item -LiteralPath {ps_quote(str(downloaded))} -Force -ErrorAction SilentlyContinue",
+    ])
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    subprocess.Popen(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
 
 
 def image_from_path(path: Path) -> Image.Image:
@@ -306,6 +406,7 @@ def apply_cursor_scheme(theme_name: str, cursor_files: dict[str, str]) -> None:
             winreg.SetValueEx(key, reg_name, 0, winreg.REG_EXPAND_SZ, file_path)
     ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
     ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\Cursors", 0x0002, 200, None)
+    update_setting("current_scheme", theme_name)
 
 
 def refresh_mouse_parameters() -> None:
@@ -644,6 +745,45 @@ def write_startup_script(_command: str) -> None:
     create_shortcut(startup_script_path(), target, arguments, APP_DIR, target)
 
 
+def scheduled_task_command() -> str:
+    return subprocess.list2cmdline(background_command())
+
+
+def scheduled_task_exists() -> bool:
+    creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    result = subprocess.run(
+        ["schtasks.exe", "/Query", "/TN", SCHEDULED_TASK_NAME],
+        text=True,
+        capture_output=True,
+        check=False,
+        creationflags=creationflags,
+    )
+    return result.returncode == 0
+
+
+def set_startup_task(enabled: bool) -> None:
+    creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    if enabled:
+        command = [
+            "schtasks.exe",
+            "/Create",
+            "/TN",
+            SCHEDULED_TASK_NAME,
+            "/SC",
+            "ONLOGON",
+            "/TR",
+            scheduled_task_command(),
+            "/RL",
+            "LIMITED",
+            "/F",
+        ]
+    else:
+        command = ["schtasks.exe", "/Delete", "/TN", SCHEDULED_TASK_NAME, "/F"]
+    result = subprocess.run(command, text=True, capture_output=True, check=False, creationflags=creationflags)
+    if enabled and result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "创建任务计划失败").strip())
+
+
 def remove_startup_script() -> None:
     for name in (
         f"{APP_NAME}后台.lnk",
@@ -680,8 +820,16 @@ def set_auto_start(enabled: bool) -> None:
             write_startup_script(command)
         except Exception as exc:
             log_error("创建启动文件夹快捷方式失败，已保留注册表自启动", exc)
+        try:
+            set_startup_task(True)
+        except Exception as exc:
+            log_error("创建任务计划自启动失败，已保留注册表自启动", exc)
     else:
         remove_startup_script()
+        try:
+            set_startup_task(False)
+        except Exception as exc:
+            log_error("删除任务计划自启动失败", exc)
 
 
 def background_command() -> list[str]:
@@ -1431,15 +1579,37 @@ def next_switch_text(schedule_items: list[dict[str, str]], week_items: dict[str,
             if target < now:
                 target = target.replace(day=target.day) + timedelta(days=1)
             candidates.append((target, scheme))
-    today_scheme = week_items.get(str(now.weekday()))
-    if today_scheme:
-        candidates.append((now, f"今日星期方案：{today_scheme}"))
+    for offset in range(7):
+        day = (now.weekday() + offset) % 7
+        scheme = week_items.get(str(day))
+        if not scheme:
+            continue
+        target = (now + timedelta(days=offset)).replace(hour=0, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target = target + timedelta(days=7)
+        candidates.append((target, scheme))
     if not candidates:
-        return "下次切换：暂无"
+        return ""
     target, scheme = min(candidates, key=lambda item: item[0])
-    if target <= now:
-        return f"下次切换：{scheme}"
-    return f"下次切换：{target:%m-%d %H:%M} {scheme}"
+    return f"{target:%m-%d %H:%M} {scheme}"
+
+
+def load_schedule_state() -> tuple[list[dict[str, str]], dict[str, str]]:
+    items: list[dict[str, str]] = []
+    week_items: dict[str, str] = {}
+    try:
+        if SCHEDULE_FILE.exists():
+            data = json.loads(SCHEDULE_FILE.read_text(encoding="utf-8"))
+            items = data if isinstance(data, list) else []
+    except Exception as exc:
+        log_error("读取时间切换配置失败", exc)
+    try:
+        if WEEK_SCHEDULE_FILE.exists():
+            data = json.loads(WEEK_SCHEDULE_FILE.read_text(encoding="utf-8"))
+            week_items = data if isinstance(data, dict) else {}
+    except Exception as exc:
+        log_error("读取星期切换配置失败", exc)
+    return items, week_items
 
 
 def desktop_folder() -> Path:
@@ -1893,6 +2063,8 @@ def _new_apply_now(self) -> None:
 
 
 def _is_auto_start_enabled(self) -> bool:
+    if scheduled_task_exists():
+        return True
     if any((startup_folder() / name).exists() for name in (f"{APP_NAME}后台.lnk", f"{APP_NAME}后台.vbs", "MouseCursorThemeBuilder.vbs", "MouseCursorThemeBuilder.lnk")):
         return True
     try:
@@ -2993,6 +3165,10 @@ def _ensure_tray_icon(self) -> None:
     def open_app(_icon=None, _item=None):
         self.root.after(0, self.open_from_tray)
 
+    def tray_next_switch(_item=None):
+        items, week_items = load_schedule_state()
+        return f"下次切换：{next_switch_text(items, week_items)}"
+
     self.tray_icon = pystray.Icon(
         "MouseCursorThemeBuilder",
         image,
@@ -3000,7 +3176,8 @@ def _ensure_tray_icon(self) -> None:
         menu=pystray.Menu(
             pystray.MenuItem("打开", open_app, default=True),
             pystray.MenuItem("后台状态：运行中", None, enabled=False),
-            pystray.MenuItem(lambda _item: next_switch_text(self.schedule_items, self.week_items), None, enabled=False),
+            pystray.MenuItem(lambda _item: f"当前配置：{configured_current_scheme()}", None, enabled=False),
+            pystray.MenuItem(tray_next_switch, None, enabled=False),
             pystray.MenuItem("退出", exit_app),
         ),
     )
@@ -3198,7 +3375,16 @@ def _refresh_resource_library(self) -> None:
 def _resource_scheme_names(self) -> list[str]:
     if not SCHEME_LIBRARY.exists():
         return []
-    names = [p.name for p in SCHEME_LIBRARY.iterdir() if p.is_dir()]
+    names = []
+    for path in SCHEME_LIBRARY.iterdir():
+        if not path.is_dir():
+            continue
+        try:
+            _scheme_dir, files = scheme_manifest(path.name)
+        except Exception:
+            continue
+        if any((path / name).exists() for name in files.values()):
+            names.append(path.name)
     return sorted(names)
 
 
@@ -3461,18 +3647,24 @@ def _open_github_source(self) -> None:
 def _check_for_updates(self) -> None:
     url = self.github_url_var.get().strip() if hasattr(self, "github_url_var") else configured_github_url()
     def work():
-        return fetch_latest_github_commit(url)
+        release = fetch_latest_release(url)
+        tag = str(release.get("tag_name", ""))
+        if not is_newer_version(tag, APP_VERSION):
+            return {"updated": False, "tag": tag}
+        asset = release_asset_for_current_app(release)
+        downloaded = download_release_asset(asset)
+        return {"updated": True, "tag": tag, "path": downloaded, "asset": asset.get("name", "")}
     def done(info):
-        current = current_build_commit()
-        latest = info.get("short", "")
-        message = f"当前版本：{APP_VERSION}\n当前提交：{current}\n最新提交：{latest}\n时间：{info.get('date', '')}\n说明：{info.get('message', '')}"
-        if latest and current and latest != current:
-            message += "\n\n检测到可能有新提交。"
-        else:
-            message += "\n\n当前提交与远端一致，或当前构建无法比较提交。"
-        if messagebox.askyesno("检测更新", message + "\n\n是否打开 GitHub？"):
-            webbrowser.open(info.get("url") or url)
-    self._run_wait_task("正在检测更新", "正在连接 GitHub 检测最新提交，请稍等。", work, done)
+        if not info.get("updated"):
+            messagebox.showinfo("检测更新", f"当前已是最新版本。\n当前版本：v{APP_VERSION}\n最新版本：{info.get('tag') or '未知'}")
+            return
+        if not IS_FROZEN:
+            messagebox.showinfo("检测更新", f"已下载更新：{info.get('path')}\n源码运行模式不会自动替换程序。")
+            return
+        messagebox.showinfo("检测更新", f"已下载 {info.get('tag')}，点击确定后自动更新并重启程序。")
+        launch_update_replacer(Path(info["path"]))
+        self.root.destroy()
+    self._run_wait_task("正在检测更新", "正在连接 GitHub Release 并准备自动更新，请稍等。", work, done)
 
 
 def _diagnostic_text(self) -> str:
@@ -3499,6 +3691,8 @@ def _diagnostic_text(self) -> str:
         f"安装包目录：{configured_output_root()}",
         f"GitHub：{configured_github_url() or '未设置'}",
         f"启动快捷方式：{startup_script_path()} / 存在={startup_script_path().exists()}",
+        f"任务计划：{SCHEDULED_TASK_NAME} / 存在={scheduled_task_exists()}",
+        f"当前配置：{configured_current_scheme()}",
         f"Run 项：{'; '.join(run_values) if run_values else '无'}",
         f"后台 PID：{pid_text}",
     ])
