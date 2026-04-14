@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import base64
 import io
 import json
@@ -65,11 +66,11 @@ SCHEDULED_TASK_NAME = "MousePointerBackground"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
 DEFAULT_GITHUB_URL = "https://github.com/yuanyue1234/MousePointer"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
-PORTABLE_EXE_NAME = f"{APP_NAME}.exe"
-INSTALLER_EXE_NAME = f"安装{APP_NAME}.exe"
+PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
+INSTALLER_EXE_NAME = "鼠标指针配置生成器_安装程序.exe"
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,33 @@ def update_setting(key: str, value: str) -> None:
     data = load_settings()
     data[key] = value
     save_settings(data)
+
+
+def remove_setting(key: str) -> None:
+    data = load_settings()
+    if key in data:
+        data.pop(key, None)
+        save_settings(data)
+
+
+def log_error_once(setting_key: str, title: str, exc: BaseException | str) -> None:
+    detail = str(exc)
+    data = load_settings()
+    if data.get(setting_key) == detail:
+        return
+    log_error(title, exc)
+    data[setting_key] = detail
+    save_settings(data)
+
+
+def is_installer_executable(name: str) -> bool:
+    stem = Path(name).stem
+    return "安装" in stem or "installer" in stem.lower()
+
+
+def is_uninstaller_executable(name: str) -> bool:
+    stem = Path(name).stem
+    return "卸载" in stem or "uninstall" in stem.lower()
 
 
 def configured_current_scheme() -> str:
@@ -281,7 +309,7 @@ def is_newer_version(latest_tag: str, current_version: str) -> bool:
 
 def release_asset_for_current_app(release: dict) -> dict:
     current_name = Path(sys.executable).name if IS_FROZEN else PORTABLE_EXE_NAME
-    preferred = INSTALLER_EXE_NAME if current_name.startswith("安装") else PORTABLE_EXE_NAME
+    preferred = INSTALLER_EXE_NAME if is_installer_executable(current_name) else PORTABLE_EXE_NAME
     assets = release.get("assets", [])
     for name in (preferred, PORTABLE_EXE_NAME, INSTALLER_EXE_NAME):
         for asset in assets:
@@ -316,7 +344,7 @@ def launch_update_replacer(downloaded: Path) -> None:
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     subprocess.Popen(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
@@ -761,6 +789,15 @@ def scheduled_task_exists() -> bool:
     return result.returncode == 0
 
 
+def startup_task_blocked() -> bool:
+    return load_settings().get("startup_task_blocked") == "1"
+
+
+def access_denied_error(exc: BaseException | str) -> bool:
+    text = str(exc).lower()
+    return "拒绝访问" in text or "access is denied" in text or "access denied" in text
+
+
 def set_startup_task(enabled: bool) -> None:
     creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     if enabled:
@@ -782,6 +819,19 @@ def set_startup_task(enabled: bool) -> None:
     result = subprocess.run(command, text=True, capture_output=True, check=False, creationflags=creationflags)
     if enabled and result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "创建任务计划失败").strip())
+
+
+def try_enable_startup_task() -> None:
+    if startup_task_blocked():
+        return
+    try:
+        set_startup_task(True)
+        remove_setting("startup_task_error")
+        remove_setting("startup_task_blocked")
+    except Exception as exc:
+        if access_denied_error(exc):
+            update_setting("startup_task_blocked", "1")
+        log_error_once("startup_task_error", "创建任务计划自启动失败，已使用注册表和启动文件夹自启动", exc)
 
 
 def remove_startup_script() -> None:
@@ -819,17 +869,15 @@ def set_auto_start(enabled: bool) -> None:
         try:
             write_startup_script(command)
         except Exception as exc:
-            log_error("创建启动文件夹快捷方式失败，已保留注册表自启动", exc)
-        try:
-            set_startup_task(True)
-        except Exception as exc:
-            log_error("创建任务计划自启动失败，已保留注册表自启动", exc)
+            log_error_once("startup_shortcut_error", "创建启动文件夹快捷方式失败，已保留注册表自启动", exc)
+        try_enable_startup_task()
     else:
         remove_startup_script()
-        try:
-            set_startup_task(False)
-        except Exception as exc:
-            log_error("删除任务计划自启动失败", exc)
+        if scheduled_task_exists():
+            try:
+                set_startup_task(False)
+            except Exception as exc:
+                log_error_once("startup_task_delete_error", "删除任务计划自启动失败", exc)
 
 
 def background_command() -> list[str]:
@@ -861,24 +909,65 @@ def acquire_background_lock():
     while True:
         try:
             fd = os.open(pid_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode("ascii"))
+            payload = {
+                "pid": os.getpid(),
+                "exe": str(Path(sys.executable).resolve()),
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            os.write(fd, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             return fd
         except FileExistsError:
-            try:
-                pid = int(pid_file.read_text(encoding="utf-8").strip() or "0")
-            except Exception:
-                pid = 0
+            pid, exe = read_background_pid_file(pid_file)
             if not pid:
-                time.sleep(0.1)
+                remove_pid_file(pid_file)
                 continue
-            if pid and process_exists(pid):
+            if pid and background_process_alive(pid, exe):
                 return None
-            try:
-                pid_file.unlink()
-            except FileNotFoundError:
-                pass
+            remove_pid_file(pid_file)
         except Exception:
             return None
+
+
+def remove_pid_file(pid_file: Path) -> None:
+    try:
+        pid_file.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def read_background_pid_file(pid_file: Path) -> tuple[int, str]:
+    try:
+        text = pid_file.read_text(encoding="utf-8").strip()
+        if not text:
+            return 0, ""
+        if text.startswith("{"):
+            data = json.loads(text)
+            return int(data.get("pid") or 0), str(data.get("exe") or "")
+        return int(text), ""
+    except Exception:
+        return 0, ""
+
+
+def process_image_path(pid: int) -> str:
+    process_query_limited_information = 0x1000
+    handle = ctypes.windll.kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return ""
+    try:
+        size = ctypes.wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if ctypes.windll.kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return buffer.value
+        return ""
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def same_windows_path(left: str | Path, right: str | Path) -> bool:
+    try:
+        return str(Path(left).resolve()).casefold() == str(Path(right).resolve()).casefold()
+    except Exception:
+        return str(left).casefold() == str(right).casefold()
 
 
 def process_exists(pid: int) -> bool:
@@ -887,6 +976,33 @@ def process_exists(pid: int) -> bool:
         ctypes.windll.kernel32.CloseHandle(handle)
         return True
     return False
+
+
+def background_process_alive(pid: int, recorded_exe: str = "") -> bool:
+    if not process_exists(pid):
+        return False
+    current_exe = str(Path(sys.executable).resolve())
+    image = process_image_path(pid)
+    if image:
+        return same_windows_path(image, current_exe)
+    if recorded_exe:
+        return same_windows_path(recorded_exe, current_exe)
+    return False
+
+
+def terminate_background_process() -> None:
+    pid_file = APP_DATA / "background.pid"
+    pid, exe = read_background_pid_file(pid_file)
+    if not pid or not background_process_alive(pid, exe):
+        remove_pid_file(pid_file)
+        return
+    handle = ctypes.windll.kernel32.OpenProcess(0x0001, False, pid)
+    if handle:
+        try:
+            ctypes.windll.kernel32.TerminateProcess(handle, 0)
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    remove_pid_file(pid_file)
 
 
 def extract_pyinstaller_assets(source: Path, target: Path) -> bool:
@@ -1513,11 +1629,11 @@ def main() -> None:
     if "--background" in sys.argv:
         run_background()
         return
-    exe_stem = Path(sys.executable).stem if IS_FROZEN else ""
-    if "--install" in sys.argv or (IS_FROZEN and exe_stem.startswith("安装")):
+    exe_name = Path(sys.executable).name if IS_FROZEN else ""
+    if "--install" in sys.argv or (IS_FROZEN and is_installer_executable(exe_name)):
         install_application()
         return
-    if "--uninstall" in sys.argv or (IS_FROZEN and exe_stem.startswith("卸载")):
+    if "--uninstall" in sys.argv or (IS_FROZEN and is_uninstaller_executable(exe_name)):
         uninstall_application()
         return
     root_class = TkinterDnD.Tk if TkinterDnD else Tk
@@ -1695,22 +1811,37 @@ def ask_uninstall_choice(root: Tk) -> str:
     ttk.Button(row, text="不保留", command=lambda: close("delete")).pack(side=LEFT)
     dialog.protocol("WM_DELETE_WINDOW", lambda: close("keep"))
     dialog.transient(root)
+    dialog.update_idletasks()
+    x = root.winfo_screenwidth() // 2 - dialog.winfo_width() // 2
+    y = root.winfo_screenheight() // 2 - dialog.winfo_height() // 2
+    dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+    dialog.lift()
+    dialog.attributes("-topmost", True)
+    dialog.after(500, lambda: dialog.attributes("-topmost", False))
+    dialog.focus_force()
     dialog.grab_set()
     root.wait_window(dialog)
     return choice["value"]
 
 
 def schedule_install_dir_cleanup() -> None:
-    script = Path(tempfile.gettempdir()) / f"cleanup_{APP_NAME}.cmd"
-    script.write_text(
-        "@echo off\n"
-        "timeout /t 2 /nobreak >nul\n"
-        f'rd /s /q "{INSTALL_ROOT}"\n'
-        f'del "%~f0"\n',
-        encoding="utf-8",
-    )
+    script = "\n".join([
+        "Start-Sleep -Seconds 2",
+        "for ($i = 0; $i -lt 45; $i++) {",
+        f"  Remove-Item -LiteralPath {ps_quote(str(INSTALL_ROOT))} -Recurse -Force -ErrorAction SilentlyContinue",
+        f"  if (-not (Test-Path -LiteralPath {ps_quote(str(INSTALL_ROOT))})) {{ break }}",
+        "  Start-Sleep -Seconds 1",
+        "}",
+    ])
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-    subprocess.Popen(["cmd.exe", "/c", str(script)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
+    subprocess.Popen(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
 
 
 def uninstall_application() -> None:
@@ -1719,6 +1850,7 @@ def uninstall_application() -> None:
     choice = ask_uninstall_choice(root)
     try:
         set_auto_start(False)
+        terminate_background_process()
         remove_app_shortcuts()
         if choice == "delete":
             shutil.rmtree(configured_storage_root(), ignore_errors=True)
@@ -3680,7 +3812,9 @@ def _diagnostic_text(self) -> str:
     except Exception as exc:
         run_values.append(f"Run 项读取失败：{exc}")
     pid_file = APP_DATA / "background.pid"
-    pid_text = pid_file.read_text(encoding="utf-8", errors="ignore").strip() if pid_file.exists() else "无"
+    pid, pid_exe = read_background_pid_file(pid_file)
+    pid_text = f"{pid} / {pid_exe or '未知路径'}" if pid else "无"
+    task_state = "已禁用尝试（系统拒绝访问，使用 Run 和启动文件夹）" if startup_task_blocked() else f"存在={scheduled_task_exists()}"
     return "\n".join([
         f"程序：{APP_NAME}",
         f"版本：{APP_VERSION}",
@@ -3691,7 +3825,7 @@ def _diagnostic_text(self) -> str:
         f"安装包目录：{configured_output_root()}",
         f"GitHub：{configured_github_url() or '未设置'}",
         f"启动快捷方式：{startup_script_path()} / 存在={startup_script_path().exists()}",
-        f"任务计划：{SCHEDULED_TASK_NAME} / 存在={scheduled_task_exists()}",
+        f"任务计划：{SCHEDULED_TASK_NAME} / {task_state}",
         f"当前配置：{configured_current_scheme()}",
         f"Run 项：{'; '.join(run_values) if run_values else '无'}",
         f"后台 PID：{pid_text}",
