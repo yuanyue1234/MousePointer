@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import base64
 import io
 import json
 import os
@@ -13,12 +14,14 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 import webbrowser
 import winreg
 import zipfile
 import zlib
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import BOTH, LEFT, RIGHT, VERTICAL, Canvas, DoubleVar, IntVar, StringVar, Tk, Toplevel, filedialog, messagebox, ttk
 
@@ -49,6 +52,7 @@ RESOURCE_LIBRARY = DEFAULT_STORAGE_ROOT / "resources"
 INSTALLED_LIBRARY = DEFAULT_STORAGE_ROOT / "installed"
 SCHEDULE_FILE = APP_DATA / "schedule.json"
 WEEK_SCHEDULE_FILE = APP_DATA / "week_schedule.json"
+CURSOR_BACKUP_FILE = APP_DATA / "cursor_backup.json"
 ERROR_LOG = APP_DIR / "错误记录.md"
 DEFAULT_CURSOR_SIZE = 64
 DEFAULT_PREVIEW_SIZE_LEVEL = 3
@@ -59,6 +63,10 @@ AUTO_START_VALUE = APP_NAME
 LEGACY_AUTO_START_VALUE = "MouseCursorThemeBuilder"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
+DEFAULT_GITHUB_URL = ""
+APP_VERSION = "1.0.0"
+BUILD_COMMIT = "source"
+INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
 
 
 @dataclass(frozen=True)
@@ -164,12 +172,56 @@ def configured_output_root() -> Path:
     return Path(value) if value else DEFAULT_OUTPUT_ROOT
 
 
+def configured_github_url() -> str:
+    return load_settings().get("github_url", DEFAULT_GITHUB_URL).strip()
+
+
 apply_storage_root(configured_storage_root())
 
 
 def sanitize_name(name: str) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", name).strip(" ._")
     return cleaned or "我的鼠标样式"
+
+
+def current_build_commit() -> str:
+    if not IS_FROZEN:
+        try:
+            result = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=APP_DIR, text=True, capture_output=True, check=False)
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+    return BUILD_COMMIT
+
+
+def github_repo_api_url(repo_url: str) -> str:
+    match = re.search(r"github\.com[:/](?P<owner>[^/\s]+)/(?P<repo>[^/\s#?]+)", repo_url.strip())
+    if not match:
+        raise RuntimeError("GitHub 源地址格式不正确。")
+    owner = match.group("owner")
+    repo = match.group("repo").removesuffix(".git")
+    return f"https://api.github.com/repos/{owner}/{repo}/commits/HEAD"
+
+
+def fetch_latest_github_commit(repo_url: str) -> dict[str, str]:
+    if not repo_url:
+        raise RuntimeError("还没有设置 GitHub 源地址。")
+    request = urllib.request.Request(github_repo_api_url(repo_url), headers={"User-Agent": APP_NAME})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"GitHub 请求失败：HTTP {exc.code}") from exc
+    sha = str(data.get("sha", ""))
+    commit = data.get("commit", {})
+    return {
+        "sha": sha,
+        "short": sha[:7],
+        "message": str(commit.get("message", "")).splitlines()[0] if commit else "",
+        "date": str(commit.get("committer", {}).get("date", "")) if commit else "",
+        "url": str(data.get("html_url", repo_url)),
+    }
 
 
 def image_from_path(path: Path) -> Image.Image:
@@ -211,7 +263,42 @@ def convert_to_cursor(source: Path, output_path: Path, role: CursorRole, size: i
     write_png_cursor(image_from_path(source), output_path, role, size)
 
 
+def current_cursor_scheme_data() -> dict:
+    data = {"saved_at": datetime.now().isoformat(), "values": {}}
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors", 0, winreg.KEY_QUERY_VALUE) as key:
+        for name in ["", "Scheme Source", *[role.reg_name for role in CURSOR_ROLES]]:
+            try:
+                value, value_type = winreg.QueryValueEx(key, name)
+                data["values"][name] = {"value": value, "type": value_type}
+            except FileNotFoundError:
+                continue
+    return data
+
+
+def backup_current_cursor_scheme() -> None:
+    try:
+        CURSOR_BACKUP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CURSOR_BACKUP_FILE.write_text(json.dumps(current_cursor_scheme_data(), ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        log_error("备份当前鼠标方案失败", exc)
+
+
+def restore_cursor_backup() -> None:
+    if not CURSOR_BACKUP_FILE.exists():
+        raise RuntimeError("还没有可恢复的鼠标方案备份。")
+    data = json.loads(CURSOR_BACKUP_FILE.read_text(encoding="utf-8"))
+    values = data.get("values", {})
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors", 0, winreg.KEY_SET_VALUE) as key:
+        for name, item in values.items():
+            value = item.get("value", "")
+            value_type = int(item.get("type", winreg.REG_EXPAND_SZ))
+            winreg.SetValueEx(key, name, 0, value_type, value)
+    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
+    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\Cursors", 0x0002, 200, None)
+
+
 def apply_cursor_scheme(theme_name: str, cursor_files: dict[str, str]) -> None:
+    backup_current_cursor_scheme()
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors", 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, "", 0, winreg.REG_SZ, theme_name)
         winreg.SetValueEx(key, "Scheme Source", 0, winreg.REG_DWORD, 2)
@@ -505,27 +592,68 @@ def extract_import_package(source: Path) -> Path:
     raise RuntimeError(f"无法解压 {source.name}。该文件可能不是可读取的压缩包，或 EXE 不是自解压格式。")
 
 
-def startup_script_path() -> Path:
+def startup_folder() -> Path:
     startup = Path(os.environ.get("APPDATA", str(Path.home()))) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-    return startup / f"{APP_NAME}后台.vbs"
+    startup.mkdir(parents=True, exist_ok=True)
+    return startup
 
 
-def write_startup_script(command: str) -> None:
-    script = startup_script_path()
-    script.parent.mkdir(parents=True, exist_ok=True)
-    cwd = str(APP_DIR).replace('"', '""')
-    escaped = command.replace('"', '""')
-    script.write_text(
-        f'Set shell = CreateObject("WScript.Shell")\n'
-        f'shell.CurrentDirectory = "{cwd}"\n'
-        f'shell.Run "{escaped}", 0, False\n',
-        encoding="utf-16",
+def startup_script_path() -> Path:
+    return startup_folder() / f"{APP_NAME}后台.lnk"
+
+
+def ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def run_hidden_powershell(script: str) -> subprocess.CompletedProcess:
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    return subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+        text=True,
+        capture_output=True,
+        check=False,
+        creationflags=creationflags,
     )
 
 
+def create_shortcut(link_path: Path, target: Path, arguments: str = "", working_dir: Path | None = None, icon: Path | None = None) -> None:
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    working_dir = working_dir or target.parent
+    icon = icon or target
+    script = "\n".join([
+        "$shell = New-Object -ComObject WScript.Shell",
+        f"$shortcut = $shell.CreateShortcut({ps_quote(str(link_path))})",
+        f"$shortcut.TargetPath = {ps_quote(str(target))}",
+        f"$shortcut.Arguments = {ps_quote(arguments)}",
+        f"$shortcut.WorkingDirectory = {ps_quote(str(working_dir))}",
+        "$shortcut.WindowStyle = 7",
+        f"$shortcut.IconLocation = {ps_quote(str(icon) + ',0')}",
+        "$shortcut.Save()",
+    ])
+    result = run_hidden_powershell(script)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "创建快捷方式失败").strip())
+
+
+def write_startup_script(_command: str) -> None:
+    command = background_command()
+    target = Path(command[0])
+    arguments = subprocess.list2cmdline(command[1:])
+    create_shortcut(startup_script_path(), target, arguments, APP_DIR, target)
+
+
 def remove_startup_script() -> None:
-    for name in (f"{APP_NAME}后台.vbs", "MouseCursorThemeBuilder.vbs"):
-        path = startup_script_path().with_name(name)
+    for name in (
+        f"{APP_NAME}后台.lnk",
+        f"{APP_NAME}后台.vbs",
+        f"{APP_NAME}后台.cmd",
+        "MouseCursorThemeBuilder.lnk",
+        "MouseCursorThemeBuilder.vbs",
+        "MouseCursorThemeBuilder.cmd",
+    ):
+        path = startup_folder() / name
         try:
             path.unlink()
         except FileNotFoundError:
@@ -548,7 +676,10 @@ def set_auto_start(enabled: bool) -> None:
                 except FileNotFoundError:
                     pass
     if enabled:
-        write_startup_script(command)
+        try:
+            write_startup_script(command)
+        except Exception as exc:
+            log_error("创建启动文件夹快捷方式失败，已保留注册表自启动", exc)
     else:
         remove_startup_script()
 
@@ -1234,6 +1365,13 @@ def main() -> None:
     if "--background" in sys.argv:
         run_background()
         return
+    exe_stem = Path(sys.executable).stem if IS_FROZEN else ""
+    if "--install" in sys.argv or (IS_FROZEN and exe_stem.startswith("安装")):
+        install_application()
+        return
+    if "--uninstall" in sys.argv or (IS_FROZEN and exe_stem.startswith("卸载")):
+        uninstall_application()
+        return
     root_class = TkinterDnD.Tk if TkinterDnD else Tk
     root = root_class()
     CursorThemeBuilder(root)
@@ -1279,6 +1417,156 @@ def apply_library_scheme(theme: str) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     files = manifest.get("files", {})
     apply_refreshed_cursor_scheme(theme, {reg_name: str(scheme_dir / name) for reg_name, name in files.items()})
+
+
+def next_switch_text(schedule_items: list[dict[str, str]], week_items: dict[str, str]) -> str:
+    now = datetime.now()
+    candidates = []
+    for item in schedule_items:
+        at = item.get("time", "")
+        scheme = item.get("scheme", "")
+        if re.fullmatch(r"\d{2}:\d{2}", at) and scheme:
+            hour, minute = map(int, at.split(":"))
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target < now:
+                target = target.replace(day=target.day) + timedelta(days=1)
+            candidates.append((target, scheme))
+    today_scheme = week_items.get(str(now.weekday()))
+    if today_scheme:
+        candidates.append((now, f"今日星期方案：{today_scheme}"))
+    if not candidates:
+        return "下次切换：暂无"
+    target, scheme = min(candidates, key=lambda item: item[0])
+    if target <= now:
+        return f"下次切换：{scheme}"
+    return f"下次切换：{target:%m-%d %H:%M} {scheme}"
+
+
+def desktop_folder() -> Path:
+    return Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
+
+
+def start_menu_folder() -> Path:
+    folder = Path(os.environ.get("APPDATA", str(Path.home()))) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / APP_NAME
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def installed_main_exe() -> Path:
+    return INSTALL_ROOT / f"{APP_NAME}.exe"
+
+
+def installed_uninstaller_exe() -> Path:
+    return INSTALL_ROOT / f"卸载{APP_NAME}.exe"
+
+
+def remove_app_shortcuts() -> None:
+    for path in [
+        desktop_folder() / f"{APP_NAME}.lnk",
+        desktop_folder() / "打开鼠标指针文件夹.lnk",
+        start_menu_folder() / f"{APP_NAME}.lnk",
+        start_menu_folder() / f"卸载{APP_NAME}.lnk",
+    ]:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        start_menu_folder().rmdir()
+    except OSError:
+        pass
+
+
+def create_open_folder_shortcut(folder: Path) -> None:
+    explorer = Path(os.environ.get("WINDIR", r"C:\Windows")) / "explorer.exe"
+    create_shortcut(desktop_folder() / "打开鼠标指针文件夹.lnk", explorer, str(folder), folder, explorer)
+
+
+def install_application() -> None:
+    if not IS_FROZEN:
+        raise RuntimeError("安装模式需要先打包成 EXE。")
+    source = Path(sys.executable).resolve()
+    INSTALL_ROOT.mkdir(parents=True, exist_ok=True)
+    main_exe = installed_main_exe()
+    uninstaller_exe = installed_uninstaller_exe()
+    if source != main_exe:
+        shutil.copy2(source, main_exe)
+    shutil.copy2(source, uninstaller_exe)
+    create_shortcut(desktop_folder() / f"{APP_NAME}.lnk", main_exe, "", INSTALL_ROOT, main_exe)
+    create_shortcut(start_menu_folder() / f"{APP_NAME}.lnk", main_exe, "", INSTALL_ROOT, main_exe)
+    create_shortcut(start_menu_folder() / f"卸载{APP_NAME}.lnk", uninstaller_exe, "", INSTALL_ROOT, uninstaller_exe)
+    try:
+        create_open_folder_shortcut(configured_storage_root())
+    except Exception as exc:
+        log_error("创建鼠标文件夹快捷方式失败", exc)
+    root = Tk()
+    root.withdraw()
+    messagebox.showinfo("安装完成", f"{APP_NAME} 已安装到：\n{INSTALL_ROOT}\n\n桌面和开始菜单快捷方式已创建。")
+    root.destroy()
+
+
+def ask_uninstall_choice(root: Tk) -> str:
+    choice = {"value": "keep"}
+    dialog = Toplevel(root)
+    dialog.title("卸载")
+    dialog.geometry("420x190")
+    dialog.resizable(False, False)
+    frame = ttk.Frame(dialog, padding=18)
+    frame.pack(fill=BOTH, expand=True)
+    ttk.Label(frame, text="卸载后是否保留鼠标指针文件？", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w")
+    ttk.Label(frame, text=f"鼠标文件夹：{configured_storage_root()}", wraplength=370).pack(anchor="w", pady=(8, 18))
+    row = ttk.Frame(frame)
+    row.pack(fill="x")
+    def close(value: str) -> None:
+        choice["value"] = value
+        dialog.destroy()
+    ttk.Button(row, text="保留并打开文件夹", command=lambda: close("keep_open")).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(row, text="保留", command=lambda: close("keep")).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(row, text="不保留", command=lambda: close("delete")).pack(side=LEFT)
+    dialog.protocol("WM_DELETE_WINDOW", lambda: close("keep"))
+    dialog.transient(root)
+    dialog.grab_set()
+    root.wait_window(dialog)
+    return choice["value"]
+
+
+def schedule_install_dir_cleanup() -> None:
+    script = Path(tempfile.gettempdir()) / f"cleanup_{APP_NAME}.cmd"
+    script.write_text(
+        "@echo off\n"
+        "timeout /t 2 /nobreak >nul\n"
+        f'rd /s /q "{INSTALL_ROOT}"\n'
+        f'del "%~f0"\n',
+        encoding="utf-8",
+    )
+    creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    subprocess.Popen(["cmd.exe", "/c", str(script)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
+
+
+def uninstall_application() -> None:
+    root = Tk()
+    root.withdraw()
+    choice = ask_uninstall_choice(root)
+    try:
+        set_auto_start(False)
+        remove_app_shortcuts()
+        if choice == "delete":
+            shutil.rmtree(configured_storage_root(), ignore_errors=True)
+        else:
+            configured_storage_root().mkdir(parents=True, exist_ok=True)
+            try:
+                create_open_folder_shortcut(configured_storage_root())
+            except Exception as exc:
+                log_error("创建保留文件夹快捷方式失败", exc)
+        schedule_install_dir_cleanup()
+        if choice == "keep_open":
+            os.startfile(configured_storage_root())
+        messagebox.showinfo("卸载完成", "卸载已完成。")
+    except Exception as exc:
+        log_error("卸载失败", exc)
+        messagebox.showerror("卸载失败", str(exc))
+    finally:
+        root.destroy()
 
 
 def ani_frame_paths(path: Path) -> list[Path]:
@@ -1605,7 +1893,7 @@ def _new_apply_now(self) -> None:
 
 
 def _is_auto_start_enabled(self) -> bool:
-    if startup_script_path().exists():
+    if any((startup_folder() / name).exists() for name in (f"{APP_NAME}后台.lnk", f"{APP_NAME}后台.vbs", "MouseCursorThemeBuilder.vbs", "MouseCursorThemeBuilder.lnk")):
         return True
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ) as key:
@@ -2709,7 +2997,12 @@ def _ensure_tray_icon(self) -> None:
         "MouseCursorThemeBuilder",
         image,
         APP_NAME,
-        menu=pystray.Menu(pystray.MenuItem("打开", open_app, default=True), pystray.MenuItem("退出", exit_app)),
+        menu=pystray.Menu(
+            pystray.MenuItem("打开", open_app, default=True),
+            pystray.MenuItem("后台状态：运行中", None, enabled=False),
+            pystray.MenuItem(lambda _item: next_switch_text(self.schedule_items, self.week_items), None, enabled=False),
+            pystray.MenuItem("退出", exit_app),
+        ),
     )
     self.tray_icon.on_activate = open_app
     self.tray_icon.run_detached()
@@ -2918,6 +3211,49 @@ def _toggle_resource_layout(self) -> None:
     self.render_resource_previews()
 
 
+def _resource_card_actions(self, parent, name: str) -> None:
+    row = ttk.Frame(parent, style="Even.TFrame")
+    row.pack(fill="x", pady=(8, 0))
+    ttk.Button(row, text="应用", style="Primary.TButton", command=lambda n=name: self.apply_resource_scheme(n)).pack(side=LEFT, padx=(0, 6))
+    ttk.Button(row, text="编辑", style="Soft.TButton", command=lambda n=name: self.edit_resource_scheme(n)).pack(side=LEFT, padx=(0, 6))
+    ttk.Button(row, text="打开文件夹", style="Blue.TButton", command=lambda n=name: self.open_resource_scheme_folder(n)).pack(side=LEFT, padx=(0, 6))
+    ttk.Button(row, text="删除", style="Danger.TButton", command=lambda n=name: self.delete_resource_scheme(n)).pack(side=LEFT)
+
+
+def _apply_resource_scheme(self, name: str) -> None:
+    def work():
+        apply_library_scheme(name)
+        return name
+    def done(value):
+        self.status.set(f"已应用资源方案：{value}")
+    self._run_wait_task("正在应用", "正在应用资源方案，请稍等。", work, done)
+
+
+def _edit_resource_scheme(self, name: str) -> None:
+    self.theme_name.set(name)
+    self.show_scheme_page()
+    self.load_scheme_to_ui(name)
+    self.status.set(f"正在编辑资源方案：{name}")
+
+
+def _open_resource_scheme_folder(self, name: str) -> None:
+    scheme_dir, _files = scheme_manifest(name)
+    os.startfile(scheme_dir)
+
+
+def _delete_resource_scheme(self, name: str) -> None:
+    if name in DEFAULT_SCHEME_NAMES:
+        messagebox.showwarning("不能删除", "默认方案不能删除。")
+        return
+    if not messagebox.askyesno("删除资源", f"确定删除资源方案：{name}？"):
+        return
+    scheme_dir, _files = scheme_manifest(name)
+    shutil.rmtree(scheme_dir, ignore_errors=True)
+    self.refresh_scheme_names()
+    self.render_resource_previews()
+    self.status.set(f"已删除资源方案：{name}")
+
+
 def _render_resource_previews(self) -> None:
     container = getattr(self, "resource_preview_container", None)
     if not container:
@@ -2964,6 +3300,7 @@ def _render_resource_previews(self) -> None:
                     self.resource_preview_frames.append(frames)
                 label.bind("<MouseWheel>", page_wheel)
                 count += 1
+            self.resource_card_actions(card, name)
         self.animate_resource_previews()
         return
     for name in names:
@@ -2971,6 +3308,7 @@ def _render_resource_previews(self) -> None:
         card = ttk.Frame(container, style="Even.TFrame", padding=12)
         card.pack(fill="x", pady=(0, 10))
         ttk.Label(card, text=name, font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        self.resource_card_actions(card, name)
         strip_canvas = Canvas(card, bg="#f7fbff", highlightthickness=0, height=96)
         strip_canvas.pack(fill="x")
         strip = ttk.Frame(strip_canvas, style="Even.TFrame")
@@ -3112,6 +3450,96 @@ def _open_resource_browser(self) -> None:
         webbrowser.open(RESOURCE_URL)
 
 
+def _open_github_source(self) -> None:
+    url = self.github_url_var.get().strip() if hasattr(self, "github_url_var") else configured_github_url()
+    if not url:
+        messagebox.showwarning("未设置 GitHub", "还没有设置 GitHub 源地址。上传仓库后把地址填到这里即可。")
+        return
+    webbrowser.open(url)
+
+
+def _check_for_updates(self) -> None:
+    url = self.github_url_var.get().strip() if hasattr(self, "github_url_var") else configured_github_url()
+    def work():
+        return fetch_latest_github_commit(url)
+    def done(info):
+        current = current_build_commit()
+        latest = info.get("short", "")
+        message = f"当前版本：{APP_VERSION}\n当前提交：{current}\n最新提交：{latest}\n时间：{info.get('date', '')}\n说明：{info.get('message', '')}"
+        if latest and current and latest != current:
+            message += "\n\n检测到可能有新提交。"
+        else:
+            message += "\n\n当前提交与远端一致，或当前构建无法比较提交。"
+        if messagebox.askyesno("检测更新", message + "\n\n是否打开 GitHub？"):
+            webbrowser.open(info.get("url") or url)
+    self._run_wait_task("正在检测更新", "正在连接 GitHub 检测最新提交，请稍等。", work, done)
+
+
+def _diagnostic_text(self) -> str:
+    run_values = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ) as key:
+            for value_name in (AUTO_START_VALUE, LEGACY_AUTO_START_VALUE):
+                try:
+                    value, _type = winreg.QueryValueEx(key, value_name)
+                    run_values.append(f"{value_name}={value}")
+                except FileNotFoundError:
+                    pass
+    except Exception as exc:
+        run_values.append(f"Run 项读取失败：{exc}")
+    pid_file = APP_DATA / "background.pid"
+    pid_text = pid_file.read_text(encoding="utf-8", errors="ignore").strip() if pid_file.exists() else "无"
+    return "\n".join([
+        f"程序：{APP_NAME}",
+        f"版本：{APP_VERSION}",
+        f"当前提交：{current_build_commit()}",
+        f"程序目录：{APP_DIR}",
+        f"数据目录：{APP_DATA}",
+        f"鼠标文件目录：{configured_storage_root()}",
+        f"安装包目录：{configured_output_root()}",
+        f"GitHub：{configured_github_url() or '未设置'}",
+        f"启动快捷方式：{startup_script_path()} / 存在={startup_script_path().exists()}",
+        f"Run 项：{'; '.join(run_values) if run_values else '无'}",
+        f"后台 PID：{pid_text}",
+    ])
+
+
+def _check_autostart_status(self) -> None:
+    messagebox.showinfo("自启动状态", self._diagnostic_text())
+
+
+def _test_background_start(self) -> None:
+    try:
+        start_background_process()
+        messagebox.showinfo("后台测试", "已尝试启动后台进程。可在托盘或任务管理器中确认。")
+    except Exception as exc:
+        log_error("测试后台启动失败", exc)
+        messagebox.showerror("后台测试失败", str(exc))
+
+
+def _copy_diagnostics(self) -> None:
+    text = self._diagnostic_text()
+    self.root.clipboard_clear()
+    self.root.clipboard_append(text)
+    self.status.set("诊断信息已复制。")
+
+
+def _open_error_log(self) -> None:
+    ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+    if not ERROR_LOG.exists():
+        ERROR_LOG.write_text("# 错误记录\n", encoding="utf-8")
+    os.startfile(ERROR_LOG)
+
+
+def _restore_cursor_backup(self) -> None:
+    def work():
+        restore_cursor_backup()
+        return True
+    def done(_value):
+        self.status.set("已恢复应用前鼠标方案。")
+    self._run_wait_task("正在恢复", "正在恢复应用前鼠标方案，请稍等。", work, done)
+
+
 def _show_settings_page(self) -> None:
     self._clean_page()
     self.page_title.configure(text="设置")
@@ -3134,6 +3562,21 @@ def _show_settings_page(self) -> None:
     output_row.pack(fill="x")
     ttk.Button(output_row, text="选择文件夹", style="Yellow.TButton", command=self.pick_output_folder).pack(side=LEFT)
     ttk.Button(output_row, text="打开文件夹", style="Blue.TButton", command=lambda: os.startfile(Path(self.output_path_var.get()))).pack(side=LEFT, padx=8)
+    ttk.Label(card, text="GitHub 源地址", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(22, 0))
+    self.github_url_var = StringVar(value=configured_github_url())
+    ttk.Entry(card, textvariable=self.github_url_var).pack(fill="x", pady=(8, 10))
+    github_row = ttk.Frame(card, style="Card.TFrame")
+    github_row.pack(fill="x")
+    ttk.Button(github_row, text="打开 GitHub", style="Blue.TButton", command=self.open_github_source).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(github_row, text="检测更新", style="Primary.TButton", command=self.check_for_updates).pack(side=LEFT)
+    ttk.Label(card, text="维护工具", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(22, 0))
+    tool_row = ttk.Frame(card, style="Card.TFrame")
+    tool_row.pack(fill="x", pady=(8, 0))
+    ttk.Button(tool_row, text="检测自启动状态", style="Soft.TButton", command=self.check_autostart_status).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(tool_row, text="立即测试后台启动", style="Soft.TButton", command=self.test_background_start).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(tool_row, text="恢复应用前鼠标方案", style="Yellow.TButton", command=self.restore_cursor_backup).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(tool_row, text="打开错误记录", style="Blue.TButton", command=self.open_error_log).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(tool_row, text="复制诊断信息", style="Soft.TButton", command=self.copy_diagnostics).pack(side=LEFT)
     ttk.Label(card, text="跳转链接", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(22, 0))
     link_row = ttk.Frame(card, style="Card.TFrame")
     link_row.pack(fill="x", pady=(8, 0))
@@ -3161,6 +3604,8 @@ def _apply_settings_page(self) -> None:
         data = load_settings()
         data["storage_root"] = str(root.resolve())
         data["output_root"] = str(output_root.resolve())
+        if hasattr(self, "github_url_var"):
+            data["github_url"] = self.github_url_var.get().strip()
         save_settings(data)
         output_root.mkdir(parents=True, exist_ok=True)
         self.ensure_default_schemes()
@@ -3176,12 +3621,25 @@ CursorThemeBuilder.show_resource_page = _show_resource_page
 CursorThemeBuilder.refresh_resource_library = _refresh_resource_library
 CursorThemeBuilder.resource_scheme_names = _resource_scheme_names
 CursorThemeBuilder.toggle_resource_layout = _toggle_resource_layout
+CursorThemeBuilder.resource_card_actions = _resource_card_actions
+CursorThemeBuilder.apply_resource_scheme = _apply_resource_scheme
+CursorThemeBuilder.edit_resource_scheme = _edit_resource_scheme
+CursorThemeBuilder.open_resource_scheme_folder = _open_resource_scheme_folder
+CursorThemeBuilder.delete_resource_scheme = _delete_resource_scheme
 CursorThemeBuilder.render_resource_previews = _render_resource_previews
 CursorThemeBuilder.resource_icon_frames = _resource_icon_frames
 CursorThemeBuilder.animate_resource_previews = _animate_resource_previews
 CursorThemeBuilder.drop_import_resource = _drop_import_resource
 CursorThemeBuilder.open_resource_browser = _open_resource_browser
 CursorThemeBuilder._import_archive_as_scheme = _import_archive_as_scheme
+CursorThemeBuilder.open_github_source = _open_github_source
+CursorThemeBuilder.check_for_updates = _check_for_updates
+CursorThemeBuilder._diagnostic_text = _diagnostic_text
+CursorThemeBuilder.check_autostart_status = _check_autostart_status
+CursorThemeBuilder.test_background_start = _test_background_start
+CursorThemeBuilder.copy_diagnostics = _copy_diagnostics
+CursorThemeBuilder.open_error_log = _open_error_log
+CursorThemeBuilder.restore_cursor_backup = _restore_cursor_backup
 CursorThemeBuilder.show_settings_page = _show_settings_page
 CursorThemeBuilder.pick_storage_folder = _pick_storage_folder
 CursorThemeBuilder.pick_output_folder = _pick_output_folder
