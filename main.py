@@ -1636,6 +1636,14 @@ def main() -> None:
     if "--uninstall" in sys.argv or (IS_FROZEN and is_uninstaller_executable(exe_name)):
         uninstall_application()
         return
+    if "--tk" not in sys.argv:
+        try:
+            import fluent_ui
+
+            fluent_ui.run_app(sys.modules[__name__])
+            return
+        except Exception as exc:
+            log_error("启动 Fluent 界面失败，已回退旧界面", exc)
     root_class = TkinterDnD.Tk if TkinterDnD else Tk
     root = root_class()
     CursorThemeBuilder(root)

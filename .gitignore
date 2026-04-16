@@ -8,3 +8,5 @@ dist/
 *.pyo
 *.log
 _build/
+PyQt-Fluent-Widgets-master/
+PyQt-Fluent-Widgets-master.zip
