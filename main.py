@@ -257,8 +257,9 @@ def latest_commit_from_git(repo_url: str) -> dict[str, str]:
     clean_url = repo_url.strip().split("#", 1)[0].split("?", 1)[0].rstrip("/")
     candidates = [clean_url, clean_url.removesuffix(".git") + ".git"]
     last_error = ""
+    creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     for candidate in dict.fromkeys(candidates):
-        result = subprocess.run(["git", "ls-remote", candidate, "HEAD"], text=True, capture_output=True, check=False)
+        result = subprocess.run(["git", "ls-remote", candidate, "HEAD"], text=True, capture_output=True, check=False, creationflags=creationflags)
         if result.returncode == 0 and result.stdout.strip():
             sha = result.stdout.split()[0]
             return {
@@ -814,6 +815,25 @@ def scheduled_task_exists() -> bool:
     return result.returncode == 0
 
 
+def run_auto_start_exists() -> bool:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ) as key:
+            for value_name in (AUTO_START_VALUE, LEGACY_AUTO_START_VALUE):
+                try:
+                    value, _ = winreg.QueryValueEx(key, value_name)
+                except FileNotFoundError:
+                    continue
+                if value:
+                    return True
+    except FileNotFoundError:
+        return False
+    return False
+
+
+def auto_start_enabled() -> bool:
+    return run_auto_start_exists() or startup_script_path().exists() or scheduled_task_exists()
+
+
 def startup_task_blocked() -> bool:
     return load_settings().get("startup_task_blocked") == "1"
 
@@ -913,6 +933,9 @@ def background_command() -> list[str]:
 
 def start_background_process() -> None:
     APP_DATA.mkdir(parents=True, exist_ok=True)
+    pid, exe = read_background_pid_file(APP_DATA / "background.pid")
+    if pid and background_process_alive(pid, exe):
+        return
     creationflags = 0
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
         creationflags |= subprocess.CREATE_NO_WINDOW

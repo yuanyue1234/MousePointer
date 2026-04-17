@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 
 from PIL import Image
@@ -128,7 +129,7 @@ class CursorPreview(QLabel):
 class PreviewPane(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(300, 300)
+        self.setMinimumSize(380, 380)
         self.setMouseTracking(True)
         self.setCursor(Qt.BlankCursor)
         self.pixmap = QPixmap()
@@ -313,13 +314,15 @@ class SchemePage(QWidget):
         left_layout.addWidget(self.scroll, 1)
 
         right = CardWidget()
-        right.setFixedWidth(360)
+        right.setFixedWidth(460)
         right.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(18, 18, 18, 18)
         right_layout.setSpacing(12)
         right_layout.addWidget(SubtitleLabel("实时预览"))
-        right_layout.addWidget(CaptionLabel("鼠标移入左侧配置行时同步切换"))
+        preview_tip = CaptionLabel("鼠标移入左侧配置行时同步切换")
+        preview_tip.setWordWrap(True)
+        right_layout.addWidget(preview_tip)
 
         size_row = QHBoxLayout()
         size_row.addWidget(BodyLabel("预览大小"))
@@ -334,6 +337,7 @@ class SchemePage(QWidget):
         self.sizeSlider.valueChanged.connect(self.onSizeChanged)
         right_layout.addWidget(self.sizeSlider)
         self.sizeTip = CaptionLabel("推荐范围：2-7，仅用于预览判断，不会写入系统或安装包")
+        self.sizeTip.setWordWrap(True)
         self.sizeTip.setTextColor("#64748b", "#ef4444")
         right_layout.addWidget(self.sizeTip)
 
@@ -341,22 +345,26 @@ class SchemePage(QWidget):
         right_layout.addWidget(self.largePreview, 1)
         self.previewName = StrongBodyLabel("正常选择")
         self.previewFile = CaptionLabel("")
+        self.previewFile.setWordWrap(True)
         self.previewFile.setTextColor("#64748b", "#94a3b8")
         right_layout.addWidget(self.previewName)
         right_layout.addWidget(self.previewFile)
 
-        action_row = QHBoxLayout()
+        action_row = QGridLayout()
+        action_row.setHorizontalSpacing(8)
+        action_row.setVerticalSpacing(8)
         self.sizeSettingsButton = PushButton("鼠标大小设置")
         self.sizeSettingsButton.setIcon(FIF.SETTING)
         self.applyButton = PrimaryPushButton("应用")
         self.applyButton.setIcon(FIF.ACCEPT)
         self.buildButton = PushButton("生成安装包")
         self.buildButton.setIcon(FIF.APPLICATION)
-        action_row.addWidget(self.sizeSettingsButton)
-        action_row.addWidget(self.applyButton)
-        action_row.addWidget(self.buildButton)
+        action_row.addWidget(self.sizeSettingsButton, 0, 0)
+        action_row.addWidget(self.applyButton, 0, 1)
+        action_row.addWidget(self.buildButton, 1, 0, 1, 2)
         right_layout.addLayout(action_row)
         self.status = CaptionLabel("更改鼠标至对应大小后应用方案")
+        self.status.setWordWrap(True)
         self.status.setTextColor("#64748b", "#94a3b8")
         right_layout.addWidget(self.status)
 
@@ -871,19 +879,28 @@ class ResourcePage(QWidget):
             return
         for index, name in enumerate(names):
             card = CardWidget()
+            if self.gridMode:
+                card.setMinimumSize(320, 260)
             layout = QVBoxLayout(card) if self.gridMode else QHBoxLayout(card)
             layout.setContentsMargins(14, 12, 14, 12)
+            layout.setSpacing(10)
             text = QVBoxLayout()
             text.addWidget(StrongBodyLabel(name))
             scheme_dir, files = self.backend.scheme_manifest(name)
             text.addWidget(CaptionLabel(f"{len(files)} 个鼠标状态"))
             layout.addLayout(text, 1 if not self.gridMode else 0)
-            preview_row = QHBoxLayout()
-            for file_name in list(files.values())[:9]:
-                preview = CursorPreview(54 if self.gridMode else 42)
-                preview.setPath(self.backend, scheme_dir / file_name, 48 if self.gridMode else 38)
-                preview_row.addWidget(preview)
-            layout.addLayout(preview_row)
+            preview_grid = QGridLayout()
+            preview_grid.setHorizontalSpacing(6)
+            preview_grid.setVerticalSpacing(6)
+            columns = 5 if self.gridMode else 9
+            for role_index, role in enumerate(self.backend.CURSOR_ROLES):
+                preview = CursorPreview(46 if self.gridMode else 38)
+                file_name = files.get(role.reg_name)
+                path = scheme_dir / file_name if file_name else None
+                preview.setPath(self.backend, path, 44 if self.gridMode else 34, role=role)
+                preview.setToolTip(role.label)
+                preview_grid.addWidget(preview, role_index // columns, role_index % columns)
+            layout.addLayout(preview_grid, 1)
             apply_btn = PrimaryPushButton("应用")
             apply_btn.clicked.connect(lambda _checked=False, n=name: self.applyResource(n))
             layout.addWidget(apply_btn)
@@ -1053,7 +1070,7 @@ class SettingsPage(QWidget):
         layout.addWidget(storage_card)
 
         self.autostart = SwitchButton("自启动后台")
-        self.autostart.setChecked(self.backend.scheduled_task_exists() or self.backend.startup_script_path().exists())
+        self.autostart.setChecked(self.backend.auto_start_enabled())
         save = PrimaryPushButton("保存设置")
         save.clicked.connect(self.save)
         tools = QHBoxLayout()
@@ -1184,6 +1201,8 @@ class SettingsPage(QWidget):
             f"鼠标文件目录：{self.backend.configured_storage_root()}",
             f"安装包目录：{self.backend.configured_output_root()}",
             f"GitHub：{self.backend.configured_github_url()}",
+            f"自启动启用：{self.backend.auto_start_enabled()}",
+            f"Run 项：{self.backend.run_auto_start_exists()}",
             f"启动快捷方式：{self.backend.startup_script_path()} / 存在={self.backend.startup_script_path().exists()}",
             f"任务计划：{self.backend.SCHEDULED_TASK_NAME} / 存在={self.backend.scheduled_task_exists()}",
         ])
@@ -1197,12 +1216,13 @@ class MousePointerFluentWindow(FluentWindow):
         self.backend = backend
         self.exiting = False
         self.trayIcon: QSystemTrayIcon | None = None
+        self.lastScheduleKey = ""
         self.setWindowTitle(backend.APP_NAME)
         icon_path = backend.resource_path("icon终.png")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
-        self.resize(1360, 820)
-        self.setMinimumSize(1180, 720)
+        self.resize(1440, 860)
+        self.setMinimumSize(1260, 740)
         setTheme(Theme.LIGHT)
         setThemeColor("#4f8cff")
         try:
@@ -1231,6 +1251,9 @@ class MousePointerFluentWindow(FluentWindow):
         self.navigationInterface.setMinimumWidth(188)
         self.navigationInterface.setMaximumWidth(188)
         self.createTrayIcon()
+        self.scheduleTimer = QTimer(self)
+        self.scheduleTimer.timeout.connect(self.checkScheduledSwitch)
+        self.scheduleTimer.start(30_000)
 
     def createTrayIcon(self):
         icon = self.windowIcon()
@@ -1265,14 +1288,34 @@ class MousePointerFluentWindow(FluentWindow):
             self.trayIcon.hide()
         QApplication.quit()
 
+    def checkScheduledSwitch(self):
+        if not (self.settingsPage.autostart.isChecked() or self.backend.auto_start_enabled()):
+            return
+        try:
+            schedule_items, week_items = self.backend.load_schedule_state()
+            now = datetime.now()
+            for item in schedule_items:
+                scheme = item.get("scheme", "")
+                key = f"{now:%Y-%m-%d}|{item.get('time')}|{scheme}"
+                if scheme and item.get("time") == now.strftime("%H:%M") and key != self.lastScheduleKey:
+                    self.backend.apply_library_scheme(scheme)
+                    self.lastScheduleKey = key
+                    return
+            scheme = week_items.get(str(now.weekday()))
+            key = f"{now:%Y-%m-%d}|week|{scheme}"
+            if scheme and key != self.lastScheduleKey:
+                self.backend.apply_library_scheme(scheme)
+                self.lastScheduleKey = key
+        except Exception as exc:
+            self.backend.log_error("Fluent 后台切换失败", exc)
+
     def closeEvent(self, event):
         if self.exiting:
             event.accept()
             return
-        if self.settingsPage.autostart.isChecked():
+        if self.settingsPage.autostart.isChecked() or self.backend.auto_start_enabled():
             try:
                 self.backend.set_auto_start(True)
-                self.backend.start_background_process()
                 if self.trayIcon:
                     self.trayIcon.show()
                     self.trayIcon.showMessage(self.backend.APP_NAME, "已保留后台运行。", QSystemTrayIcon.Information, 1800)
