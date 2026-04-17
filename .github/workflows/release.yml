@@ -76,8 +76,10 @@ jobs:
 
           release_body = (
               "鼠标指针配置管理器发布包。\n\n"
-              "- 鼠标指针配置生成器_绿色程序.exe：绿色单文件版\n"
-              "- 鼠标指针配置生成器_安装程序.exe：安装版入口"
+              "- MousePointer_Portable.exe：绿色单文件版\n"
+              "- MousePointer_Installer.exe：安装版入口\n\n"
+              "说明：GitHub Release 会规范化非 ASCII 资产名，中文 exe 名会被改成 _.exe，"
+              "因此发布资产使用稳定英文文件名，程序内仍保留中文显示。"
           )
           _, release = request("POST", f"{api}/releases", {
               "tag_name": tag,
@@ -90,13 +92,13 @@ jobs:
 
           upload_base = release["upload_url"].split("{", 1)[0]
           assets = [
-              Path("release-assets/鼠标指针配置生成器_绿色程序.exe"),
-              Path("release-assets/鼠标指针配置生成器_安装程序.exe"),
+              (Path("release-assets/鼠标指针配置生成器_绿色程序.exe"), "MousePointer_Portable.exe"),
+              (Path("release-assets/鼠标指针配置生成器_安装程序.exe"), "MousePointer_Installer.exe"),
           ]
-          for asset in assets:
+          for asset, release_name in assets:
               if not asset.exists():
                   raise FileNotFoundError(asset)
-              name = urllib.parse.quote(asset.name)
+              name = urllib.parse.quote(release_name)
               upload_url = f"{upload_base}?name={name}"
               request("POST", upload_url, asset.read_bytes(), "application/octet-stream")
-              print(f"uploaded {asset.name}")
+              print(f"uploaded {release_name}")

@@ -71,6 +71,8 @@ BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
 PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
 INSTALLER_EXE_NAME = "鼠标指针配置生成器_安装程序.exe"
+PORTABLE_RELEASE_ASSET_NAME = "MousePointer_Portable.exe"
+INSTALLER_RELEASE_ASSET_NAME = "MousePointer_Installer.exe"
 
 
 @dataclass(frozen=True)
@@ -344,9 +346,13 @@ def is_newer_version(latest_tag: str, current_version: str) -> bool:
 
 def release_asset_for_current_app(release: dict) -> dict:
     current_name = Path(sys.executable).name if IS_FROZEN else PORTABLE_EXE_NAME
-    preferred = INSTALLER_EXE_NAME if is_installer_executable(current_name) else PORTABLE_EXE_NAME
+    preferred_names = (
+        (INSTALLER_EXE_NAME, INSTALLER_RELEASE_ASSET_NAME)
+        if is_installer_executable(current_name)
+        else (PORTABLE_EXE_NAME, PORTABLE_RELEASE_ASSET_NAME)
+    )
     assets = release.get("assets", [])
-    for name in (preferred, PORTABLE_EXE_NAME, INSTALLER_EXE_NAME):
+    for name in (*preferred_names, PORTABLE_RELEASE_ASSET_NAME, INSTALLER_RELEASE_ASSET_NAME, PORTABLE_EXE_NAME, INSTALLER_EXE_NAME):
         for asset in assets:
             if asset.get("name") == name:
                 return asset
