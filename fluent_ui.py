@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import webbrowser
 from pathlib import Path
 
+from PIL import Image
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import Qt, Signal, QObject
+from PySide6.QtCore import Qt, Signal, QObject, QTimer
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,6 +19,9 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
+    QSizePolicy,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -34,6 +39,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     ScrollArea,
+    Slider,
     StrongBodyLabel,
     SubtitleLabel,
     SwitchButton,
@@ -84,7 +90,7 @@ class CursorPreview(QLabel):
             self.clear()
             return
         try:
-            image = backend.cursor_preview_image(path, (size, size)).convert("RGBA")
+            image = backend.cursor_preview_image_sized(path, (size, size), min(size - 6, 64)).convert("RGBA")
             qimage = ImageQt(image)
             pixmap = QPixmap.fromImage(qimage)
             self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -153,12 +159,18 @@ class SchemePage(QWidget):
         self.selected: dict[str, Path] = {}
         self.current_preview = "Arrow"
         self.sizeLevel = 3
+        self.animationFrames: list[QPixmap] = []
+        self.animationIndex = 0
+        self.animationTimer = QTimer(self)
+        self.animationTimer.timeout.connect(self.nextAnimationFrame)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(18)
 
         left = QWidget()
+        left.setMinimumWidth(620)
+        left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(12)
@@ -214,7 +226,7 @@ class SchemePage(QWidget):
         left_layout.addWidget(self.scroll, 1)
 
         right = CardWidget()
-        right.setMinimumWidth(360)
+        right.setFixedWidth(390)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(18, 18, 18, 18)
         right_layout.setSpacing(12)
@@ -223,14 +235,19 @@ class SchemePage(QWidget):
 
         size_row = QHBoxLayout()
         size_row.addWidget(BodyLabel("预览大小"))
-        self.sizeBox = ComboBox()
-        for value in range(1, 16):
-            self.sizeBox.addItem(str(value))
-        self.sizeBox.setCurrentText("3")
-        self.sizeBox.currentTextChanged.connect(self.onSizeChanged)
-        size_row.addWidget(self.sizeBox)
+        self.sizeText = CaptionLabel("3 / 64px")
+        self.sizeText.setTextColor("#64748b", "#94a3b8")
         size_row.addStretch(1)
+        size_row.addWidget(self.sizeText)
         right_layout.addLayout(size_row)
+        self.sizeSlider = Slider(Qt.Horizontal)
+        self.sizeSlider.setRange(1, 15)
+        self.sizeSlider.setValue(3)
+        self.sizeSlider.valueChanged.connect(self.onSizeChanged)
+        right_layout.addWidget(self.sizeSlider)
+        self.sizeTip = CaptionLabel("推荐范围：2-7，仅用于预览判断，不会写入系统或安装包")
+        self.sizeTip.setTextColor("#64748b", "#ef4444")
+        right_layout.addWidget(self.sizeTip)
 
         self.largePreview = QLabel()
         self.largePreview.setMinimumSize(300, 300)
@@ -327,6 +344,9 @@ class SchemePage(QWidget):
 
     def updateLargePreview(self, reg_name: str):
         self.current_preview = reg_name
+        self.animationTimer.stop()
+        self.animationFrames = []
+        self.animationIndex = 0
         role = self.backend.ROLE_BY_REG.get(reg_name)
         path = self.selected.get(reg_name)
         if role:
@@ -336,20 +356,45 @@ class SchemePage(QWidget):
             self.largePreview.clear()
             return
         try:
-            size = max(32, min(256, self.sizeLevel * 16 + 16))
-            image = self.backend.cursor_preview_image(path, (size, size)).convert("RGBA")
-            pixmap = QPixmap.fromImage(ImageQt(image))
-            self.largePreview.setPixmap(pixmap.scaled(self.largePreview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            if path.suffix.lower() == ".ani":
+                frames = self.backend.ani_frame_paths(path)
+                if frames:
+                    self.animationFrames = [self.renderPreviewPixmap(frame) for frame in frames[:60]]
+                    self.nextAnimationFrame()
+                    self.animationTimer.start(90)
+                    return
+            self.largePreview.setPixmap(self.renderPreviewPixmap(path))
         except Exception as exc:
             self.largePreview.setText("预览失败")
             self.backend.log_error("Fluent 预览失败", exc)
+
+    def renderPreviewPixmap(self, path: Path) -> QPixmap:
+        width = max(320, self.largePreview.width())
+        height = max(320, self.largePreview.height())
+        cursor_size = self.backend.size_level_to_pixels(self.sizeLevel)
+        image = self.backend.cursor_preview_image_sized(path, (width, height), cursor_size).convert("RGBA")
+        return QPixmap.fromImage(ImageQt(image))
+
+    def nextAnimationFrame(self):
+        if not self.animationFrames:
+            return
+        self.largePreview.setPixmap(self.animationFrames[self.animationIndex % len(self.animationFrames)])
+        self.animationIndex += 1
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.updateLargePreview(self.current_preview)
 
-    def onSizeChanged(self, text: str):
-        self.sizeLevel = int(text) if text.isdigit() else 3
+    def onSizeChanged(self, value: int):
+        self.sizeLevel = max(1, min(15, int(value)))
+        pixels = self.backend.size_level_to_pixels(self.sizeLevel)
+        self.sizeText.setText(f"{self.sizeLevel} / {pixels}px")
+        if 2 <= self.sizeLevel <= 7:
+            self.sizeTip.setText("推荐范围：2-7，仅用于预览判断，不会写入系统或安装包")
+            self.sizeTip.setTextColor("#64748b", "#94a3b8")
+        else:
+            self.sizeTip.setText("推荐范围：2-7，当前大小可能过大或过小")
+            self.sizeTip.setTextColor("#ef4444", "#ef4444")
         self.updateLargePreview(self.current_preview)
 
     def pickFileForRole(self, reg_name: str):
@@ -501,7 +546,85 @@ class SchemePage(QWidget):
         if error:
             self.showWarn("还不能生成", error)
             return
-        self.showWarn("暂未迁移", "安装包生成仍可使用旧界面 --tk，本界面先完成 Fluent 主体验。")
+        default_dir = self.backend.configured_output_root()
+        default_dir.mkdir(parents=True, exist_ok=True)
+        folder = QFileDialog.getExistingDirectory(self, "选择安装包保存位置", str(default_dir))
+        if not folder:
+            return
+        output_dir = Path(folder)
+        data = self.backend.load_settings()
+        data["output_root"] = str(output_dir.resolve())
+        self.backend.save_settings(data)
+        theme = self.backend.sanitize_name(self.schemeBox.currentText() or "鼠标方案")
+
+        def work():
+            package_dir = self.backend.WORK_ROOT / "fluent_installer_package"
+            package_dir.mkdir(parents=True, exist_ok=True)
+            files = self.prepareAssets(package_dir)
+            installer_py = package_dir / "install_cursor_theme.py"
+            installer_py.write_text(self.backend.installer_source(theme, files), encoding="utf-8")
+            exe_name = f"{theme}_鼠标样式安装器"
+            icon_path = self.installerIcon(package_dir)
+            python = self.backend.find_python_with_pyinstaller()
+            command = [
+                python,
+                "-m",
+                "PyInstaller",
+                "--noconsole",
+                "--windowed",
+                "--onefile",
+                "--clean",
+                "--name",
+                exe_name,
+                "--distpath",
+                str(output_dir),
+                "--workpath",
+                str(self.backend.WORK_ROOT / "pyinstaller"),
+                "--specpath",
+                str(self.backend.WORK_ROOT / "spec"),
+                "--add-data",
+                f"{package_dir / 'assets'};assets",
+            ]
+            if icon_path and icon_path.exists():
+                command.extend(["--icon", str(icon_path)])
+            command.append(str(installer_py))
+            creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+            result = subprocess.run(command, cwd=self.backend.APP_DIR, text=True, capture_output=True, check=False, creationflags=creationflags)
+            if result.returncode != 0:
+                log_path = self.backend.WORK_ROOT / "pyinstaller_error.log"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text(result.stdout + "\n" + result.stderr, encoding="utf-8", errors="replace")
+                raise RuntimeError(f"PyInstaller 打包失败，日志：{log_path}")
+            return output_dir / f"{exe_name}.exe"
+
+        def done(path: Path):
+            self.showInfo("生成完成", str(path))
+            os.startfile(path.parent)
+
+        self.runTask("正在生成安装包", work, done)
+
+    def installerIcon(self, package_dir: Path) -> Path | None:
+        source = self.selected.get("Arrow") or next(iter(self.selected.values()), None)
+        if not source:
+            return None
+        try:
+            if source.suffix.lower() in {".cur", ".ani"}:
+                frames = self.backend.ani_frame_paths(source) if source.suffix.lower() == ".ani" else []
+                icon_source = frames[0] if frames else source
+                try:
+                    image = self.backend.centered_rgba(Image.open(icon_source).convert("RGBA"), 64)
+                except Exception:
+                    image = self.backend.render_cursor_with_windows(icon_source, 64)
+                    if image is None:
+                        image = self.backend.cursor_preview_image(icon_source, (64, 64)).convert("RGBA")
+            else:
+                image = self.backend.centered_rgba(self.backend.image_from_path(source), 64)
+            icon_path = package_dir / "installer_icon.ico"
+            image.save(icon_path, format="ICO", sizes=[(64, 64), (32, 32), (16, 16)])
+            return icon_path
+        except Exception as exc:
+            self.backend.log_error("Fluent 生成安装包图标失败", exc)
+            return None
 
     def newScheme(self):
         base = "新方案"
@@ -716,6 +839,73 @@ class SchedulePage(QWidget):
             InfoBar.error(title="保存失败", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
 
 
+class WeekPage(QWidget):
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+
+    def __init__(self, backend, scheme_page: SchemePage, parent=None):
+        super().__init__(parent)
+        self.backend = backend
+        self.scheme_page = scheme_page
+        self.combos: dict[str, ComboBox] = {}
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(14)
+        layout.addWidget(SubtitleLabel("星期切换"))
+        layout.addWidget(CaptionLabel("根据星期自动应用对应方案。留空则当天不切换。"))
+        values = [""] + self.scheme_page.schemeNames()
+        for index, day in enumerate(self.weekdays):
+            card = CardWidget()
+            row = QHBoxLayout(card)
+            row.setContentsMargins(16, 12, 16, 12)
+            row.addWidget(StrongBodyLabel(day))
+            row.addStretch(1)
+            combo = ComboBox()
+            combo.setMinimumWidth(260)
+            combo.addItems(values)
+            row.addWidget(combo)
+            layout.addWidget(card)
+            self.combos[str(index)] = combo
+        save = PrimaryPushButton("应用星期切换")
+        save.clicked.connect(self.save)
+        layout.addWidget(save, alignment=Qt.AlignLeft)
+        layout.addStretch(1)
+        self.load()
+
+    def load(self):
+        try:
+            _items, week_items = self.backend.load_schedule_state()
+            for day, combo in self.combos.items():
+                combo.setCurrentText(week_items.get(day, ""))
+        except Exception:
+            pass
+
+    def refreshSchemes(self):
+        values = [""] + self.scheme_page.schemeNames()
+        for combo in self.combos.values():
+            current = combo.currentText()
+            combo.clear()
+            combo.addItems(values)
+            if current in values:
+                combo.setCurrentText(current)
+
+    def save(self):
+        try:
+            week_items = {day: combo.currentText().strip() for day, combo in self.combos.items() if combo.currentText().strip()}
+            self.backend.WEEK_SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self.backend.WEEK_SCHEDULE_FILE.write_text(json.dumps(week_items, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.backend.set_auto_start(True)
+            today = str(__import__("datetime").datetime.now().weekday())
+            scheme = week_items.get(today)
+            if scheme:
+                self.scheme_page.schemeBox.setCurrentText(scheme)
+                self.scheme_page.loadScheme(scheme)
+                self.scheme_page.applyScheme()
+            InfoBar.success(title="已应用", content="星期切换已保存并开启后台自启动", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
+        except Exception as exc:
+            self.backend.log_error("Fluent 星期切换保存失败", exc)
+            InfoBar.error(title="保存失败", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
+
+
 class SettingsPage(QWidget):
     def __init__(self, backend, parent=None):
         super().__init__(parent)
@@ -742,6 +932,18 @@ class SettingsPage(QWidget):
         self.autostart.setChecked(self.backend.scheduled_task_exists() or self.backend.startup_script_path().exists())
         save = PrimaryPushButton("保存设置")
         save.clicked.connect(self.save)
+        tools = QHBoxLayout()
+        self.updateButton = PrimaryPushButton("检测更新")
+        self.updateButton.setIcon(FIF.UPDATE)
+        self.restoreButton = PushButton("恢复应用前鼠标方案")
+        self.restoreButton.setIcon(FIF.RETURN)
+        self.errorButton = PushButton("打开错误记录")
+        self.errorButton.setIcon(FIF.DOCUMENT)
+        self.copyDiagButton = PushButton("复制诊断信息")
+        self.copyDiagButton.setIcon(FIF.COPY)
+        for button in [self.updateButton, self.restoreButton, self.errorButton, self.copyDiagButton]:
+            tools.addWidget(button)
+        tools.addStretch(1)
         link_row = QHBoxLayout()
         for text, url in [
             ("像素指针指南文章", self.backend.PIXEL_GUIDE_URL),
@@ -754,8 +956,13 @@ class SettingsPage(QWidget):
         link_row.addStretch(1)
         layout.addWidget(self.autostart)
         layout.addWidget(save, alignment=Qt.AlignLeft)
+        layout.addLayout(tools)
         layout.addLayout(link_row)
         layout.addStretch(1)
+        self.updateButton.clicked.connect(self.checkUpdates)
+        self.restoreButton.clicked.connect(self.restoreCursor)
+        self.errorButton.clicked.connect(self.openErrorLog)
+        self.copyDiagButton.clicked.connect(self.copyDiagnostics)
 
     def pickStorage(self):
         folder = QFileDialog.getExistingDirectory(self, "选择鼠标文件存放位置", self.storage.text())
@@ -774,11 +981,81 @@ class SettingsPage(QWidget):
             self.backend.log_error("Fluent 设置保存失败", exc)
             InfoBar.error(title="保存失败", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
 
+    def runTask(self, title: str, func, done=None):
+        signal = TaskSignal(self)
+        signal.finished.connect(lambda value: self.finishTask(title, value, done))
+        signal.failed.connect(lambda msg: InfoBar.error(title=title, content=msg, orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5500, parent=self.window()))
+
+        def target():
+            try:
+                signal.finished.emit(func())
+            except Exception as exc:
+                self.backend.log_error(title, exc)
+                signal.failed.emit(str(exc))
+
+        threading.Thread(target=target, daemon=True).start()
+
+    def finishTask(self, title: str, value, done):
+        if done:
+            done(value)
+        else:
+            InfoBar.success(title=title, content="完成", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
+
+    def checkUpdates(self):
+        url = self.backend.configured_github_url()
+
+        def work():
+            release = self.backend.fetch_latest_release(url)
+            tag = str(release.get("tag_name", ""))
+            if not self.backend.is_newer_version(tag, self.backend.APP_VERSION):
+                return {"updated": False, "tag": tag}
+            asset = self.backend.release_asset_for_current_app(release)
+            downloaded = self.backend.download_release_asset(asset)
+            return {"updated": True, "tag": tag, "path": downloaded}
+
+        def done(info):
+            if not info.get("updated"):
+                InfoBar.success(title="检测更新", content=f"当前已是最新版本：{info.get('tag') or '未知'}", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=3500, parent=self.window())
+                return
+            if not self.backend.IS_FROZEN:
+                InfoBar.warning(title="检测更新", content=f"已下载：{info['path']}。源码模式不会自动替换。", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
+                return
+            self.backend.launch_update_replacer(Path(info["path"]))
+            QApplication.quit()
+
+        self.runTask("检测更新", work, done)
+
+    def restoreCursor(self):
+        self.runTask("恢复鼠标方案", self.backend.restore_cursor_backup)
+
+    def openErrorLog(self):
+        self.backend.ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+        self.backend.ERROR_LOG.touch(exist_ok=True)
+        os.startfile(self.backend.ERROR_LOG)
+
+    def copyDiagnostics(self):
+        text = "\n".join([
+            f"程序：{self.backend.APP_NAME}",
+            f"版本：{self.backend.APP_VERSION}",
+            f"当前提交：{self.backend.current_build_commit()}",
+            f"程序目录：{self.backend.APP_DIR}",
+            f"数据目录：{self.backend.APP_DATA}",
+            f"鼠标文件目录：{self.backend.configured_storage_root()}",
+            f"安装包目录：{self.backend.configured_output_root()}",
+            f"GitHub：{self.backend.configured_github_url()}",
+            f"启动快捷方式：{self.backend.startup_script_path()} / 存在={self.backend.startup_script_path().exists()}",
+            f"任务计划：{self.backend.SCHEDULED_TASK_NAME} / 存在={self.backend.scheduled_task_exists()}",
+        ])
+        QApplication.clipboard().setText(text)
+        InfoBar.success(title="已复制", content="诊断信息已复制到剪贴板", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
+
 
 class MousePointerFluentWindow(FluentWindow):
     def __init__(self, backend):
         super().__init__()
         self.backend = backend
+        self.exiting = False
+        self.trayIcon: QSystemTrayIcon | None = None
         self.setWindowTitle(backend.APP_NAME)
         icon_path = backend.resource_path("icon终.png")
         if icon_path.exists():
@@ -795,23 +1072,81 @@ class MousePointerFluentWindow(FluentWindow):
         self.schemePage = SchemePage(backend, self)
         self.resourcePage = ResourcePage(backend, self.schemePage, self)
         self.schedulePage = SchedulePage(backend, self)
+        self.weekPage = WeekPage(backend, self.schemePage, self)
         self.settingsPage = SettingsPage(backend, self)
 
         self.schemePage.setObjectName("schemePage")
         self.resourcePage.setObjectName("resourcePage")
         self.schedulePage.setObjectName("schedulePage")
+        self.weekPage.setObjectName("weekPage")
         self.settingsPage.setObjectName("settingsPage")
 
         self.addSubInterface(self.schemePage, FIF.BRUSH, "鼠标方案")
         self.addSubInterface(self.resourcePage, FIF.FOLDER, "资源库")
         self.addSubInterface(self.schedulePage, FIF.DATE_TIME, "时间切换")
+        self.addSubInterface(self.weekPage, FIF.CALENDAR, "星期切换")
         self.addSubInterface(self.settingsPage, FIF.SETTING, "设置", NavigationItemPosition.BOTTOM)
         self.navigationInterface.setAcrylicEnabled(True)
+        self.navigationInterface.setMinimumWidth(188)
+        self.navigationInterface.setMaximumWidth(188)
+        self.createTrayIcon()
+
+    def createTrayIcon(self):
+        icon = self.windowIcon()
+        self.trayIcon = QSystemTrayIcon(icon, self)
+        menu = QMenu()
+        open_action = menu.addAction("打开")
+        open_action.triggered.connect(self.openFromTray)
+        menu.addSeparator()
+        current_action = menu.addAction(f"当前配置：{self.backend.configured_current_scheme()}")
+        current_action.setEnabled(False)
+        next_text = self.backend.next_switch_text(*self.backend.load_schedule_state())
+        next_action = menu.addAction(f"下次切换：{next_text}")
+        next_action.setEnabled(False)
+        menu.addSeparator()
+        exit_action = menu.addAction("退出")
+        exit_action.triggered.connect(self.exitFromTray)
+        self.trayIcon.setContextMenu(menu)
+        self.trayIcon.activated.connect(self.onTrayActivated)
+
+    def onTrayActivated(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.openFromTray()
+
+    def openFromTray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def exitFromTray(self):
+        self.exiting = True
+        if self.trayIcon:
+            self.trayIcon.hide()
+        QApplication.quit()
+
+    def closeEvent(self, event):
+        if self.exiting:
+            event.accept()
+            return
+        if self.settingsPage.autostart.isChecked():
+            try:
+                self.backend.set_auto_start(True)
+                self.backend.start_background_process()
+                if self.trayIcon:
+                    self.trayIcon.show()
+                    self.trayIcon.showMessage(self.backend.APP_NAME, "已保留后台运行。", QSystemTrayIcon.Information, 1800)
+                self.hide()
+                event.ignore()
+                return
+            except Exception as exc:
+                self.backend.log_error("Fluent 保留后台失败", exc)
+        event.accept()
 
 
 def run_app(backend) -> None:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     window = MousePointerFluentWindow(backend)
     window.show()
     app.exec()
