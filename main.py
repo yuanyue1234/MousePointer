@@ -67,7 +67,7 @@ SCHEDULED_TASK_NAME = "MousePointerBackground"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
 DEFAULT_GITHUB_URL = "https://github.com/yuanyue1234/MousePointer"
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
 PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
@@ -739,6 +739,40 @@ def parse_inf_mapping(root: Path) -> dict[str, Path]:
             break
     mapping: dict[str, Path] = {}
     by_name = {p.name.lower(): p for p in files}
+    alias_to_reg = {
+        "pointer": "Arrow",
+        "arrow": "Arrow",
+        "help": "Help",
+        "work": "AppStarting",
+        "appstarting": "AppStarting",
+        "busy": "Wait",
+        "wait": "Wait",
+        "cross": "Crosshair",
+        "text": "IBeam",
+        "ibeam": "IBeam",
+        "hand": "NWPen",
+        "pen": "NWPen",
+        "unavailable": "No",
+        "unavailiable": "No",
+        "no": "No",
+        "vert": "SizeNS",
+        "sizens": "SizeNS",
+        "horz": "SizeWE",
+        "horiz": "SizeWE",
+        "sizewe": "SizeWE",
+        "dgn1": "SizeNWSE",
+        "dgn2": "SizeNESW",
+        "move": "SizeAll",
+        "alternate": "UpArrow",
+        "up": "UpArrow",
+        "link": "Hand",
+    }
+    for alias, reg in alias_to_reg.items():
+        match = re.search(rf"^\s*{re.escape(alias)}\s*=\s*\"?([^\"\r\n]+)\"?", text, re.I | re.M)
+        if match:
+            name = Path(match.group(1).strip()).name.lower()
+            if name in by_name:
+                mapping[reg] = by_name[name]
     for reg in ROLE_BY_REG:
         match = re.search(rf"HKCU,\s*\"Control Panel\\Cursors\",\s*{reg}\s*,[^,]*,\s*\"?([^\"\\r\\n]+)\"?", text, re.I)
         if match:
@@ -1827,9 +1861,7 @@ def pick_scheduled_scheme(value: str, order: str = "顺序", index: int = 0) -> 
     names = available_scheme_names()
     if not names:
         return ""
-    if order == "随机":
-        return random.choice(names)
-    return names[index % len(names)]
+    return random.choice(names)
 
 
 def apply_library_scheme(theme: str) -> None:

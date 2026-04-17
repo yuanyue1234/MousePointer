@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PIL import Image
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QPoint, Qt, Signal, QObject, QTime, QTimer
+from PySide6.QtCore import QPoint, Qt, Signal, QObject, QTimer
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QMenu,
+    QMessageBox,
     QSpinBox,
     QSizePolicy,
     QSystemTrayIcon,
@@ -34,6 +35,7 @@ from qfluentwidgets import (
     CaptionLabel,
     CardWidget,
     ComboBox,
+    EditableComboBox,
     FluentIcon as FIF,
     FluentWindow,
     InfoBar,
@@ -194,7 +196,7 @@ class CursorRow(QWidget):
         self.role = role
         self.path: Path | None = None
         self.setMinimumHeight(70)
-        self.setStyleSheet("background: transparent; border: none;")
+        self.setStyleSheet("CursorRow { background: #ffffff; border: none; border-radius: 8px; } CursorRow:hover { background: #f6fbff; }")
 
         layout = QGridLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
@@ -364,9 +366,12 @@ class SchemePage(QWidget):
         self.applyButton.setIcon(FIF.ACCEPT)
         self.buildButton = PushButton("生成安装包")
         self.buildButton.setIcon(FIF.APPLICATION)
+        self.restoreButton = PushButton("恢复")
+        self.restoreButton.setIcon(FIF.RETURN)
         action_row.addWidget(self.sizeSettingsButton, 0, 0)
-        action_row.addWidget(self.applyButton, 0, 1)
-        action_row.addWidget(self.buildButton, 1, 0, 1, 2)
+        action_row.addWidget(self.buildButton, 0, 1)
+        action_row.addWidget(self.restoreButton, 1, 0)
+        action_row.addWidget(self.applyButton, 1, 1)
         right_layout.addLayout(action_row)
         self.status = CaptionLabel("更改鼠标至对应大小后应用方案")
         self.status.setWordWrap(True)
@@ -384,6 +389,7 @@ class SchemePage(QWidget):
         self.renameButton.clicked.connect(self.renameScheme)
         self.applyButton.clicked.connect(self.applyScheme)
         self.buildButton.clicked.connect(self.buildInstaller)
+        self.restoreButton.clicked.connect(self.restoreCursor)
         self.sizeSettingsButton.clicked.connect(self.openPointerSettings)
         self.refreshSchemes()
 
@@ -597,6 +603,10 @@ class SchemePage(QWidget):
                 name = f"{name}_资源"
             scheme_dir = self.backend.SCHEME_LIBRARY / name
             if (scheme_dir / "scheme.json").exists():
+                result = QMessageBox.question(self, "发现重复方案", f"{name} 已存在，是否继续导入为新副本？\n选择“否”将跳过该方案。")
+                if result != QMessageBox.Yes:
+                    self.showWarn("已跳过", f"{name} 已存在，未重复导入。")
+                    return ""
                 base = name
                 index = 2
                 while (self.backend.SCHEME_LIBRARY / f"{base}_{index}" / "scheme.json").exists():
@@ -758,6 +768,9 @@ class SchemePage(QWidget):
 
         self.runTask("正在生成安装包", work, done)
 
+    def restoreCursor(self):
+        self.runTask("正在恢复鼠标方案", self.backend.restore_cursor_backup, lambda _value: self.showInfo("已恢复", "已恢复应用前鼠标方案"))
+
     def installerIcon(self, package_dir: Path) -> Path | None:
         source = self.selected.get("Arrow") or next(iter(self.selected.values()), None)
         if not source:
@@ -874,6 +887,7 @@ class ResourcePage(QWidget):
         self.backend = backend
         self.scheme_page = scheme_page
         self.gridMode = False
+        self.deleted: dict[str, Path] = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
@@ -886,17 +900,17 @@ class ResourcePage(QWidget):
         self.importButton.setIcon(FIF.DOWNLOAD)
         self.importFolderButton = PushButton("导入文件夹")
         self.importFolderButton.setIcon(FIF.FOLDER)
-        self.openFolder = PushButton("打开存放位置")
-        self.openFolder.setIcon(FIF.FOLDER)
         self.refresh = PrimaryPushButton("刷新")
         self.refresh.setIcon(FIF.SYNC)
+        self.restoreButton = PushButton("恢复上一份鼠标方案")
+        self.restoreButton.setIcon(FIF.RETURN)
         self.gridButton = ToggleButton("九宫格")
         self.gridButton.setIcon(FIF.TILES)
         row.addWidget(self.openWeb)
         row.addWidget(self.importButton)
         row.addWidget(self.importFolderButton)
-        row.addWidget(self.openFolder)
         row.addWidget(self.refresh)
+        row.addWidget(self.restoreButton)
         row.addWidget(self.gridButton)
         row.addStretch(1)
         layout.addLayout(row)
@@ -913,13 +927,14 @@ class ResourcePage(QWidget):
         self.openWeb.clicked.connect(lambda: webbrowser.open(self.backend.RESOURCE_URL))
         self.importButton.clicked.connect(self.importResources)
         self.importFolderButton.clicked.connect(self.importResourceFolder)
-        self.openFolder.clicked.connect(lambda: os.startfile(self.backend.configured_storage_root()))
         self.refresh.clicked.connect(self.render)
+        self.restoreButton.clicked.connect(self.restoreCursor)
         self.gridButton.clicked.connect(self.toggleGrid)
         self.render()
 
     def toggleGrid(self):
         self.gridMode = self.gridButton.isChecked()
+        self.deleted.clear()
         self.render()
 
     def clearCards(self):
@@ -946,7 +961,8 @@ class ResourcePage(QWidget):
             self.cards.addWidget(BodyLabel("暂无资源"))
             return
         for index, name in enumerate(names):
-            card = CardWidget()
+            card = QWidget()
+            card.setStyleSheet("background: #ffffff; border: none; border-radius: 8px;")
             if self.gridMode:
                 card.setMinimumSize(320, 260)
             layout = QVBoxLayout(card) if self.gridMode else QHBoxLayout(card)
@@ -972,6 +988,10 @@ class ResourcePage(QWidget):
             apply_btn = PrimaryPushButton("应用")
             apply_btn.clicked.connect(lambda _checked=False, n=name: self.applyResource(n))
             layout.addWidget(apply_btn)
+            delete_btn = PushButton("删除")
+            delete_btn.setIcon(FIF.DELETE)
+            delete_btn.clicked.connect(lambda _checked=False, n=name, b=delete_btn: self.deleteOrRestoreResource(n, b))
+            layout.addWidget(delete_btn)
             if self.gridMode:
                 self.cards.addWidget(card, index // 3, index % 3)
             else:
@@ -983,6 +1003,32 @@ class ResourcePage(QWidget):
         self.scheme_page.schemeBox.setCurrentText(name)
         self.scheme_page.loadScheme(name)
         self.scheme_page.applyScheme()
+
+    def deleteOrRestoreResource(self, name: str, button: PushButton):
+        source = self.backend.SCHEME_LIBRARY / name
+        if name in self.deleted:
+            target = self.deleted.pop(name)
+            if target.exists():
+                if source.exists():
+                    shutil.rmtree(source, ignore_errors=True)
+                target.rename(source)
+            button.setText("删除")
+            button.setIcon(FIF.DELETE)
+            self.scheme_page.refreshSchemes()
+            return
+        if not source.exists():
+            return
+        trash_root = self.backend.WORK_ROOT / "resource_trash"
+        trash_root.mkdir(parents=True, exist_ok=True)
+        target = trash_root / f"{name}_{int(self.backend.time.time())}"
+        source.rename(target)
+        self.deleted[name] = target
+        button.setText("恢复")
+        button.setIcon(FIF.RETURN)
+        self.scheme_page.refreshSchemes()
+
+    def restoreCursor(self):
+        self.scheme_page.runTask("正在恢复鼠标方案", self.backend.restore_cursor_backup, lambda _value: InfoBar.success(title="已恢复", content="已恢复应用前鼠标方案", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window()))
 
     def importDroppedResources(self, paths: list[Path]):
         imported = []
@@ -1017,48 +1063,23 @@ class SchedulePage(QWidget):
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("时间切换"))
-        layout.addWidget(CaptionLabel("亮色模式、暗色模式和计时切换都可以选择固定方案或随机方案。"))
-        self.lightTime = QTimeEdit()
-        self.lightTime.setDisplayFormat("HH:mm")
+        layout.addWidget(CaptionLabel("点击时间框可选择时间，也可以手写具体时间。留空则不切换。"))
+        self.lightTime = self.createTimeBox()
         self.lightScheme = ComboBox()
-        self.lightOrder = ComboBox()
-        self.darkTime = QTimeEdit()
-        self.darkTime.setDisplayFormat("HH:mm")
+        self.darkTime = self.createTimeBox()
         self.darkScheme = ComboBox()
-        self.darkOrder = ComboBox()
-        self.timerInterval = QSpinBox()
-        self.timerInterval.setRange(1, 86400)
-        self.timerInterval.setValue(300)
-        self.timerUnit = ComboBox()
-        self.timerUnit.addItems(["秒", "分钟"])
-        self.timerScheme = ComboBox()
-        self.timerOrder = ComboBox()
-        self.timerEnabled = SwitchButton("启用计时切换")
-        for widget in [self.lightScheme, self.darkScheme, self.timerScheme]:
+        for widget in [self.lightScheme, self.darkScheme]:
             widget.addItem("")
             widget.addItem("随机", self.backend.RANDOM_SCHEME_VALUE)
             widget.addItems(self.schemeNames())
-        for widget in [self.lightOrder, self.darkOrder, self.timerOrder]:
-            widget.addItems(["顺序", "随机"])
-        for title, time_edit, scheme, order in [("亮色模式", self.lightTime, self.lightScheme, self.lightOrder), ("暗色模式", self.darkTime, self.darkScheme, self.darkOrder)]:
+        for title, time_edit, scheme in [("亮色模式", self.lightTime, self.lightScheme), ("暗色模式", self.darkTime, self.darkScheme)]:
             card = CardWidget()
             row = QHBoxLayout(card)
             row.setContentsMargins(16, 14, 16, 14)
             row.addWidget(StrongBodyLabel(title))
             row.addWidget(time_edit)
             row.addWidget(scheme)
-            row.addWidget(order)
             layout.addWidget(card)
-        timer_card = CardWidget()
-        timer_row = QHBoxLayout(timer_card)
-        timer_row.setContentsMargins(16, 14, 16, 14)
-        timer_row.addWidget(self.timerEnabled)
-        timer_row.addWidget(BodyLabel("每"))
-        timer_row.addWidget(self.timerInterval)
-        timer_row.addWidget(self.timerUnit)
-        timer_row.addWidget(self.timerScheme)
-        timer_row.addWidget(self.timerOrder)
-        layout.addWidget(timer_card)
         save = PrimaryPushButton("应用时间切换")
         save.clicked.connect(self.save)
         layout.addWidget(save, alignment=Qt.AlignLeft)
@@ -1068,6 +1089,14 @@ class SchedulePage(QWidget):
     def schemeNames(self) -> list[str]:
         root = self.backend.SCHEME_LIBRARY
         return sorted([p.name for p in root.iterdir() if p.is_dir()], key=lambda name: self.backend.scheme_order_value(root / name)) if root.exists() else []
+
+    def createTimeBox(self) -> EditableComboBox:
+        box = EditableComboBox()
+        box.setMinimumWidth(180)
+        options = [f"{hour:02d}:{minute:02d}" for hour in range(24) for minute in (0, 30)]
+        box.addItems(options)
+        box.setText("")
+        return box
 
     def currentSchemeValue(self, combo: ComboBox) -> str:
         data = combo.currentData()
@@ -1083,43 +1112,104 @@ class SchedulePage(QWidget):
         try:
             items, _week = self.backend.load_schedule_state()
             by_mode = {item.get("mode"): item for item in items}
-            for mode, time_edit, scheme, order in [("light", self.lightTime, self.lightScheme, self.lightOrder), ("dark", self.darkTime, self.darkScheme, self.darkOrder)]:
+            for mode, time_edit, scheme in [("light", self.lightTime, self.lightScheme), ("dark", self.darkTime, self.darkScheme)]:
                 item = by_mode.get(mode, {})
-                text = item.get("time", "00:00")
-                time_edit.setTime(QTime.fromString(text, "HH:mm") if text else QTime(0, 0))
+                time_edit.setText(item.get("time", ""))
                 self.setSchemeValue(scheme, item.get("scheme", ""))
-                order.setCurrentText(item.get("order", "顺序"))
-            timer = by_mode.get("timer", {})
-            self.timerEnabled.setChecked(bool(timer.get("scheme")))
-            seconds = int(timer.get("interval_seconds") or 300)
-            if seconds % 60 == 0 and seconds >= 60:
-                self.timerUnit.setCurrentText("分钟")
-                self.timerInterval.setValue(max(1, seconds // 60))
-            else:
-                self.timerUnit.setCurrentText("秒")
-                self.timerInterval.setValue(seconds)
-            self.setSchemeValue(self.timerScheme, timer.get("scheme", ""))
-            self.timerOrder.setCurrentText(timer.get("order", "顺序"))
         except Exception:
             pass
 
     def save(self):
         try:
             items = []
-            for mode, time_edit, scheme, order in [("light", self.lightTime, self.lightScheme, self.lightOrder), ("dark", self.darkTime, self.darkScheme, self.darkOrder)]:
+            for mode, time_edit, scheme in [("light", self.lightTime, self.lightScheme), ("dark", self.darkTime, self.darkScheme)]:
                 value = self.currentSchemeValue(scheme)
+                at = time_edit.currentText().strip()
                 if value:
-                    items.append({"mode": mode, "time": time_edit.time().toString("HH:mm"), "scheme": value, "order": order.currentText().strip()})
-            timer_value = self.currentSchemeValue(self.timerScheme)
-            if self.timerEnabled.isChecked() and timer_value:
-                interval = int(self.timerInterval.value()) * (60 if self.timerUnit.currentText() == "分钟" else 1)
-                items.append({"mode": "timer", "interval_seconds": interval, "scheme": timer_value, "order": self.timerOrder.currentText().strip()})
+                    self.backend.CursorThemeBuilder.validate_time(None, at)
+                    items.append({"mode": mode, "time": at, "scheme": value})
             self.backend.SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
             self.backend.SCHEDULE_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
             self.backend.set_auto_start(True)
             InfoBar.success(title="已应用", content="时间切换已保存并开启后台自启动", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
         except Exception as exc:
             self.backend.log_error("Fluent 时间切换保存失败", exc)
+            InfoBar.error(title="保存失败", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
+
+
+class TimerPage(QWidget):
+    def __init__(self, backend, parent=None):
+        super().__init__(parent)
+        self.backend = backend
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(14)
+        layout.addWidget(SubtitleLabel("计时切换"))
+        layout.addWidget(CaptionLabel("按固定间隔自动切换方案。选择“随机”时每次从方案库随机挑选。"))
+        card = CardWidget()
+        row = QHBoxLayout(card)
+        row.setContentsMargins(16, 14, 16, 14)
+        self.enabled = SwitchButton("启用计时切换")
+        self.interval = QSpinBox()
+        self.interval.setRange(1, 86400)
+        self.interval.setValue(5)
+        self.unit = ComboBox()
+        self.unit.addItems(["秒", "分钟"])
+        self.scheme = ComboBox()
+        self.scheme.addItem("")
+        self.scheme.addItem("随机", self.backend.RANDOM_SCHEME_VALUE)
+        self.scheme.addItems(self.schemeNames())
+        row.addWidget(self.enabled)
+        row.addWidget(BodyLabel("每"))
+        row.addWidget(self.interval)
+        row.addWidget(self.unit)
+        row.addWidget(self.scheme)
+        layout.addWidget(card)
+        save = PrimaryPushButton("应用计时切换")
+        save.clicked.connect(self.save)
+        layout.addWidget(save, alignment=Qt.AlignLeft)
+        layout.addStretch(1)
+        self.load()
+
+    def schemeNames(self) -> list[str]:
+        root = self.backend.SCHEME_LIBRARY
+        return sorted([p.name for p in root.iterdir() if p.is_dir()], key=lambda name: self.backend.scheme_order_value(root / name)) if root.exists() else []
+
+    def currentSchemeValue(self) -> str:
+        data = self.scheme.currentData()
+        return str(data) if data else self.scheme.currentText().strip()
+
+    def load(self):
+        try:
+            items, _week = self.backend.load_schedule_state()
+            timer = next((item for item in items if item.get("mode") == "timer"), {})
+            self.enabled.setChecked(bool(timer.get("scheme")))
+            seconds = int(timer.get("interval_seconds") or 300)
+            if seconds % 60 == 0 and seconds >= 60:
+                self.unit.setCurrentText("分钟")
+                self.interval.setValue(max(1, seconds // 60))
+            else:
+                self.unit.setCurrentText("秒")
+                self.interval.setValue(seconds)
+            value = timer.get("scheme", "")
+            self.scheme.setCurrentText("随机" if value == self.backend.RANDOM_SCHEME_VALUE else value)
+        except Exception:
+            pass
+
+    def save(self):
+        try:
+            items, week = self.backend.load_schedule_state()
+            items = [item for item in items if item.get("mode") != "timer"]
+            value = self.currentSchemeValue()
+            if self.enabled.isChecked() and value:
+                interval = int(self.interval.value()) * (60 if self.unit.currentText() == "分钟" else 1)
+                items.append({"mode": "timer", "interval_seconds": interval, "scheme": value})
+            self.backend.SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self.backend.SCHEDULE_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.backend.set_auto_start(True)
+            InfoBar.success(title="已应用", content="计时切换已保存并开启后台自启动", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
+        except Exception as exc:
+            self.backend.log_error("Fluent 计时切换保存失败", exc)
             InfoBar.error(title="保存失败", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
 
 
@@ -1190,9 +1280,9 @@ class WeekPage(QWidget):
             if scheme == self.backend.RANDOM_SCHEME_VALUE:
                 scheme = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
             if scheme:
+                self.backend.apply_library_scheme(scheme)
                 self.scheme_page.schemeBox.setCurrentText(scheme)
                 self.scheme_page.loadScheme(scheme)
-                self.scheme_page.applyScheme()
             InfoBar.success(title="已应用", content="星期切换已保存并开启后台自启动", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
         except Exception as exc:
             self.backend.log_error("Fluent 星期切换保存失败", exc)
@@ -1236,24 +1326,24 @@ class SettingsPage(QWidget):
         tools = QHBoxLayout()
         self.updateButton = PrimaryPushButton("检测更新")
         self.updateButton.setIcon(FIF.UPDATE)
-        self.restoreButton = PushButton("恢复应用前鼠标方案")
-        self.restoreButton.setIcon(FIF.RETURN)
         self.errorButton = PushButton("打开错误记录")
         self.errorButton.setIcon(FIF.DOCUMENT)
         self.copyDiagButton = PushButton("复制诊断信息")
         self.copyDiagButton.setIcon(FIF.COPY)
-        for button in [self.updateButton, self.restoreButton, self.errorButton, self.copyDiagButton]:
+        for button in [self.updateButton, self.errorButton, self.copyDiagButton]:
             tools.addWidget(button)
         tools.addStretch(1)
         link_row = QHBoxLayout()
-        for text, url in [
-            ("像素指针指南文章", self.backend.PIXEL_GUIDE_URL),
-            ("工具制作 BY ASUNNY", self.backend.ASUNNY_URL),
-            ("GitHub 源地址", self.backend.configured_github_url()),
+        for item in [
+            ("像素指针指南文章", self.backend.PIXEL_GUIDE_URL, FIF.LINK),
+            ("工具制作 BY ASUNNY", self.backend.ASUNNY_URL, FIF.LINK),
+            ("GitHub 源地址", self.backend.configured_github_url(), FIF.GITHUB),
         ]:
+            text, url, icon = item
             btn = PushButton(text)
+            btn.setIcon(icon)
             btn.clicked.connect(lambda _checked=False, u=url: webbrowser.open(u))
-        link_row.addWidget(btn)
+            link_row.addWidget(btn)
         link_row.addStretch(1)
         layout.addWidget(self.autostart)
         layout.addWidget(self.hideTaskbarIcon)
@@ -1263,7 +1353,6 @@ class SettingsPage(QWidget):
         layout.addLayout(link_row)
         layout.addStretch(1)
         self.updateButton.clicked.connect(self.checkUpdates)
-        self.restoreButton.clicked.connect(self.restoreCursor)
         self.errorButton.clicked.connect(self.openErrorLog)
         self.copyDiagButton.clicked.connect(self.copyDiagnostics)
 
@@ -1405,18 +1494,21 @@ class MousePointerFluentWindow(FluentWindow):
         self.schemePage = SchemePage(backend, self)
         self.resourcePage = ResourcePage(backend, self.schemePage, self)
         self.schedulePage = SchedulePage(backend, self)
+        self.timerPage = TimerPage(backend, self)
         self.weekPage = WeekPage(backend, self.schemePage, self)
         self.settingsPage = SettingsPage(backend, self)
 
         self.schemePage.setObjectName("schemePage")
         self.resourcePage.setObjectName("resourcePage")
         self.schedulePage.setObjectName("schedulePage")
+        self.timerPage.setObjectName("timerPage")
         self.weekPage.setObjectName("weekPage")
         self.settingsPage.setObjectName("settingsPage")
 
         self.addSubInterface(self.schemePage, FIF.BRUSH, "鼠标方案")
         self.addSubInterface(self.resourcePage, FIF.FOLDER, "资源库")
         self.addSubInterface(self.schedulePage, FIF.DATE_TIME, "时间切换")
+        self.addSubInterface(self.timerPage, FIF.STOP_WATCH, "计时切换")
         self.addSubInterface(self.weekPage, FIF.CALENDAR, "星期切换")
         self.addSubInterface(self.settingsPage, FIF.SETTING, "设置", NavigationItemPosition.BOTTOM)
         self.navigationInterface.setAcrylicEnabled(True)
