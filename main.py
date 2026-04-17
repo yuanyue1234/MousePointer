@@ -24,6 +24,7 @@ import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+import random
 from tkinter import BOTH, LEFT, RIGHT, VERTICAL, Canvas, DoubleVar, IntVar, StringVar, Tk, Toplevel, filedialog, messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageOps, ImageTk
@@ -66,7 +67,7 @@ SCHEDULED_TASK_NAME = "MousePointerBackground"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
 DEFAULT_GITHUB_URL = "https://github.com/yuanyue1234/MousePointer"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.8"
 BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
 PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
@@ -107,6 +108,7 @@ CURSOR_ROLES: list[CursorRole] = [
 ROLE_BY_REG = {role.reg_name: role for role in CURSOR_ROLES}
 DEFAULT_SCHEME_NAMES = ["01方案", "02方案"]
 DEFAULT_ARCHIVE_KEYWORDS = ["小垚", "鼠鼠"]
+RANDOM_SCHEME_VALUE = "__random__"
 SUPPORTED_TYPES = (
     ("图片和光标", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.ico *.cur *.ani"),
     ("图片", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.ico"),
@@ -234,6 +236,28 @@ def configured_output_root() -> Path:
 
 def configured_github_url() -> str:
     return load_settings().get("github_url", DEFAULT_GITHUB_URL).strip()
+
+
+def scheme_order_value(path: Path) -> float:
+    manifest = path / "scheme.json"
+    if manifest.exists():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            for key in ("order", "created_at", "saved_at"):
+                value = data.get(key)
+                if isinstance(value, (int, float)):
+                    return float(value)
+                if isinstance(value, str) and value:
+                    try:
+                        return datetime.fromisoformat(value).timestamp()
+                    except ValueError:
+                        pass
+        except Exception:
+            pass
+    try:
+        return path.stat().st_ctime
+    except OSError:
+        return 0
 
 
 apply_storage_root(configured_storage_root())
@@ -732,6 +756,8 @@ def parse_inf_mapping(root: Path) -> dict[str, Path]:
 
 
 def extract_import_package(source: Path) -> Path:
+    if source.is_dir():
+        return source
     target = WORK_ROOT / "imports" / sanitize_name(source.stem)
     if target.exists():
         shutil.rmtree(target)
@@ -1744,6 +1770,8 @@ def run_background() -> None:
     if lock is None:
         return
     last_key = ""
+    last_timer_at = 0.0
+    timer_index = 0
     while True:
         try:
             items = []
@@ -1756,18 +1784,52 @@ def run_background() -> None:
                 week_items = data if isinstance(data, dict) else {}
             now = datetime.now()
             for item in items:
+                if item.get("mode") == "timer":
+                    interval = max(1, int(item.get("interval_seconds") or 0))
+                    if time.time() - last_timer_at >= interval:
+                        scheme = pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), timer_index)
+                        timer_index += 1
+                        last_timer_at = time.time()
+                        if scheme:
+                            apply_library_scheme(scheme)
+                    continue
                 key = f"{now:%Y-%m-%d}|{item.get('time')}|{item.get('scheme')}"
                 if item.get("time") == now.strftime("%H:%M") and key != last_key:
-                    apply_library_scheme(item.get("scheme", ""))
+                    scheme = pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), 0)
+                    if scheme:
+                        apply_library_scheme(scheme)
                     last_key = key
             scheme = week_items.get(str(now.weekday()))
             key = f"{now:%Y-%m-%d}|week|{scheme}"
             if scheme and key != last_key:
-                apply_library_scheme(scheme)
+                picked = pick_scheduled_scheme(scheme, "随机", 0) if scheme == RANDOM_SCHEME_VALUE else scheme
+                if picked:
+                    apply_library_scheme(picked)
                 last_key = key
         except Exception as exc:
             log_error("后台切换失败", exc)
         time.sleep(30)
+
+
+def available_scheme_names() -> list[str]:
+    if not SCHEME_LIBRARY.exists():
+        return []
+    names = []
+    for path in SCHEME_LIBRARY.iterdir():
+        if path.is_dir() and (path / "scheme.json").exists():
+            names.append(path.name)
+    return sorted(names, key=lambda name: scheme_order_value(SCHEME_LIBRARY / name))
+
+
+def pick_scheduled_scheme(value: str, order: str = "顺序", index: int = 0) -> str:
+    if value != RANDOM_SCHEME_VALUE:
+        return value
+    names = available_scheme_names()
+    if not names:
+        return ""
+    if order == "随机":
+        return random.choice(names)
+    return names[index % len(names)]
 
 
 def apply_library_scheme(theme: str) -> None:

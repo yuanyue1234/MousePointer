@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PIL import Image
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QPoint, Qt, Signal, QObject, QTimer
+from PySide6.QtCore import QPoint, Qt, Signal, QObject, QTime, QTimer
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,8 +22,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QMenu,
+    QSpinBox,
     QSizePolicy,
     QSystemTrayIcon,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -182,7 +184,7 @@ class PreviewPane(QWidget):
         painter.drawPixmap(x, y, self.pixmap)
 
 
-class CursorRow(CardWidget):
+class CursorRow(QWidget):
     hovered = Signal(str)
     picked = Signal(str)
 
@@ -192,6 +194,7 @@ class CursorRow(CardWidget):
         self.role = role
         self.path: Path | None = None
         self.setMinimumHeight(70)
+        self.setStyleSheet("background: transparent; border: none;")
 
         layout = QGridLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
@@ -285,9 +288,11 @@ class SchemePage(QWidget):
         self.deleteButton.setIcon(FIF.DELETE)
         self.importButton = PushButton("导入")
         self.importButton.setIcon(FIF.DOWNLOAD)
+        self.importFolderButton = PushButton("导入文件夹")
+        self.importFolderButton.setIcon(FIF.FOLDER)
         self.saveButton = PushButton("保存")
         self.saveButton.setIcon(FIF.SAVE)
-        for button in [self.newButton, self.renameButton, self.deleteButton, self.importButton, self.saveButton]:
+        for button in [self.newButton, self.renameButton, self.deleteButton, self.importButton, self.importFolderButton, self.saveButton]:
             toolbar.addWidget(button)
         toolbar.addStretch(1)
         left_layout.addLayout(toolbar)
@@ -372,6 +377,7 @@ class SchemePage(QWidget):
         root.addWidget(right, 0)
 
         self.importButton.clicked.connect(self.importPackage)
+        self.importFolderButton.clicked.connect(self.importFolder)
         self.saveButton.clicked.connect(self.saveScheme)
         self.newButton.clicked.connect(self.newScheme)
         self.deleteButton.clicked.connect(self.deleteScheme)
@@ -401,7 +407,7 @@ class SchemePage(QWidget):
                 continue
             if files and any((path / name).exists() for name in files.values()):
                 names.append(path.name)
-        return sorted(names)
+        return sorted(names, key=lambda name: self.backend.scheme_order_value(root / name))
 
     def refreshSchemes(self):
         current = self.schemeBox.currentText()
@@ -517,10 +523,10 @@ class SchemePage(QWidget):
         self.updateLargePreview(reg_name)
 
     def handleDropped(self, paths: list[Path]):
-        archives = [p for p in paths if p.suffix.lower() in {".zip", ".rar", ".7z", ".exe"}]
-        if archives:
-            for archive in archives:
-                self.importArchiveAsScheme(archive)
+        packages = [p for p in paths if p.is_dir() or p.suffix.lower() in {".zip", ".rar", ".7z", ".exe"}]
+        if packages:
+            for package in packages:
+                self.importPackagePath(package)
             self.refreshSchemes()
             return
         files = [p for p in paths if p.suffix.lower() in {".cur", ".ani", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}]
@@ -532,18 +538,61 @@ class SchemePage(QWidget):
     def importPackage(self):
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "导入安装包或压缩包",
+            "导入安装包、压缩包或光标文件",
             str(self.backend.configured_storage_root()),
-            "资源包 (*.zip *.rar *.7z *.exe);;所有文件 (*.*)",
+            "资源包和光标 (*.zip *.rar *.7z *.exe *.cur *.ani);;所有文件 (*.*)",
         )
         for file_name in files:
-            self.importArchiveAsScheme(Path(file_name))
+            path = Path(file_name)
+            if path.suffix.lower() in {".cur", ".ani"}:
+                self.selected[self.current_preview] = path
+                self.rows[self.current_preview].setPath(path)
+            else:
+                self.importPackagePath(path)
         if files:
             self.refreshSchemes()
 
-    def importArchiveAsScheme(self, archive: Path):
+    def importFolder(self):
+        folder = QFileDialog.getExistingDirectory(self, "导入鼠标指针文件夹", str(self.backend.configured_storage_root()))
+        if folder:
+            self.importPackagePath(Path(folder))
+            self.refreshSchemes()
+
+    def importPackagePath(self, package: Path) -> list[str]:
+        imported = []
         try:
-            name = self.backend.sanitize_name(archive.stem)
+            extracted = self.backend.extract_import_package(package)
+            roots = self.detectSchemeRoots(extracted)
+            if len(roots) > 1:
+                self.showInfo("批量导入", f"识别到 {len(roots)} 份鼠标指针，正在批量添加。")
+            for root in roots:
+                name = package.stem if len(roots) == 1 else root.name
+                imported.append(self.importRootAsScheme(root, name))
+            return imported
+        except Exception as exc:
+            self.showError("导入失败", exc)
+            return imported
+
+    def detectSchemeRoots(self, extracted: Path) -> list[Path]:
+        inf_roots = []
+        for inf in extracted.rglob("*.inf"):
+            root = inf.parent
+            if any(p.suffix.lower() in {".cur", ".ani"} for p in root.rglob("*")):
+                inf_roots.append(root)
+        unique = list(dict.fromkeys(inf_roots))
+        if unique:
+            return unique
+        child_roots = []
+        for child in (extracted.iterdir() if extracted.exists() else []):
+            if child.is_dir() and any(p.suffix.lower() in {".cur", ".ani"} for p in child.rglob("*")):
+                child_roots.append(child)
+        if len(child_roots) > 1:
+            return child_roots
+        return [extracted]
+
+    def importRootAsScheme(self, root: Path, raw_name: str) -> str:
+        try:
+            name = self.backend.sanitize_name(raw_name)
             if name in self.backend.DEFAULT_SCHEME_NAMES:
                 name = f"{name}_资源"
             scheme_dir = self.backend.SCHEME_LIBRARY / name
@@ -554,10 +603,9 @@ class SchemePage(QWidget):
                     index += 1
                 name = f"{base}_{index}"
                 scheme_dir = self.backend.SCHEME_LIBRARY / name
-            extracted = self.backend.extract_import_package(archive)
-            mapping = self.backend.parse_inf_mapping(extracted)
+            mapping = self.backend.parse_inf_mapping(root)
             if not mapping:
-                raise RuntimeError(f"{archive.name} 没有识别到鼠标方案。")
+                raise RuntimeError(f"{root.name} 没有识别到鼠标方案。")
             scheme_dir.mkdir(parents=True, exist_ok=True)
             files = {}
             for reg_name, source in mapping.items():
@@ -569,8 +617,10 @@ class SchemePage(QWidget):
                 files[reg_name] = output_name
             self.writeManifest(name, files, scheme_dir)
             self.showInfo("导入完成", f"已添加：{name}")
+            return name
         except Exception as exc:
             self.showError("导入失败", exc)
+            return ""
 
     def validate(self) -> str | None:
         if not self.selected:
@@ -606,7 +656,7 @@ class SchemePage(QWidget):
 
     def writeManifest(self, theme: str, files: dict[str, str], folder: Path):
         folder.mkdir(parents=True, exist_ok=True)
-        manifest = {"name": theme, "files": files}
+        manifest = {"name": theme, "files": files, "order": self.backend.time.time(), "saved_at": datetime.now().isoformat()}
         (folder / "scheme.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def saveScheme(self):
@@ -767,8 +817,15 @@ class SchemePage(QWidget):
         if not name:
             return
         try:
+            names = self.schemeNames()
+            index = names.index(name) if name in names else -1
             shutil.rmtree(self.backend.SCHEME_LIBRARY / name, ignore_errors=True)
             self.refreshSchemes()
+            names_after = self.schemeNames()
+            if names_after:
+                target_index = max(0, min(index - 1, len(names_after) - 1))
+                self.schemeBox.setCurrentText(names_after[target_index])
+                self.loadScheme(names_after[target_index])
             self.showInfo("删除完成", f"已删除：{name}")
         except Exception as exc:
             self.showError("删除失败", exc)
@@ -825,6 +882,10 @@ class ResourcePage(QWidget):
         row = QHBoxLayout()
         self.openWeb = PushButton("在线资源库")
         self.openWeb.setIcon(FIF.LINK)
+        self.importButton = PushButton("导入资源")
+        self.importButton.setIcon(FIF.DOWNLOAD)
+        self.importFolderButton = PushButton("导入文件夹")
+        self.importFolderButton.setIcon(FIF.FOLDER)
         self.openFolder = PushButton("打开存放位置")
         self.openFolder.setIcon(FIF.FOLDER)
         self.refresh = PrimaryPushButton("刷新")
@@ -832,11 +893,16 @@ class ResourcePage(QWidget):
         self.gridButton = ToggleButton("九宫格")
         self.gridButton.setIcon(FIF.TILES)
         row.addWidget(self.openWeb)
+        row.addWidget(self.importButton)
+        row.addWidget(self.importFolderButton)
         row.addWidget(self.openFolder)
         row.addWidget(self.refresh)
         row.addWidget(self.gridButton)
         row.addStretch(1)
         layout.addLayout(row)
+        self.dropArea = DropArea("拖入压缩包、安装器或文件夹添加到资源库")
+        self.dropArea.dropped.connect(self.importDroppedResources)
+        layout.addWidget(self.dropArea)
         self.container = QWidget()
         self.cards = QVBoxLayout(self.container)
         self.cards.setSpacing(10)
@@ -845,6 +911,8 @@ class ResourcePage(QWidget):
         scroll.setWidget(self.container)
         layout.addWidget(scroll, 1)
         self.openWeb.clicked.connect(lambda: webbrowser.open(self.backend.RESOURCE_URL))
+        self.importButton.clicked.connect(self.importResources)
+        self.importFolderButton.clicked.connect(self.importResourceFolder)
         self.openFolder.clicked.connect(lambda: os.startfile(self.backend.configured_storage_root()))
         self.refresh.clicked.connect(self.render)
         self.gridButton.clicked.connect(self.toggleGrid)
@@ -916,6 +984,30 @@ class ResourcePage(QWidget):
         self.scheme_page.loadScheme(name)
         self.scheme_page.applyScheme()
 
+    def importDroppedResources(self, paths: list[Path]):
+        imported = []
+        for path in paths:
+            imported.extend([name for name in self.scheme_page.importPackagePath(path) if name])
+        self.scheme_page.refreshSchemes()
+        self.render()
+        if imported:
+            InfoBar.success(title="资源已添加", content=f"已导入 {len(imported)} 个方案", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=3000, parent=self.window())
+
+    def importResources(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "导入资源包或安装器",
+            str(self.backend.configured_storage_root()),
+            "资源包 (*.zip *.rar *.7z *.exe);;所有文件 (*.*)",
+        )
+        if files:
+            self.importDroppedResources([Path(file) for file in files])
+
+    def importResourceFolder(self):
+        folder = QFileDialog.getExistingDirectory(self, "导入资源文件夹", str(self.backend.configured_storage_root()))
+        if folder:
+            self.importDroppedResources([Path(folder)])
+
 
 class SchedulePage(QWidget):
     def __init__(self, backend, parent=None):
@@ -925,24 +1017,48 @@ class SchedulePage(QWidget):
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("时间切换"))
-        layout.addWidget(CaptionLabel("亮色模式与暗色模式各选择一个时间和方案。留空则不切换。"))
-        self.lightTime = LineEdit()
-        self.lightTime.setPlaceholderText("亮色时间，例如 08:00")
+        layout.addWidget(CaptionLabel("亮色模式、暗色模式和计时切换都可以选择固定方案或随机方案。"))
+        self.lightTime = QTimeEdit()
+        self.lightTime.setDisplayFormat("HH:mm")
         self.lightScheme = ComboBox()
-        self.darkTime = LineEdit()
-        self.darkTime.setPlaceholderText("暗色时间，例如 20:00")
+        self.lightOrder = ComboBox()
+        self.darkTime = QTimeEdit()
+        self.darkTime.setDisplayFormat("HH:mm")
         self.darkScheme = ComboBox()
-        for widget in [self.lightScheme, self.darkScheme]:
+        self.darkOrder = ComboBox()
+        self.timerInterval = QSpinBox()
+        self.timerInterval.setRange(1, 86400)
+        self.timerInterval.setValue(300)
+        self.timerUnit = ComboBox()
+        self.timerUnit.addItems(["秒", "分钟"])
+        self.timerScheme = ComboBox()
+        self.timerOrder = ComboBox()
+        self.timerEnabled = SwitchButton("启用计时切换")
+        for widget in [self.lightScheme, self.darkScheme, self.timerScheme]:
             widget.addItem("")
+            widget.addItem("随机", self.backend.RANDOM_SCHEME_VALUE)
             widget.addItems(self.schemeNames())
-        for title, time_edit, scheme in [("亮色模式", self.lightTime, self.lightScheme), ("暗色模式", self.darkTime, self.darkScheme)]:
+        for widget in [self.lightOrder, self.darkOrder, self.timerOrder]:
+            widget.addItems(["顺序", "随机"])
+        for title, time_edit, scheme, order in [("亮色模式", self.lightTime, self.lightScheme, self.lightOrder), ("暗色模式", self.darkTime, self.darkScheme, self.darkOrder)]:
             card = CardWidget()
             row = QHBoxLayout(card)
             row.setContentsMargins(16, 14, 16, 14)
             row.addWidget(StrongBodyLabel(title))
             row.addWidget(time_edit)
             row.addWidget(scheme)
+            row.addWidget(order)
             layout.addWidget(card)
+        timer_card = CardWidget()
+        timer_row = QHBoxLayout(timer_card)
+        timer_row.setContentsMargins(16, 14, 16, 14)
+        timer_row.addWidget(self.timerEnabled)
+        timer_row.addWidget(BodyLabel("每"))
+        timer_row.addWidget(self.timerInterval)
+        timer_row.addWidget(self.timerUnit)
+        timer_row.addWidget(self.timerScheme)
+        timer_row.addWidget(self.timerOrder)
+        layout.addWidget(timer_card)
         save = PrimaryPushButton("应用时间切换")
         save.clicked.connect(self.save)
         layout.addWidget(save, alignment=Qt.AlignLeft)
@@ -951,26 +1067,53 @@ class SchedulePage(QWidget):
 
     def schemeNames(self) -> list[str]:
         root = self.backend.SCHEME_LIBRARY
-        return sorted([p.name for p in root.iterdir() if p.is_dir()]) if root.exists() else []
+        return sorted([p.name for p in root.iterdir() if p.is_dir()], key=lambda name: self.backend.scheme_order_value(root / name)) if root.exists() else []
+
+    def currentSchemeValue(self, combo: ComboBox) -> str:
+        data = combo.currentData()
+        return str(data) if data else combo.currentText().strip()
+
+    def setSchemeValue(self, combo: ComboBox, value: str):
+        if value == self.backend.RANDOM_SCHEME_VALUE:
+            combo.setCurrentText("随机")
+        else:
+            combo.setCurrentText(value)
 
     def load(self):
         try:
             items, _week = self.backend.load_schedule_state()
             by_mode = {item.get("mode"): item for item in items}
-            self.lightTime.setText(by_mode.get("light", {}).get("time", ""))
-            self.lightScheme.setCurrentText(by_mode.get("light", {}).get("scheme", ""))
-            self.darkTime.setText(by_mode.get("dark", {}).get("time", ""))
-            self.darkScheme.setCurrentText(by_mode.get("dark", {}).get("scheme", ""))
+            for mode, time_edit, scheme, order in [("light", self.lightTime, self.lightScheme, self.lightOrder), ("dark", self.darkTime, self.darkScheme, self.darkOrder)]:
+                item = by_mode.get(mode, {})
+                text = item.get("time", "00:00")
+                time_edit.setTime(QTime.fromString(text, "HH:mm") if text else QTime(0, 0))
+                self.setSchemeValue(scheme, item.get("scheme", ""))
+                order.setCurrentText(item.get("order", "顺序"))
+            timer = by_mode.get("timer", {})
+            self.timerEnabled.setChecked(bool(timer.get("scheme")))
+            seconds = int(timer.get("interval_seconds") or 300)
+            if seconds % 60 == 0 and seconds >= 60:
+                self.timerUnit.setCurrentText("分钟")
+                self.timerInterval.setValue(max(1, seconds // 60))
+            else:
+                self.timerUnit.setCurrentText("秒")
+                self.timerInterval.setValue(seconds)
+            self.setSchemeValue(self.timerScheme, timer.get("scheme", ""))
+            self.timerOrder.setCurrentText(timer.get("order", "顺序"))
         except Exception:
             pass
 
     def save(self):
         try:
             items = []
-            for mode, time_edit, scheme in [("light", self.lightTime, self.lightScheme), ("dark", self.darkTime, self.darkScheme)]:
-                if scheme.currentText().strip():
-                    self.backend.CursorThemeBuilder.validate_time(None, time_edit.text().strip())
-                    items.append({"mode": mode, "time": time_edit.text().strip(), "scheme": scheme.currentText().strip()})
+            for mode, time_edit, scheme, order in [("light", self.lightTime, self.lightScheme, self.lightOrder), ("dark", self.darkTime, self.darkScheme, self.darkOrder)]:
+                value = self.currentSchemeValue(scheme)
+                if value:
+                    items.append({"mode": mode, "time": time_edit.time().toString("HH:mm"), "scheme": value, "order": order.currentText().strip()})
+            timer_value = self.currentSchemeValue(self.timerScheme)
+            if self.timerEnabled.isChecked() and timer_value:
+                interval = int(self.timerInterval.value()) * (60 if self.timerUnit.currentText() == "分钟" else 1)
+                items.append({"mode": "timer", "interval_seconds": interval, "scheme": timer_value, "order": self.timerOrder.currentText().strip()})
             self.backend.SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
             self.backend.SCHEDULE_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
             self.backend.set_auto_start(True)
@@ -993,7 +1136,7 @@ class WeekPage(QWidget):
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("星期切换"))
         layout.addWidget(CaptionLabel("根据星期自动应用对应方案。留空则当天不切换。"))
-        values = [""] + self.scheme_page.schemeNames()
+        values = ["", "随机"] + self.scheme_page.schemeNames()
         for index, day in enumerate(self.weekdays):
             card = CardWidget()
             row = QHBoxLayout(card)
@@ -1002,7 +1145,8 @@ class WeekPage(QWidget):
             row.addStretch(1)
             combo = ComboBox()
             combo.setMinimumWidth(260)
-            combo.addItems(values)
+            for value in values:
+                combo.addItem(value, self.backend.RANDOM_SCHEME_VALUE if value == "随机" else None)
             row.addWidget(combo)
             layout.addWidget(card)
             self.combos[str(index)] = combo
@@ -1016,27 +1160,35 @@ class WeekPage(QWidget):
         try:
             _items, week_items = self.backend.load_schedule_state()
             for day, combo in self.combos.items():
-                combo.setCurrentText(week_items.get(day, ""))
+                value = week_items.get(day, "")
+                combo.setCurrentText("随机" if value == self.backend.RANDOM_SCHEME_VALUE else value)
         except Exception:
             pass
 
     def refreshSchemes(self):
-        values = [""] + self.scheme_page.schemeNames()
+        values = ["", "随机"] + self.scheme_page.schemeNames()
         for combo in self.combos.values():
             current = combo.currentText()
             combo.clear()
-            combo.addItems(values)
+            for value in values:
+                combo.addItem(value, self.backend.RANDOM_SCHEME_VALUE if value == "随机" else None)
             if current in values:
                 combo.setCurrentText(current)
 
     def save(self):
         try:
-            week_items = {day: combo.currentText().strip() for day, combo in self.combos.items() if combo.currentText().strip()}
+            week_items = {}
+            for day, combo in self.combos.items():
+                value = str(combo.currentData()) if combo.currentData() else combo.currentText().strip()
+                if value:
+                    week_items[day] = value
             self.backend.WEEK_SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
             self.backend.WEEK_SCHEDULE_FILE.write_text(json.dumps(week_items, ensure_ascii=False, indent=2), encoding="utf-8")
             self.backend.set_auto_start(True)
             today = str(__import__("datetime").datetime.now().weekday())
             scheme = week_items.get(today)
+            if scheme == self.backend.RANDOM_SCHEME_VALUE:
+                scheme = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
             if scheme:
                 self.scheme_page.schemeBox.setCurrentText(scheme)
                 self.scheme_page.loadScheme(scheme)
@@ -1067,6 +1219,9 @@ class SettingsPage(QWidget):
         pick = PushButton("选择")
         pick.clicked.connect(self.pickStorage)
         row.addWidget(pick)
+        open_storage = PushButton("打开文件夹")
+        open_storage.clicked.connect(self.openStorageFolder)
+        row.addWidget(open_storage)
         layout.addWidget(storage_card)
 
         self.autostart = SwitchButton("自启动后台")
@@ -1116,6 +1271,11 @@ class SettingsPage(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "选择鼠标文件存放位置", self.storage.text())
         if folder:
             self.storage.setText(folder)
+
+    def openStorageFolder(self):
+        folder = Path(self.storage.text()).expanduser()
+        folder.mkdir(parents=True, exist_ok=True)
+        os.startfile(folder)
 
     def save(self):
         try:
@@ -1227,6 +1387,8 @@ class MousePointerFluentWindow(FluentWindow):
         self.start_hidden = start_hidden
         self.trayIcon: QSystemTrayIcon | None = None
         self.lastScheduleKey = ""
+        self.lastTimerAt = 0.0
+        self.timerScheduleIndex = 0
         self.setWindowTitle(backend.APP_NAME)
         icon_path = backend.resource_path("icon终.png")
         if icon_path.exists():
@@ -1307,16 +1469,29 @@ class MousePointerFluentWindow(FluentWindow):
             schedule_items, week_items = self.backend.load_schedule_state()
             now = datetime.now()
             for item in schedule_items:
+                if item.get("mode") == "timer":
+                    interval = max(1, int(item.get("interval_seconds") or 0))
+                    if __import__("time").time() - self.lastTimerAt >= interval:
+                        scheme = self.backend.pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), self.timerScheduleIndex)
+                        self.timerScheduleIndex += 1
+                        self.lastTimerAt = __import__("time").time()
+                        if scheme:
+                            self.backend.apply_library_scheme(scheme)
+                    continue
                 scheme = item.get("scheme", "")
                 key = f"{now:%Y-%m-%d}|{item.get('time')}|{scheme}"
                 if scheme and item.get("time") == now.strftime("%H:%M") and key != self.lastScheduleKey:
-                    self.backend.apply_library_scheme(scheme)
+                    picked = self.backend.pick_scheduled_scheme(scheme, item.get("order", "顺序"), 0)
+                    if picked:
+                        self.backend.apply_library_scheme(picked)
                     self.lastScheduleKey = key
                     return
             scheme = week_items.get(str(now.weekday()))
             key = f"{now:%Y-%m-%d}|week|{scheme}"
             if scheme and key != self.lastScheduleKey:
-                self.backend.apply_library_scheme(scheme)
+                picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0) if scheme == self.backend.RANDOM_SCHEME_VALUE else scheme
+                if picked:
+                    self.backend.apply_library_scheme(picked)
                 self.lastScheduleKey = key
         except Exception as exc:
             self.backend.log_error("Fluent 后台切换失败", exc)
