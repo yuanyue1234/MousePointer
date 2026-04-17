@@ -1071,6 +1071,11 @@ class SettingsPage(QWidget):
 
         self.autostart = SwitchButton("自启动后台")
         self.autostart.setChecked(self.backend.auto_start_enabled())
+        self.hideTaskbarIcon = SwitchButton("隐藏任务栏图标")
+        self.hideTaskbarIcon.setChecked(self.backend.hide_taskbar_icon_enabled())
+        hide_tip = CaptionLabel("开启后开机只保留后台进程；关闭窗口也不会显示托盘图标。")
+        hide_tip.setWordWrap(True)
+        hide_tip.setTextColor("#64748b", "#94a3b8")
         save = PrimaryPushButton("保存设置")
         save.clicked.connect(self.save)
         tools = QHBoxLayout()
@@ -1093,9 +1098,11 @@ class SettingsPage(QWidget):
         ]:
             btn = PushButton(text)
             btn.clicked.connect(lambda _checked=False, u=url: webbrowser.open(u))
-            link_row.addWidget(btn)
+        link_row.addWidget(btn)
         link_row.addStretch(1)
         layout.addWidget(self.autostart)
+        layout.addWidget(self.hideTaskbarIcon)
+        layout.addWidget(hide_tip)
         layout.addWidget(save, alignment=Qt.AlignLeft)
         layout.addLayout(tools)
         layout.addLayout(link_row)
@@ -1115,6 +1122,7 @@ class SettingsPage(QWidget):
             self.backend.apply_storage_root(Path(self.storage.text()))
             data = self.backend.load_settings()
             data["storage_root"] = str(Path(self.storage.text()).resolve())
+            data["hide_taskbar_icon"] = "1" if self.hideTaskbarIcon.isChecked() else "0"
             self.backend.save_settings(data)
             self.backend.set_auto_start(self.autostart.isChecked())
             InfoBar.success(title="已保存", content="设置已应用", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
@@ -1202,6 +1210,7 @@ class SettingsPage(QWidget):
             f"安装包目录：{self.backend.configured_output_root()}",
             f"GitHub：{self.backend.configured_github_url()}",
             f"自启动启用：{self.backend.auto_start_enabled()}",
+            f"隐藏任务栏图标：{self.backend.hide_taskbar_icon_enabled()}",
             f"Run 项：{self.backend.run_auto_start_exists()}",
             f"启动快捷方式：{self.backend.startup_script_path()} / 存在={self.backend.startup_script_path().exists()}",
             f"任务计划：{self.backend.SCHEDULED_TASK_NAME} / 存在={self.backend.scheduled_task_exists()}",
@@ -1211,10 +1220,11 @@ class SettingsPage(QWidget):
 
 
 class MousePointerFluentWindow(FluentWindow):
-    def __init__(self, backend):
+    def __init__(self, backend, start_hidden: bool = False):
         super().__init__()
         self.backend = backend
         self.exiting = False
+        self.start_hidden = start_hidden
         self.trayIcon: QSystemTrayIcon | None = None
         self.lastScheduleKey = ""
         self.setWindowTitle(backend.APP_NAME)
@@ -1272,6 +1282,8 @@ class MousePointerFluentWindow(FluentWindow):
         exit_action.triggered.connect(self.exitFromTray)
         self.trayIcon.setContextMenu(menu)
         self.trayIcon.activated.connect(self.onTrayActivated)
+        if not self.backend.hide_taskbar_icon_enabled():
+            self.trayIcon.show()
 
     def onTrayActivated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
@@ -1316,6 +1328,10 @@ class MousePointerFluentWindow(FluentWindow):
         if self.settingsPage.autostart.isChecked() or self.backend.auto_start_enabled():
             try:
                 self.backend.set_auto_start(True)
+                if self.backend.hide_taskbar_icon_enabled():
+                    self.backend.start_background_process()
+                    event.accept()
+                    return
                 if self.trayIcon:
                     self.trayIcon.show()
                     self.trayIcon.showMessage(self.backend.APP_NAME, "已保留后台运行。", QSystemTrayIcon.Information, 1800)
@@ -1327,10 +1343,15 @@ class MousePointerFluentWindow(FluentWindow):
         event.accept()
 
 
-def run_app(backend) -> None:
+def run_app(backend, start_hidden: bool = False) -> None:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    window = MousePointerFluentWindow(backend)
-    window.show()
+    window = MousePointerFluentWindow(backend, start_hidden=start_hidden)
+    if start_hidden:
+        if window.trayIcon and not backend.hide_taskbar_icon_enabled():
+            window.trayIcon.show()
+            window.trayIcon.showMessage(backend.APP_NAME, "已在后台运行。", QSystemTrayIcon.Information, 1800)
+    else:
+        window.show()
     app.exec()

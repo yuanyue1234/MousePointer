@@ -16,16 +16,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Publish GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.ref_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh release delete "$TAG_NAME" --yes 2>/dev/null || true
-          gh release create "$TAG_NAME" \
-            "release-assets/鼠标指针配置生成器_绿色程序.exe" \
-            "release-assets/鼠标指针配置生成器_安装程序.exe" \
-            --title "MousePointer $TAG_NAME" \
-            --notes "鼠标指针配置管理器发布包。"$'\n\n'"- 鼠标指针配置生成器_绿色程序.exe：绿色单文件版"$'\n'"- 鼠标指针配置生成器_安装程序.exe：安装版入口" \
-            --latest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: MousePointer ${{ github.ref_name }}
+          make_latest: true
+          fail_on_unmatched_files: true
+          body: |
+            鼠标指针配置管理器发布包。
+
+            - 鼠标指针配置生成器_绿色程序.exe：绿色单文件版
+            - 鼠标指针配置生成器_安装程序.exe：安装版入口
+          files: |
+            release-assets/鼠标指针配置生成器_绿色程序.exe
+            release-assets/鼠标指针配置生成器_安装程序.exe

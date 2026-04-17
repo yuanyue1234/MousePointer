@@ -167,6 +167,15 @@ def remove_setting(key: str) -> None:
         save_settings(data)
 
 
+def setting_enabled(key: str, default: bool = False) -> bool:
+    value = str(load_settings().get(key, "1" if default else "0")).strip().lower()
+    return value in {"1", "true", "yes", "on", "是", "开启"}
+
+
+def set_setting_enabled(key: str, enabled: bool) -> None:
+    update_setting(key, "1" if enabled else "0")
+
+
 def log_error_once(setting_key: str, title: str, exc: BaseException | str) -> None:
     detail = str(exc)
     data = load_settings()
@@ -793,14 +802,14 @@ def create_shortcut(link_path: Path, target: Path, arguments: str = "", working_
 
 
 def write_startup_script(_command: str) -> None:
-    command = background_command()
+    command = startup_command()
     target = Path(command[0])
     arguments = subprocess.list2cmdline(command[1:])
     create_shortcut(startup_script_path(), target, arguments, APP_DIR, target)
 
 
 def scheduled_task_command() -> str:
-    return subprocess.list2cmdline(background_command())
+    return subprocess.list2cmdline(startup_command())
 
 
 def scheduled_task_exists() -> bool:
@@ -896,7 +905,7 @@ def remove_startup_script() -> None:
 
 
 def set_auto_start(enabled: bool) -> None:
-    command = subprocess.list2cmdline(background_command())
+    command = subprocess.list2cmdline(startup_command())
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
         if enabled:
             winreg.SetValueEx(key, AUTO_START_VALUE, 0, winreg.REG_SZ, command)
@@ -925,10 +934,26 @@ def set_auto_start(enabled: bool) -> None:
                 log_error_once("startup_task_delete_error", "删除任务计划自启动失败", exc)
 
 
-def background_command() -> list[str]:
+def app_command(argument: str) -> list[str]:
     if IS_FROZEN:
-        return [str(Path(sys.executable).resolve()), "--background"]
-    return [str(Path(sys.executable).resolve()), str(Path(__file__).resolve()), "--background"]
+        return [str(Path(sys.executable).resolve()), argument]
+    return [str(Path(sys.executable).resolve()), str(Path(__file__).resolve()), argument]
+
+
+def hide_taskbar_icon_enabled() -> bool:
+    return setting_enabled("hide_taskbar_icon", False)
+
+
+def startup_command() -> list[str]:
+    return background_command() if hide_taskbar_icon_enabled() else tray_command()
+
+
+def tray_command() -> list[str]:
+    return app_command("--tray")
+
+
+def background_command() -> list[str]:
+    return app_command("--background")
 
 
 def start_background_process() -> None:
@@ -1677,6 +1702,16 @@ def main() -> None:
     if "--background" in sys.argv:
         run_background()
         return
+    if "--tray" in sys.argv:
+        try:
+            import fluent_ui
+
+            fluent_ui.run_app(sys.modules[__name__], start_hidden=True)
+            return
+        except Exception as exc:
+            log_error("启动托盘后台失败", exc)
+            run_background()
+            return
     exe_name = Path(sys.executable).name if IS_FROZEN else ""
     if "--install" in sys.argv or (IS_FROZEN and is_installer_executable(exe_name)):
         install_application()
