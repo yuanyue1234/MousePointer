@@ -55,7 +55,7 @@ INSTALLED_LIBRARY = DEFAULT_STORAGE_ROOT / "installed"
 SCHEDULE_FILE = APP_DATA / "schedule.json"
 WEEK_SCHEDULE_FILE = APP_DATA / "week_schedule.json"
 CURSOR_BACKUP_FILE = APP_DATA / "cursor_backup.json"
-ERROR_LOG = APP_DIR / "错误记录.md"
+ERROR_LOG = APP_DIR / "错误记录.txt"
 DEFAULT_CURSOR_SIZE = 64
 DEFAULT_PREVIEW_SIZE_LEVEL = 3
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -67,7 +67,7 @@ SCHEDULED_TASK_NAME = "MousePointerBackground"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
 DEFAULT_GITHUB_URL = "https://github.com/yuanyue1234/MousePointer"
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
 PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
@@ -534,7 +534,7 @@ def resource_path(relative):
 
 
 def log_error(exc):
-    log = Path(__file__).resolve().with_name("错误记录.md")
+    log = Path(__file__).resolve().with_name("错误记录.txt")
     with log.open("a", encoding="utf-8") as handle:
         handle.write(f"\\n## {{datetime.now():%Y-%m-%d %H:%M:%S}} 安装失败\\n\\n```text\\n{{''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))}}\\n```\\n")
 

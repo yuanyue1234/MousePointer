@@ -196,7 +196,8 @@ class CursorRow(QWidget):
         self.role = role
         self.path: Path | None = None
         self.setMinimumHeight(70)
-        self.setStyleSheet("CursorRow { background: #ffffff; border: none; border-radius: 8px; } CursorRow:hover { background: #f6fbff; }")
+        self.setObjectName("cursorRow")
+        self.setStyleSheet("#cursorRow { background: #ffffff; border: none; border-radius: 8px; } #cursorRow:hover { background: #f6fbff; }")
 
         layout = QGridLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
@@ -306,7 +307,9 @@ class SchemePage(QWidget):
         self.scroll = ScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
         self.rowWidget = QWidget()
+        self.rowWidget.setStyleSheet("background: transparent;")
         self.rowLayout = QVBoxLayout(self.rowWidget)
         self.rowLayout.setContentsMargins(2, 2, 8, 2)
         self.rowLayout.setSpacing(8)
@@ -918,10 +921,12 @@ class ResourcePage(QWidget):
         self.dropArea.dropped.connect(self.importDroppedResources)
         layout.addWidget(self.dropArea)
         self.container = QWidget()
+        self.container.setStyleSheet("background: transparent;")
         self.cards = QVBoxLayout(self.container)
         self.cards.setSpacing(10)
         scroll = ScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
         scroll.setWidget(self.container)
         layout.addWidget(scroll, 1)
         self.openWeb.clicked.connect(lambda: webbrowser.open(self.backend.RESOURCE_URL))
@@ -962,7 +967,8 @@ class ResourcePage(QWidget):
             return
         for index, name in enumerate(names):
             card = QWidget()
-            card.setStyleSheet("background: #ffffff; border: none; border-radius: 8px;")
+            card.setObjectName("resourceCard")
+            card.setStyleSheet("#resourceCard { background: #ffffff; border: none; border-radius: 8px; }")
             if self.gridMode:
                 card.setMinimumSize(320, 260)
             layout = QVBoxLayout(card) if self.gridMode else QHBoxLayout(card)
@@ -985,13 +991,18 @@ class ResourcePage(QWidget):
                 preview.setToolTip(role.label)
                 preview_grid.addWidget(preview, role_index // columns, role_index % columns)
             layout.addLayout(preview_grid, 1)
-            apply_btn = PrimaryPushButton("应用")
-            apply_btn.clicked.connect(lambda _checked=False, n=name: self.applyResource(n))
-            layout.addWidget(apply_btn)
+            action_row = QHBoxLayout()
             delete_btn = PushButton("删除")
             delete_btn.setIcon(FIF.DELETE)
             delete_btn.clicked.connect(lambda _checked=False, n=name, b=delete_btn: self.deleteOrRestoreResource(n, b))
-            layout.addWidget(delete_btn)
+            apply_btn = PrimaryPushButton("应用")
+            apply_btn.clicked.connect(lambda _checked=False, n=name: self.applyResource(n))
+            action_row.addWidget(delete_btn)
+            action_row.addWidget(apply_btn)
+            if self.gridMode:
+                layout.addLayout(action_row)
+            else:
+                layout.addLayout(action_row)
             if self.gridMode:
                 self.cards.addWidget(card, index // 3, index % 3)
             else:
@@ -1213,6 +1224,202 @@ class TimerPage(QWidget):
             InfoBar.error(title="保存失败", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
 
 
+class SwitchPage(QWidget):
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+
+    def __init__(self, backend, scheme_page: SchemePage, parent=None):
+        super().__init__(parent)
+        self.backend = backend
+        self.scheme_page = scheme_page
+        self.modeSwitches: dict[str, SwitchButton] = {}
+        self.weekCombos: dict[str, ComboBox] = {}
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(14)
+        layout.addWidget(SubtitleLabel("方案切换"))
+        layout.addWidget(CaptionLabel("时间切换、计时切换、星期切换只能启用一种。"))
+
+        self.timeCard = CardWidget()
+        time_layout = QGridLayout(self.timeCard)
+        time_layout.setContentsMargins(16, 14, 16, 14)
+        time_title = QHBoxLayout()
+        time_title.addWidget(StrongBodyLabel("时间切换"))
+        self.timeSwitch = SwitchButton()
+        self.modeSwitches["time"] = self.timeSwitch
+        time_title.addWidget(self.timeSwitch)
+        time_title.addStretch(1)
+        time_layout.addLayout(time_title, 0, 0, 1, 4)
+        self.lightTime = self.createTimeBox()
+        self.lightScheme = self.createSchemeBox()
+        self.darkTime = self.createTimeBox()
+        self.darkScheme = self.createSchemeBox()
+        time_layout.addWidget(BodyLabel("亮色模式"), 1, 0)
+        time_layout.addWidget(self.lightTime, 1, 1)
+        time_layout.addWidget(self.lightScheme, 1, 2)
+        time_layout.addWidget(BodyLabel("暗色模式"), 2, 0)
+        time_layout.addWidget(self.darkTime, 2, 1)
+        time_layout.addWidget(self.darkScheme, 2, 2)
+        layout.addWidget(self.timeCard)
+
+        self.timerCard = CardWidget()
+        timer_layout = QHBoxLayout(self.timerCard)
+        timer_layout.setContentsMargins(16, 14, 16, 14)
+        timer_layout.addWidget(StrongBodyLabel("计时切换"))
+        self.timerSwitch = SwitchButton()
+        self.modeSwitches["timer"] = self.timerSwitch
+        timer_layout.addWidget(self.timerSwitch)
+        timer_layout.addWidget(BodyLabel("每"))
+        self.timerInterval = QSpinBox()
+        self.timerInterval.setRange(1, 86400)
+        self.timerInterval.setValue(5)
+        self.timerUnit = ComboBox()
+        self.timerUnit.addItems(["秒", "分钟"])
+        self.timerScheme = self.createSchemeBox()
+        timer_layout.addWidget(self.timerInterval)
+        timer_layout.addWidget(self.timerUnit)
+        timer_layout.addWidget(self.timerScheme)
+        timer_layout.addStretch(1)
+        layout.addWidget(self.timerCard)
+
+        self.weekCard = CardWidget()
+        week_layout = QGridLayout(self.weekCard)
+        week_layout.setContentsMargins(16, 14, 16, 14)
+        week_title = QHBoxLayout()
+        week_title.addWidget(StrongBodyLabel("星期切换"))
+        self.weekSwitch = SwitchButton()
+        self.modeSwitches["week"] = self.weekSwitch
+        week_title.addWidget(self.weekSwitch)
+        week_title.addStretch(1)
+        week_layout.addLayout(week_title, 0, 0, 1, 4)
+        for index, day in enumerate(self.weekdays):
+            combo = self.createSchemeBox()
+            self.weekCombos[str(index)] = combo
+            row = index // 2 + 1
+            col = (index % 2) * 2
+            week_layout.addWidget(BodyLabel(day), row, col)
+            week_layout.addWidget(combo, row, col + 1)
+        layout.addWidget(self.weekCard)
+
+        layout.addStretch(1)
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        self.applyButton = PrimaryPushButton("应用")
+        self.applyButton.setIcon(FIF.ACCEPT)
+        bottom.addWidget(self.applyButton)
+        layout.addLayout(bottom)
+
+        for mode, switch in self.modeSwitches.items():
+            switch.checkedChanged.connect(lambda checked, m=mode: self.onModeChanged(m, checked))
+        self.applyButton.clicked.connect(self.save)
+        self.load()
+
+    def createTimeBox(self) -> EditableComboBox:
+        box = EditableComboBox()
+        box.setMinimumWidth(180)
+        box.addItems([f"{hour:02d}:{minute:02d}" for hour in range(24) for minute in (0, 30)])
+        box.setText("")
+        return box
+
+    def createSchemeBox(self) -> ComboBox:
+        box = ComboBox()
+        box.setMinimumWidth(220)
+        box.addItem("")
+        box.addItem("随机", self.backend.RANDOM_SCHEME_VALUE)
+        box.addItems(self.scheme_page.schemeNames())
+        return box
+
+    def currentSchemeValue(self, combo: ComboBox) -> str:
+        data = combo.currentData()
+        return str(data) if data else combo.currentText().strip()
+
+    def setSchemeValue(self, combo: ComboBox, value: str):
+        combo.setCurrentText("随机" if value == self.backend.RANDOM_SCHEME_VALUE else value)
+
+    def onModeChanged(self, mode: str, checked: bool):
+        if not checked:
+            return
+        for key, switch in self.modeSwitches.items():
+            if key != mode and switch.isChecked():
+                switch.setChecked(False)
+
+    def activeMode(self) -> str:
+        for mode, switch in self.modeSwitches.items():
+            if switch.isChecked():
+                return mode
+        return ""
+
+    def load(self):
+        try:
+            items, week_items = self.backend.load_schedule_state()
+            by_mode = {item.get("mode"): item for item in items}
+            light = by_mode.get("light", {})
+            dark = by_mode.get("dark", {})
+            self.lightTime.setText(light.get("time", ""))
+            self.setSchemeValue(self.lightScheme, light.get("scheme", ""))
+            self.darkTime.setText(dark.get("time", ""))
+            self.setSchemeValue(self.darkScheme, dark.get("scheme", ""))
+            timer = by_mode.get("timer", {})
+            seconds = int(timer.get("interval_seconds") or 300)
+            if seconds % 60 == 0 and seconds >= 60:
+                self.timerUnit.setCurrentText("分钟")
+                self.timerInterval.setValue(max(1, seconds // 60))
+            else:
+                self.timerUnit.setCurrentText("秒")
+                self.timerInterval.setValue(seconds)
+            self.setSchemeValue(self.timerScheme, timer.get("scheme", ""))
+            for day, combo in self.weekCombos.items():
+                self.setSchemeValue(combo, week_items.get(day, ""))
+            if timer.get("scheme"):
+                self.timerSwitch.setChecked(True)
+            elif week_items:
+                self.weekSwitch.setChecked(True)
+            elif light.get("scheme") or dark.get("scheme"):
+                self.timeSwitch.setChecked(True)
+        except Exception:
+            pass
+
+    def save(self):
+        try:
+            mode = self.activeMode()
+            items = []
+            week_items = {}
+            if mode == "time":
+                for name, time_edit, scheme in [("light", self.lightTime, self.lightScheme), ("dark", self.darkTime, self.darkScheme)]:
+                    value = self.currentSchemeValue(scheme)
+                    at = time_edit.currentText().strip()
+                    if value:
+                        self.backend.CursorThemeBuilder.validate_time(None, at)
+                        items.append({"mode": name, "time": at, "scheme": value})
+            elif mode == "timer":
+                value = self.currentSchemeValue(self.timerScheme)
+                if value:
+                    interval = int(self.timerInterval.value()) * (60 if self.timerUnit.currentText() == "分钟" else 1)
+                    items.append({"mode": "timer", "interval_seconds": interval, "scheme": value})
+            elif mode == "week":
+                for day, combo in self.weekCombos.items():
+                    value = self.currentSchemeValue(combo)
+                    if value:
+                        week_items[day] = value
+            self.backend.SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self.backend.SCHEDULE_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.backend.WEEK_SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self.backend.WEEK_SCHEDULE_FILE.write_text(json.dumps(week_items, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.backend.set_auto_start(bool(mode))
+            if mode == "week":
+                today = str(datetime.now().weekday())
+                scheme = week_items.get(today)
+                if scheme == self.backend.RANDOM_SCHEME_VALUE:
+                    scheme = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
+                if scheme:
+                    self.backend.apply_library_scheme(scheme)
+                    self.scheme_page.schemeBox.setCurrentText(scheme)
+                    self.scheme_page.loadScheme(scheme)
+            InfoBar.success(title="已应用", content="切换设置已保存", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
+        except Exception as exc:
+            self.backend.log_error("Fluent 切换设置保存失败", exc)
+            InfoBar.error(title="保存失败", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
+
+
 class WeekPage(QWidget):
     weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 
@@ -1297,7 +1504,6 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("设置"))
-        layout.addWidget(CaptionLabel("工具制作 BY ASUNNY"))
 
         self.storage = LineEdit()
         self.storage.setText(str(self.backend.configured_storage_root()))
@@ -1314,10 +1520,18 @@ class SettingsPage(QWidget):
         row.addWidget(open_storage)
         layout.addWidget(storage_card)
 
-        self.autostart = SwitchButton("自启动后台")
+        autostart_row = QHBoxLayout()
+        autostart_row.addWidget(StrongBodyLabel("自启动后台"))
+        self.autostart = SwitchButton()
         self.autostart.setChecked(self.backend.auto_start_enabled())
-        self.hideTaskbarIcon = SwitchButton("隐藏任务栏图标")
+        autostart_row.addWidget(self.autostart)
+        autostart_row.addStretch(1)
+        hide_row = QHBoxLayout()
+        hide_row.addWidget(StrongBodyLabel("隐藏任务栏图标"))
+        self.hideTaskbarIcon = SwitchButton()
         self.hideTaskbarIcon.setChecked(self.backend.hide_taskbar_icon_enabled())
+        hide_row.addWidget(self.hideTaskbarIcon)
+        hide_row.addStretch(1)
         hide_tip = CaptionLabel("开启后开机只保留后台进程；关闭窗口也不会显示托盘图标。")
         hide_tip.setWordWrap(True)
         hide_tip.setTextColor("#64748b", "#94a3b8")
@@ -1345,8 +1559,8 @@ class SettingsPage(QWidget):
             btn.clicked.connect(lambda _checked=False, u=url: webbrowser.open(u))
             link_row.addWidget(btn)
         link_row.addStretch(1)
-        layout.addWidget(self.autostart)
-        layout.addWidget(self.hideTaskbarIcon)
+        layout.addLayout(autostart_row)
+        layout.addLayout(hide_row)
         layout.addWidget(hide_tip)
         layout.addWidget(save, alignment=Qt.AlignLeft)
         layout.addLayout(tools)
@@ -1446,7 +1660,7 @@ class SettingsPage(QWidget):
     def openErrorLog(self):
         self.backend.ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
         self.backend.ERROR_LOG.touch(exist_ok=True)
-        os.startfile(self.backend.ERROR_LOG)
+        subprocess.Popen(["notepad.exe", str(self.backend.ERROR_LOG)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def copyDiagnostics(self):
         text = "\n".join([
@@ -1493,23 +1707,17 @@ class MousePointerFluentWindow(FluentWindow):
 
         self.schemePage = SchemePage(backend, self)
         self.resourcePage = ResourcePage(backend, self.schemePage, self)
-        self.schedulePage = SchedulePage(backend, self)
-        self.timerPage = TimerPage(backend, self)
-        self.weekPage = WeekPage(backend, self.schemePage, self)
+        self.switchPage = SwitchPage(backend, self.schemePage, self)
         self.settingsPage = SettingsPage(backend, self)
 
         self.schemePage.setObjectName("schemePage")
         self.resourcePage.setObjectName("resourcePage")
-        self.schedulePage.setObjectName("schedulePage")
-        self.timerPage.setObjectName("timerPage")
-        self.weekPage.setObjectName("weekPage")
+        self.switchPage.setObjectName("switchPage")
         self.settingsPage.setObjectName("settingsPage")
 
         self.addSubInterface(self.schemePage, FIF.BRUSH, "鼠标方案")
         self.addSubInterface(self.resourcePage, FIF.FOLDER, "资源库")
-        self.addSubInterface(self.schedulePage, FIF.DATE_TIME, "时间切换")
-        self.addSubInterface(self.timerPage, FIF.STOP_WATCH, "计时切换")
-        self.addSubInterface(self.weekPage, FIF.CALENDAR, "星期切换")
+        self.addSubInterface(self.switchPage, FIF.DATE_TIME, "方案切换")
         self.addSubInterface(self.settingsPage, FIF.SETTING, "设置", NavigationItemPosition.BOTTOM)
         self.navigationInterface.setAcrylicEnabled(True)
         self.navigationInterface.setMinimumWidth(188)
@@ -1532,6 +1740,8 @@ class MousePointerFluentWindow(FluentWindow):
         next_action = menu.addAction(f"下次切换：{next_text}")
         next_action.setEnabled(False)
         menu.addSeparator()
+        hide_action = menu.addAction("隐藏任务栏图标")
+        hide_action.triggered.connect(self.hideTrayIconNow)
         exit_action = menu.addAction("退出")
         exit_action.triggered.connect(self.exitFromTray)
         self.trayIcon.setContextMenu(menu)
@@ -1547,6 +1757,12 @@ class MousePointerFluentWindow(FluentWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def hideTrayIconNow(self):
+        self.backend.set_setting_enabled("hide_taskbar_icon", True)
+        if self.trayIcon:
+            self.trayIcon.hide()
+        self.hide()
 
     def exitFromTray(self):
         self.exiting = True
