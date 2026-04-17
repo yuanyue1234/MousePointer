@@ -250,7 +250,26 @@ def github_repo_api_url(repo_url: str) -> str:
         raise RuntimeError("GitHub 源地址格式不正确。")
     owner = match.group("owner")
     repo = match.group("repo").removesuffix(".git")
-    return f"https://api.github.com/repos/{owner}/{repo}/commits/HEAD"
+    return f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=1"
+
+
+def latest_commit_from_git(repo_url: str) -> dict[str, str]:
+    clean_url = repo_url.strip().split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    candidates = [clean_url, clean_url.removesuffix(".git") + ".git"]
+    last_error = ""
+    for candidate in dict.fromkeys(candidates):
+        result = subprocess.run(["git", "ls-remote", candidate, "HEAD"], text=True, capture_output=True, check=False)
+        if result.returncode == 0 and result.stdout.strip():
+            sha = result.stdout.split()[0]
+            return {
+                "sha": sha,
+                "short": sha[:7],
+                "message": "远端 HEAD",
+                "date": "",
+                "url": clean_url,
+            }
+        last_error = result.stderr or result.stdout
+    raise RuntimeError((last_error or "无法读取远端提交").strip())
 
 
 def fetch_latest_github_commit(repo_url: str) -> dict[str, str]:
@@ -261,7 +280,13 @@ def fetch_latest_github_commit(repo_url: str) -> dict[str, str]:
         with urllib.request.urlopen(request, timeout=10) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return latest_commit_from_git(repo_url)
         raise RuntimeError(f"GitHub 请求失败：HTTP {exc.code}") from exc
+    if isinstance(data, list):
+        if not data:
+            raise RuntimeError("GitHub 仓库没有提交记录。")
+        data = data[0]
     sha = str(data.get("sha", ""))
     commit = data.get("commit", {})
     return {
@@ -293,7 +318,7 @@ def fetch_latest_release(repo_url: str) -> dict:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            raise RuntimeError("没有找到可用的 GitHub Release。若仓库是私有仓库，自动更新需要公开 Release 或提供访问令牌。") from exc
+            raise RuntimeError("仓库目前没有可用的 GitHub Release。自动更新需要先在 GitHub Releases 发布带 EXE 资产的版本。") from exc
         raise RuntimeError(f"GitHub Release 请求失败：HTTP {exc.code}") from exc
 
 
@@ -3787,7 +3812,13 @@ def _open_github_source(self) -> None:
 def _check_for_updates(self) -> None:
     url = self.github_url_var.get().strip() if hasattr(self, "github_url_var") else configured_github_url()
     def work():
-        release = fetch_latest_release(url)
+        try:
+            release = fetch_latest_release(url)
+        except RuntimeError as exc:
+            if "没有可用的 GitHub Release" in str(exc):
+                commit = fetch_latest_github_commit(url)
+                return {"updated": False, "tag": "", "release_missing": True, "commit": commit}
+            raise
         tag = str(release.get("tag_name", ""))
         if not is_newer_version(tag, APP_VERSION):
             return {"updated": False, "tag": tag}
@@ -3795,6 +3826,16 @@ def _check_for_updates(self) -> None:
         downloaded = download_release_asset(asset)
         return {"updated": True, "tag": tag, "path": downloaded, "asset": asset.get("name", "")}
     def done(info):
+        if info.get("release_missing"):
+            commit = info.get("commit", {})
+            messagebox.showinfo(
+                "检测更新",
+                "仓库目前没有可用的 GitHub Release，不能自动下载更新。\n\n"
+                f"最新提交：{commit.get('short', '未知')}\n"
+                f"说明：{commit.get('message', '')}\n\n"
+                "请在 GitHub Releases 中发布带 EXE 资产的版本。",
+            )
+            return
         if not info.get("updated"):
             messagebox.showinfo("检测更新", f"当前已是最新版本。\n当前版本：v{APP_VERSION}\n最新版本：{info.get('tag') or '未知'}")
             return

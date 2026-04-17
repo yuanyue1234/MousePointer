@@ -11,14 +11,15 @@ from pathlib import Path
 
 from PIL import Image
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import Qt, Signal, QObject, QTimer
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QPixmap
+from PySide6.QtCore import QPoint, Qt, Signal, QObject, QTimer
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QMenu,
     QSizePolicy,
     QSystemTrayIcon,
@@ -44,6 +45,7 @@ from qfluentwidgets import (
     SubtitleLabel,
     SwitchButton,
     Theme,
+    ToggleButton,
     setTheme,
     setThemeColor,
 )
@@ -78,6 +80,18 @@ class DropArea(CardWidget):
             self.dropped.emit(paths)
 
 
+def role_icon_path(backend, role) -> Path:
+    return backend.resource_path(f"assets/role_icons/{role.file_stem}.png")
+
+
+def pixmap_from_image(image: Image.Image, target_size: int | None = None) -> QPixmap:
+    qimage = ImageQt(image.convert("RGBA"))
+    pixmap = QPixmap.fromImage(qimage)
+    if target_size:
+        return pixmap.scaled(target_size, target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    return pixmap
+
+
 class CursorPreview(QLabel):
     def __init__(self, size: int = 46, parent=None):
         super().__init__(parent)
@@ -85,17 +99,86 @@ class CursorPreview(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("border-radius: 8px; background: rgba(246, 250, 255, 0.9);")
 
-    def setPath(self, backend, path: Path | None, size: int = 42) -> None:
+    def setPath(self, backend, path: Path | None, size: int = 42, role=None) -> None:
         if not path or not path.exists():
-            self.clear()
+            self.setRoleIcon(backend, role, size)
             return
         try:
-            image = backend.cursor_preview_image_sized(path, (size, size), min(size - 6, 64)).convert("RGBA")
-            qimage = ImageQt(image)
-            pixmap = QPixmap.fromImage(qimage)
+            image = backend.cursor_preview_image_sized(path, (size * 3, size * 3), min(size * 2, 128)).convert("RGBA")
+            pixmap = pixmap_from_image(image)
             self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         except Exception:
             self.setText("...")
+
+    def setRoleIcon(self, backend, role, size: int = 42) -> None:
+        if not role:
+            self.clear()
+            return
+        icon = role_icon_path(backend, role)
+        if not icon.exists():
+            self.clear()
+            return
+        try:
+            pixmap = QPixmap(str(icon))
+            self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        except Exception:
+            self.clear()
+
+
+class PreviewPane(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(300, 300)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.BlankCursor)
+        self.pixmap = QPixmap()
+        self.follow = False
+        self.pointer = QPoint()
+
+    def setPreview(self, pixmap: QPixmap):
+        self.pixmap = pixmap
+        if self.pointer.isNull():
+            self.pointer = QPoint(self.width() // 2, self.height() // 2)
+        self.update()
+
+    def clearPreview(self):
+        self.pixmap = QPixmap()
+        self.update()
+
+    def enterEvent(self, event) -> None:
+        self.follow = True
+        self.pointer = event.position().toPoint() if hasattr(event, "position") else self.rect().center()
+        self.update()
+
+    def mouseMoveEvent(self, event) -> None:
+        self.follow = True
+        self.pointer = event.position().toPoint()
+        self.update()
+
+    def leaveEvent(self, event) -> None:
+        self.follow = False
+        self.pointer = self.rect().center()
+        self.update()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if not self.follow:
+            self.pointer = self.rect().center()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#dbeafe"), 1))
+        painter.setBrush(QColor("#f8fbff"))
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 12, 12)
+        if self.pixmap.isNull():
+            return
+        pos = self.pointer if self.follow else self.rect().center()
+        x = int(pos.x() - self.pixmap.width() * 0.12)
+        y = int(pos.y() - self.pixmap.height() * 0.12)
+        x = max(10, min(x, self.width() - self.pixmap.width() - 10))
+        y = max(10, min(y, self.height() - self.pixmap.height() - 10))
+        painter.drawPixmap(x, y, self.pixmap)
 
 
 class CursorRow(CardWidget):
@@ -120,8 +203,11 @@ class CursorRow(CardWidget):
         self.tip.setTextColor("#64748b", "#94a3b8")
         self.file = BodyLabel("未选择")
         self.file.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.file.setMinimumWidth(80)
+        self.file.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.pickButton = PushButton("选择")
         self.pickButton.setIcon(FIF.FOLDER)
+        self.pickButton.setFixedWidth(84)
         self.pickButton.clicked.connect(lambda: self.picked.emit(self.role.reg_name))
 
         text_box = QWidget()
@@ -148,7 +234,7 @@ class CursorRow(CardWidget):
         else:
             self.file.setText("未选择")
             self.file.setToolTip("")
-        self.preview.setPath(self.backend, path)
+        self.preview.setPath(self.backend, path, role=self.role)
 
 
 class SchemePage(QWidget):
@@ -169,7 +255,7 @@ class SchemePage(QWidget):
         root.setSpacing(18)
 
         left = QWidget()
-        left.setMinimumWidth(620)
+        left.setMinimumWidth(500)
         left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -184,6 +270,7 @@ class SchemePage(QWidget):
         header.addStretch(1)
         self.schemeBox = ComboBox()
         self.schemeBox.setMinimumWidth(220)
+        self.schemeBox.setMaximumWidth(280)
         self.schemeBox.currentTextChanged.connect(self.loadScheme)
         header.addWidget(self.schemeBox)
         left_layout.addLayout(header)
@@ -226,7 +313,8 @@ class SchemePage(QWidget):
         left_layout.addWidget(self.scroll, 1)
 
         right = CardWidget()
-        right.setFixedWidth(390)
+        right.setFixedWidth(360)
+        right.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(18, 18, 18, 18)
         right_layout.setSpacing(12)
@@ -249,10 +337,7 @@ class SchemePage(QWidget):
         self.sizeTip.setTextColor("#64748b", "#ef4444")
         right_layout.addWidget(self.sizeTip)
 
-        self.largePreview = QLabel()
-        self.largePreview.setMinimumSize(300, 300)
-        self.largePreview.setAlignment(Qt.AlignCenter)
-        self.largePreview.setStyleSheet("border-radius: 12px; background: #f8fbff; border: 1px solid #dbeafe;")
+        self.largePreview = PreviewPane()
         right_layout.addWidget(self.largePreview, 1)
         self.previewName = StrongBodyLabel("正常选择")
         self.previewFile = CaptionLabel("")
@@ -276,7 +361,7 @@ class SchemePage(QWidget):
         right_layout.addWidget(self.status)
 
         root.addWidget(left, 1)
-        root.addWidget(right)
+        root.addWidget(right, 0)
 
         self.importButton.clicked.connect(self.importPackage)
         self.saveButton.clicked.connect(self.saveScheme)
@@ -353,7 +438,7 @@ class SchemePage(QWidget):
             self.previewName.setText(role.label)
         self.previewFile.setText(str(path) if path else "未选择")
         if not path or not path.exists():
-            self.largePreview.clear()
+            self.largePreview.setPreview(self.renderRoleIconPixmap(role))
             return
         try:
             if path.suffix.lower() == ".ani":
@@ -363,22 +448,34 @@ class SchemePage(QWidget):
                     self.nextAnimationFrame()
                     self.animationTimer.start(90)
                     return
-            self.largePreview.setPixmap(self.renderPreviewPixmap(path))
+            self.largePreview.setPreview(self.renderPreviewPixmap(path))
         except Exception as exc:
-            self.largePreview.setText("预览失败")
+            self.largePreview.clearPreview()
             self.backend.log_error("Fluent 预览失败", exc)
 
     def renderPreviewPixmap(self, path: Path) -> QPixmap:
-        width = max(320, self.largePreview.width())
-        height = max(320, self.largePreview.height())
         cursor_size = self.backend.size_level_to_pixels(self.sizeLevel)
-        image = self.backend.cursor_preview_image_sized(path, (width, height), cursor_size).convert("RGBA")
-        return QPixmap.fromImage(ImageQt(image))
+        image = None
+        if path.suffix.lower() in {".cur", ".ani"}:
+            image = self.backend.render_cursor_with_windows(path, cursor_size)
+        if image is None:
+            image = self.backend.centered_rgba(self.backend.image_from_path(path), cursor_size)
+        return pixmap_from_image(image)
+
+    def renderRoleIconPixmap(self, role) -> QPixmap:
+        if not role:
+            return QPixmap()
+        icon = role_icon_path(self.backend, role)
+        if icon.exists():
+            pixmap = QPixmap(str(icon))
+            size = min(180, max(96, self.backend.size_level_to_pixels(self.sizeLevel)))
+            return pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        return QPixmap()
 
     def nextAnimationFrame(self):
         if not self.animationFrames:
             return
-        self.largePreview.setPixmap(self.animationFrames[self.animationIndex % len(self.animationFrames)])
+        self.largePreview.setPreview(self.animationFrames[self.animationIndex % len(self.animationFrames)])
         self.animationIndex += 1
 
     def resizeEvent(self, event):
@@ -711,6 +808,7 @@ class ResourcePage(QWidget):
         super().__init__(parent)
         self.backend = backend
         self.scheme_page = scheme_page
+        self.gridMode = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
@@ -723,9 +821,12 @@ class ResourcePage(QWidget):
         self.openFolder.setIcon(FIF.FOLDER)
         self.refresh = PrimaryPushButton("刷新")
         self.refresh.setIcon(FIF.SYNC)
+        self.gridButton = ToggleButton("九宫格")
+        self.gridButton.setIcon(FIF.TILES)
         row.addWidget(self.openWeb)
         row.addWidget(self.openFolder)
         row.addWidget(self.refresh)
+        row.addWidget(self.gridButton)
         row.addStretch(1)
         layout.addLayout(row)
         self.container = QWidget()
@@ -738,37 +839,60 @@ class ResourcePage(QWidget):
         self.openWeb.clicked.connect(lambda: webbrowser.open(self.backend.RESOURCE_URL))
         self.openFolder.clicked.connect(lambda: os.startfile(self.backend.configured_storage_root()))
         self.refresh.clicked.connect(self.render)
+        self.gridButton.clicked.connect(self.toggleGrid)
         self.render()
 
+    def toggleGrid(self):
+        self.gridMode = self.gridButton.isChecked()
+        self.render()
+
+    def clearCards(self):
+        layout = self.container.layout()
+        if layout:
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            QWidget().setLayout(layout)
+
     def render(self):
-        while self.cards.count():
-            item = self.cards.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        old = self.container.layout()
+        if old:
+            while old.count():
+                item = old.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            QWidget().setLayout(old)
+        self.cards = QGridLayout(self.container) if self.gridMode else QVBoxLayout(self.container)
+        self.cards.setSpacing(10)
         names = self.scheme_page.schemeNames()
         if not names:
             self.cards.addWidget(BodyLabel("暂无资源"))
             return
-        for name in names:
+        for index, name in enumerate(names):
             card = CardWidget()
-            layout = QHBoxLayout(card)
+            layout = QVBoxLayout(card) if self.gridMode else QHBoxLayout(card)
             layout.setContentsMargins(14, 12, 14, 12)
             text = QVBoxLayout()
             text.addWidget(StrongBodyLabel(name))
             scheme_dir, files = self.backend.scheme_manifest(name)
             text.addWidget(CaptionLabel(f"{len(files)} 个鼠标状态"))
-            layout.addLayout(text, 1)
+            layout.addLayout(text, 1 if not self.gridMode else 0)
             preview_row = QHBoxLayout()
-            for file_name in list(files.values())[:8]:
-                preview = CursorPreview(38)
-                preview.setPath(self.backend, scheme_dir / file_name, 34)
+            for file_name in list(files.values())[:9]:
+                preview = CursorPreview(54 if self.gridMode else 42)
+                preview.setPath(self.backend, scheme_dir / file_name, 48 if self.gridMode else 38)
                 preview_row.addWidget(preview)
             layout.addLayout(preview_row)
             apply_btn = PrimaryPushButton("应用")
             apply_btn.clicked.connect(lambda _checked=False, n=name: self.applyResource(n))
             layout.addWidget(apply_btn)
-            self.cards.addWidget(card)
-        self.cards.addStretch(1)
+            if self.gridMode:
+                self.cards.addWidget(card, index // 3, index % 3)
+            else:
+                self.cards.addWidget(card)
+        if not self.gridMode:
+            self.cards.addStretch(1)
 
     def applyResource(self, name: str):
         self.scheme_page.schemeBox.setCurrentText(name)
@@ -1005,7 +1129,13 @@ class SettingsPage(QWidget):
         url = self.backend.configured_github_url()
 
         def work():
-            release = self.backend.fetch_latest_release(url)
+            try:
+                release = self.backend.fetch_latest_release(url)
+            except RuntimeError as exc:
+                if "没有可用的 GitHub Release" in str(exc):
+                    commit = self.backend.fetch_latest_github_commit(url)
+                    return {"updated": False, "release_missing": True, "commit": commit}
+                raise
             tag = str(release.get("tag_name", ""))
             if not self.backend.is_newer_version(tag, self.backend.APP_VERSION):
                 return {"updated": False, "tag": tag}
@@ -1014,6 +1144,17 @@ class SettingsPage(QWidget):
             return {"updated": True, "tag": tag, "path": downloaded}
 
         def done(info):
+            if info.get("release_missing"):
+                commit = info.get("commit", {})
+                InfoBar.warning(
+                    title="检测更新",
+                    content=f"仓库暂无 Release，不能自动下载。最新提交：{commit.get('short', '未知')}",
+                    orient=Qt.Horizontal,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    duration=6500,
+                    parent=self.window(),
+                )
+                return
             if not info.get("updated"):
                 InfoBar.success(title="检测更新", content=f"当前已是最新版本：{info.get('tag') or '未知'}", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=3500, parent=self.window())
                 return
@@ -1060,8 +1201,8 @@ class MousePointerFluentWindow(FluentWindow):
         icon_path = backend.resource_path("icon终.png")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
-        self.resize(1280, 820)
-        self.setMinimumSize(1060, 720)
+        self.resize(1360, 820)
+        self.setMinimumSize(1180, 720)
         setTheme(Theme.LIGHT)
         setThemeColor("#4f8cff")
         try:
