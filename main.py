@@ -163,6 +163,22 @@ def default_cursor_path(role_or_reg) -> Path | None:
     return path if path.exists() else None
 
 
+def set_system_cursor_size(pixels: int) -> None:
+    pixels = max(32, min(256, int(pixels)))
+    level = max(1, min(15, int(round((pixels - 16) / 16))))
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors", 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "CursorBaseSize", 0, winreg.REG_DWORD, pixels)
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Accessibility", 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "CursorSize", 0, winreg.REG_DWORD, level)
+    except Exception:
+        pass
+    SPI_SETCURSORS = 0x0057
+    SPIF_UPDATEINIFILE = 0x01
+    SPIF_SENDCHANGE = 0x02
+    ctypes.windll.user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
+
+
 def bundled_archives() -> list[Path]:
     archives = list(APP_DIR.glob("*.zip"))
     base = getattr(sys, "_MEIPASS", None)
@@ -1939,7 +1955,7 @@ def pick_scheduled_scheme(value: str, order: str = "顺序", index: int = 0) -> 
 def focused_window_handle() -> int:
     user32 = ctypes.windll.user32
     user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
-    user32.GetWindowThreadProcessId.argtypes = [ctypes.wintypes.HWND, ctypes.c_void_p]
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     user32.GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
     user32.GetGUIThreadInfo.argtypes = [ctypes.wintypes.DWORD, ctypes.c_void_p]
     user32.GetGUIThreadInfo.restype = ctypes.wintypes.BOOL
@@ -1961,13 +1977,13 @@ def focused_window_handle() -> int:
 def ime_status_values(hwnd: int, timeout_ms: int = 50) -> tuple[int, int]:
     user32 = ctypes.windll.user32
     imm32 = ctypes.windll.imm32
-    imm32.ImmGetDefaultIMEWnd.argtypes = [ctypes.wintypes.HWND]
+    imm32.ImmGetDefaultIMEWnd.argtypes = [ctypes.c_void_p]
     imm32.ImmGetDefaultIMEWnd.restype = ctypes.wintypes.HWND
     user32.SendMessageTimeoutW.argtypes = [
-        ctypes.wintypes.HWND,
+        ctypes.c_void_p,
         ctypes.wintypes.UINT,
-        ctypes.wintypes.WPARAM,
-        ctypes.wintypes.LPARAM,
+        ctypes.c_size_t,
+        ctypes.c_size_t,
         ctypes.wintypes.UINT,
         ctypes.wintypes.UINT,
         ctypes.POINTER(ctypes.c_size_t),

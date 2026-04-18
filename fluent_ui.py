@@ -317,7 +317,7 @@ class CursorRow(QWidget):
         layout = QGridLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setHorizontalSpacing(12)
-        layout.setColumnStretch(2, 1)
+        layout.setColumnStretch(1, 1)
 
         self.preview = CursorPreview(66)
         self.preview.setStyleSheet("border: 1px dashed #93c5fd; border-radius: 8px; background: #ffffff;")
@@ -325,26 +325,20 @@ class CursorRow(QWidget):
         self.name = StrongBodyLabel(role.label)
         self.tip = CaptionLabel(role.tip)
         self.tip.setTextColor("#64748b", "#94a3b8")
-        self.file = BodyLabel("未选择")
-        self.file.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.file.setMinimumWidth(80)
-        self.file.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.pickButton = PushButton("选择")
-        self.pickButton.setIcon(FIF.FOLDER)
-        self.pickButton.setFixedWidth(84)
-        self.pickButton.clicked.connect(lambda: self.picked.emit(self.role.reg_name))
 
         text_box = QWidget()
+        text_box.setObjectName("roleText")
+        text_box.setCursor(Qt.PointingHandCursor)
+        text_box.mousePressEvent = lambda _event: self.picked.emit(self.role.reg_name)
+        text_box.setStyleSheet("#roleText { background: #f8fbff; border-radius: 8px; } #roleText:hover { background: #eef7ff; }")
         text_layout = QVBoxLayout(text_box)
-        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setContentsMargins(10, 8, 10, 8)
         text_layout.setSpacing(2)
         text_layout.addWidget(self.name)
         text_layout.addWidget(self.tip)
 
         layout.addWidget(self.preview, 0, 0, 2, 1)
         layout.addWidget(text_box, 0, 1, 2, 1)
-        layout.addWidget(self.file, 0, 2, 2, 1)
-        layout.addWidget(self.pickButton, 0, 3, 2, 1)
 
     def enterEvent(self, event) -> None:
         self.hovered.emit(self.role.reg_name)
@@ -352,12 +346,7 @@ class CursorRow(QWidget):
 
     def setPath(self, path: Path | None) -> None:
         self.path = path
-        if path:
-            self.file.setText(path.name)
-            self.file.setToolTip(str(path))
-        else:
-            self.file.setText("未选择")
-            self.file.setToolTip("")
+        self.setToolTip(str(path) if path else "")
         self.preview.setPath(self.backend, path, role=self.role)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
@@ -375,6 +364,8 @@ class CursorRow(QWidget):
 
 
 class ExtraResourceItem(QWidget):
+    deleteRequested = Signal(object)
+
     def __init__(self, backend, path: Path, parent=None):
         super().__init__(parent)
         self.path = path
@@ -383,11 +374,28 @@ class ExtraResourceItem(QWidget):
         self.setToolTip(path.name)
         self.setObjectName("extraResourceItem")
         self.setStyleSheet("#extraResourceItem { background: #ffffff; border: none; border-radius: 8px; } #extraResourceItem:hover { background: #eef7ff; }")
-        layout = QVBoxLayout(self)
+        layout = QGridLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(0)
         preview = CursorPreview(46)
         preview.setPath(backend, path, 40)
-        layout.addWidget(preview, alignment=Qt.AlignCenter)
+        layout.addWidget(preview, 0, 0, alignment=Qt.AlignCenter)
+        self.closeButton = QLabel("×")
+        self.closeButton.setFixedSize(16, 16)
+        self.closeButton.setAlignment(Qt.AlignCenter)
+        self.closeButton.setCursor(Qt.PointingHandCursor)
+        self.closeButton.setStyleSheet("background: #ef4444; color: white; border-radius: 8px; font-weight: 700;")
+        self.closeButton.hide()
+        self.closeButton.mousePressEvent = lambda _event: self.deleteRequested.emit(self.path)
+        layout.addWidget(self.closeButton, 0, 0, alignment=Qt.AlignTop | Qt.AlignRight)
+
+    def enterEvent(self, event) -> None:
+        self.closeButton.show()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.closeButton.hide()
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -473,9 +481,10 @@ class SchemePage(QWidget):
         self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
         self.rowWidget = QWidget()
         self.rowWidget.setStyleSheet("background: transparent;")
-        self.rowLayout = QVBoxLayout(self.rowWidget)
+        self.rowLayout = QGridLayout(self.rowWidget)
         self.rowLayout.setContentsMargins(2, 2, 8, 2)
-        self.rowLayout.setSpacing(8)
+        self.rowLayout.setHorizontalSpacing(10)
+        self.rowLayout.setVerticalSpacing(10)
         for role in self.backend.CURSOR_ROLES:
             row = CursorRow(backend, role, len(self.rows))
             row.hovered.connect(self.updateLargePreview)
@@ -483,8 +492,10 @@ class SchemePage(QWidget):
             row.dropped.connect(self.applyFileToRole)
             row.previewClicked.connect(self.editHotspotForRole)
             self.rows[role.reg_name] = row
-            self.rowLayout.addWidget(row)
-        self.rowLayout.addStretch(1)
+            index = len(self.rows) - 1
+            self.rowLayout.addWidget(row, index // 2, index % 2)
+        self.rowLayout.setColumnStretch(0, 1)
+        self.rowLayout.setColumnStretch(1, 1)
         self.scroll.setWidget(self.rowWidget)
         left_layout.addWidget(self.scroll, 1)
 
@@ -501,9 +512,13 @@ class SchemePage(QWidget):
         self.extraAddButton = PushButton("添加资源")
         self.extraAddButton.setIcon(FIF.ADD)
         self.extraAddButton.setFixedWidth(102)
+        self.extraClearButton = PushButton("清空资源")
+        self.extraClearButton.setIcon(FIF.DELETE)
+        self.extraClearButton.setFixedWidth(102)
         extra_header.addWidget(self.extraTitle)
         extra_header.addStretch(1)
         extra_header.addWidget(self.extraAddButton)
+        extra_header.addWidget(self.extraClearButton)
         extra_layout.addLayout(extra_header)
         self.extraScroll = ScrollArea()
         self.extraScroll.setWidgetResizable(True)
@@ -534,8 +549,11 @@ class SchemePage(QWidget):
         size_row.addWidget(BodyLabel("预览大小"))
         self.sizeText = CaptionLabel("3 / 64px")
         self.sizeText.setTextColor("#64748b", "#94a3b8")
+        self.applySizeButton = PushButton("应用到系统")
+        self.applySizeButton.setFixedWidth(104)
         size_row.addStretch(1)
         size_row.addWidget(self.sizeText)
+        size_row.addWidget(self.applySizeButton)
         right_layout.addLayout(size_row)
         self.sizeSlider = Slider(Qt.Horizontal)
         self.sizeSlider.setRange(1, 15)
@@ -590,7 +608,9 @@ class SchemePage(QWidget):
         self.buildButton.clicked.connect(self.buildInstaller)
         self.restoreButton.clicked.connect(self.restoreCursor)
         self.sizeSettingsButton.clicked.connect(self.openPointerSettings)
+        self.applySizeButton.clicked.connect(self.applySystemCursorSize)
         self.extraAddButton.clicked.connect(self.importExtraResources)
+        self.extraClearButton.clicked.connect(self.clearExtraResources)
         self.refreshSchemes()
 
     def openPointerSettings(self):
@@ -598,6 +618,15 @@ class SchemePage(QWidget):
             os.startfile("ms-settings:easeofaccess-mousepointer")
         except Exception:
             os.startfile("control.exe")
+
+    def applySystemCursorSize(self):
+        try:
+            pixels = self.backend.size_level_to_pixels(self.sizeLevel)
+            self.backend.set_system_cursor_size(pixels)
+            self.status.setText(f"已请求系统应用鼠标大小：{pixels}px")
+            self.showInfo("已应用", "鼠标大小已写入系统设置并刷新光标")
+        except Exception as exc:
+            self.showError("鼠标大小设置失败", exc)
 
     def schemeNames(self) -> list[str]:
         root = self.backend.SCHEME_LIBRARY
@@ -694,8 +723,35 @@ class SchemePage(QWidget):
         for index, path in enumerate(self.extraFiles):
             row = index // 6
             col = index % 6
-            self.extraGrid.addWidget(ExtraResourceItem(self.backend, path), row, col)
+            item = ExtraResourceItem(self.backend, path)
+            item.deleteRequested.connect(self.removeExtraResource)
+            self.extraGrid.addWidget(item, row, col)
         self.extraGrid.setRowStretch(max(2, (len(self.extraFiles) + 5) // 6), 1)
+
+    def appendExtraResource(self, path: Path) -> None:
+        if not path.exists() or path.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+            return
+        try:
+            resolved = path.resolve()
+            if any(item.exists() and item.resolve() == resolved for item in self.extraFiles):
+                return
+        except Exception:
+            pass
+        self.extraFiles.append(path)
+
+    def removeExtraResource(self, path: Path) -> None:
+        try:
+            target = path.resolve()
+            self.extraFiles = [item for item in self.extraFiles if not (item.exists() and item.resolve() == target)]
+        except Exception:
+            self.extraFiles = [item for item in self.extraFiles if item != path]
+        self.persistExtraFiles()
+        self.updateExtraBox()
+
+    def clearExtraResources(self) -> None:
+        self.extraFiles = []
+        self.persistExtraFiles()
+        self.updateExtraBox()
 
     def uniqueFileName(self, folder: Path, file_name: str) -> str:
         candidate = self.backend.sanitize_name(Path(file_name).stem) or "resource"
@@ -761,13 +817,22 @@ class SchemePage(QWidget):
         )
         if not files:
             return
-        self.extraFiles.extend([Path(file) for file in files if Path(file).suffix.lower() in EXTRA_RESOURCE_EXTS])
+        for file in files:
+            self.appendExtraResource(Path(file))
         self.persistExtraFiles()
         self.updateExtraBox()
 
     def applyFileToRole(self, reg_name: str, path: Path) -> None:
+        old_path = self.selected.get(reg_name)
+        if old_path and old_path.exists():
+            try:
+                if old_path.resolve() != path.resolve():
+                    self.appendExtraResource(old_path)
+            except Exception:
+                self.appendExtraResource(old_path)
         self.selected[reg_name] = path
         self.rows[reg_name].setPath(path)
+        self.persistExtraFiles()
         self.updateLargePreview(reg_name)
         self.status.setText(f"已替换：{self.backend.ROLE_BY_REG[reg_name].label}")
 
@@ -1600,6 +1665,7 @@ class SwitchPage(QWidget):
         self.weekCombos: dict[str, ComboBox] = {}
         self.inputCombos: dict[str, ComboBox] = {}
         self.loading = False
+        self.pendingApply = False
         self.saveTimer = QTimer(self)
         self.saveTimer.setSingleShot(True)
         self.saveTimer.timeout.connect(self.save)
@@ -1754,6 +1820,7 @@ class SwitchPage(QWidget):
             for key, switch in self.modeSwitches.items():
                 if key != mode and switch.isChecked():
                     switch.setChecked(False)
+            self.pendingApply = True
         self.scheduleSave()
 
     def scheduleSave(self, *args):
@@ -1809,6 +1876,8 @@ class SwitchPage(QWidget):
         if self.loading:
             return
         try:
+            apply_now = self.pendingApply
+            self.pendingApply = False
             mode = self.activeMode()
             items = []
             week_items = {}
@@ -1842,7 +1911,7 @@ class SwitchPage(QWidget):
             self.backend.WEEK_SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
             self.backend.WEEK_SCHEDULE_FILE.write_text(json.dumps(week_items, ensure_ascii=False, indent=2), encoding="utf-8")
             self.backend.set_auto_start(bool(mode))
-            if mode == "input":
+            if apply_now and mode == "input":
                 input_item = next((item for item in items if item.get("mode") == "input"), {})
                 state = self.backend.current_input_state()
                 scheme = input_item.get(f"{state}_scheme", "")
@@ -1852,7 +1921,7 @@ class SwitchPage(QWidget):
                         self.backend.apply_library_scheme(picked)
                         self.scheme_page.schemeBox.setCurrentText(picked)
                         self.scheme_page.loadScheme(picked)
-            elif mode == "week":
+            elif apply_now and mode == "week":
                 today = str(datetime.now().weekday())
                 scheme = week_items.get(today)
                 if scheme == self.backend.RANDOM_SCHEME_VALUE:
@@ -1861,7 +1930,10 @@ class SwitchPage(QWidget):
                     self.backend.apply_library_scheme(scheme)
                     self.scheme_page.schemeBox.setCurrentText(scheme)
                     self.scheme_page.loadScheme(scheme)
-            InfoBar.success(title="已应用", content="切换设置已保存", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
+            content = "切换设置已保存"
+            if apply_now and mode:
+                content = "切换设置已保存并按当前状态应用"
+            InfoBar.success(title="已保存", content=content, orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
         except Exception as exc:
             self.backend.log_error("Fluent 切换设置保存失败", exc)
             InfoBar.error(title="保存失败", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
