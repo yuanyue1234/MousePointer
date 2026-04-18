@@ -25,15 +25,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 import random
-from tkinter import BOTH, LEFT, RIGHT, VERTICAL, Canvas, DoubleVar, IntVar, StringVar, Tk, Toplevel, filedialog, messagebox, ttk
 
-from PIL import Image, ImageDraw, ImageOps, ImageTk
-
-try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
-except Exception:
-    DND_FILES = None
-    TkinterDnD = None
+from PIL import Image, ImageDraw, ImageOps
 
 try:
     import pystray
@@ -59,7 +52,7 @@ ERROR_LOG = APP_DIR / "错误记录.txt"
 DEFAULT_CURSOR_SIZE = 64
 DEFAULT_PREVIEW_SIZE_LEVEL = 3
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RESOURCE_URL = "https://yvtgt-my.sharepoint.com/:f:/g/personal/asunny_yvtgt_onmicrosoft_com/IgD7nqCXTLudSZoRvpzU-H_7AR_SuUTktWE3NfuAgFpIMdU?e=DPXDw4"
+RESOURCE_URL = "https://zhutix.com/tag/cursors/"
 APP_NAME = "鼠标指针配置管理器"
 SOFTWARE_MISSION = "让新手小白也能用，让鼠标指针制作者能方便编辑和生成。"
 AUTO_START_VALUE = APP_NAME
@@ -68,7 +61,7 @@ SCHEDULED_TASK_NAME = "MousePointerBackground"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
 DEFAULT_GITHUB_URL = "https://github.com/yuanyue1234/MousePointer"
-APP_VERSION = "1.0.15"
+APP_VERSION = "1.0.20"
 BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
 PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
@@ -164,8 +157,13 @@ def default_cursor_path(role_or_reg) -> Path | None:
 
 
 def set_system_cursor_size(pixels: int) -> None:
-    pixels = max(32, min(256, int(pixels)))
-    level = max(1, min(15, int(round((pixels - 16) / 16))))
+    pixels = max(1, min(256, int(pixels)))
+    if pixels <= 32:
+        level = 1
+    elif pixels >= 256:
+        level = 15
+    else:
+        level = max(1, min(15, int(round((pixels - 32) / 16.0)) + 1))
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors", 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, "CursorBaseSize", 0, winreg.REG_DWORD, pixels)
     try:
@@ -173,15 +171,26 @@ def set_system_cursor_size(pixels: int) -> None:
             winreg.SetValueEx(key, "CursorSize", 0, winreg.REG_DWORD, level)
     except Exception:
         pass
-    refresh_mouse_parameters()
+    user32 = ctypes.windll.user32
+    SPI_SETCURSORBASESIZE = 0x2029
+    SPIF_UPDATEINIFILE = 0x01
+    SPIF_SENDCHANGE = 0x02
+    if not user32.SystemParametersInfoW(SPI_SETCURSORBASESIZE, 0, ctypes.c_void_p(pixels), SPIF_UPDATEINIFILE | SPIF_SENDCHANGE):
+        raise ctypes.WinError(ctypes.windll.kernel32.GetLastError())
+    broadcast_cursor_change()
+    broadcast_cursor_change_for_area(r"SOFTWARE\Microsoft\Accessibility")
 
 
 def broadcast_cursor_change(timeout_ms: int = 500) -> None:
+    broadcast_cursor_change_for_area("Control Panel\\Cursors", timeout_ms)
+
+
+def broadcast_cursor_change_for_area(area: str, timeout_ms: int = 500) -> None:
     user32 = ctypes.windll.user32
     HWND_BROADCAST = 0xFFFF
     WM_SETTINGCHANGE = 0x001A
     SMTO_ABORTIFHUNG = 0x0002
-    message = ctypes.create_unicode_buffer("Control Panel\\Cursors")
+    message = ctypes.create_unicode_buffer(area)
     result = ctypes.c_size_t()
     try:
         user32.SendMessageTimeoutW(
@@ -246,6 +255,27 @@ def remove_setting(key: str) -> None:
 def setting_enabled(key: str, default: bool = False) -> bool:
     value = str(load_settings().get(key, "1" if default else "0")).strip().lower()
     return value in {"1", "true", "yes", "on", "是", "开启"}
+
+
+def english_ui_enabled() -> bool:
+    return setting_enabled("english_enabled", False)
+
+
+def tray_text(text: str) -> str:
+    if not english_ui_enabled():
+        return text
+    mapping = {
+        "打开": "Open",
+        "隐藏任务栏": "Hide tray",
+        "退出": "Exit",
+    }
+    if text in mapping:
+        return mapping[text]
+    if text.startswith("当前配置："):
+        return text.replace("当前配置：", "Current: ", 1)
+    if text.startswith("下次切换："):
+        return text.replace("下次切换：", "Next: ", 1)
+    return text
 
 
 def set_setting_enabled(key: str, enabled: bool) -> None:
@@ -592,12 +622,27 @@ def restore_cursor_backup() -> None:
     refresh_mouse_parameters()
 
 
-def apply_cursor_scheme(theme_name: str, cursor_files: dict[str, str], backup: bool = True) -> None:
+def get_current_cursor_size() -> int:
+    """读取当前系统鼠标大小（像素）"""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors", 0, winreg.KEY_QUERY_VALUE) as key:
+            size, _ = winreg.QueryValueEx(key, "CursorBaseSize")
+            return int(size)
+    except Exception:
+        return 48  # 默认 48px
+
+
+def apply_cursor_scheme(theme_name: str, cursor_files: dict[str, str], backup: bool = True, cursor_size_pixels: int | None = None) -> None:
     if backup:
         backup_current_cursor_scheme()
+
+    # 保留已有鼠标大小（或使用传入的值）
+    size_to_apply = cursor_size_pixels if cursor_size_pixels else get_current_cursor_size()
+
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors", 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, "", 0, winreg.REG_SZ, theme_name)
         winreg.SetValueEx(key, "Scheme Source", 0, winreg.REG_DWORD, 2)
+        winreg.SetValueEx(key, "CursorBaseSize", 0, winreg.REG_DWORD, size_to_apply)
         for reg_name, file_path in cursor_files.items():
             winreg.SetValueEx(key, reg_name, 0, winreg.REG_EXPAND_SZ, file_path)
     refresh_mouse_parameters()
@@ -605,8 +650,41 @@ def apply_cursor_scheme(theme_name: str, cursor_files: dict[str, str], backup: b
 
 
 def refresh_mouse_parameters() -> None:
-    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0x01 | 0x02)
+    user32 = ctypes.windll.user32
+    SPI_SETCURSORS = 0x0057
+    # SPIF_UPDATEINIFILES = 0x01（写 ini），SPIF_SENDCHANGE = 0x02（广播），SPIF_SENDWININICHANGE = 0x02
+    SPIF_UPDATEINIFILES = 0x01
+    SPIF_SENDWININICHANGE = 0x02
+
+    # 步骤1：让系统重新加载 HKCU\Control Panel\Cursors 里的所有光标资源
+    user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILES | SPIF_SENDWININICHANGE)
+
+    # 步骤2：强制重新加载系统默认箭头光标，触发 Windows 真正重绘光标
+    # IMAGE_CURSOR = 2，LR_SHARED = 0x8000，LR_DEFAULTSIZE = 0x0040，IDI_APPLICATION = 32512
+    IDC_ARROW = 32512
+    IMAGE_CURSOR = 2
+    LR_SHARED = 0x8000
+    LR_DEFAULTSIZE = 0x0040
+    try:
+        hCursor = user32.LoadImageW(None, MAKEINTRESOURCE(IDC_ARROW), IMAGE_CURSOR, 0, 0, LR_SHARED | LR_DEFAULTSIZE)
+        if hCursor:
+            user32.DestroyCursor(hCursor)
+    except Exception:
+        pass
+
+    # 步骤3：再次通知所有窗口刷新，确保所有程序都收到 WM_SETTINGCHANGE
     broadcast_cursor_change()
+
+    # 步骤4：用新光标替换当前前台窗口的光标，确保当前进程立即看到变化
+    hwnd = user32.GetForegroundWindow()
+    if hwnd:
+        # 先让前台窗口重绘一次
+        user32.RedrawWindow(hwnd, None, None, 0x0001 | 0x0100)  # RDW_INVALIDATE | RDW_UPDATENOW
+
+
+# 辅助：把整数转成 Windows 资源 ID（LOWORD）
+def MAKEINTRESOURCE(word: int) -> ctypes.c_void_p:
+    return ctypes.c_void_p(word & 0xFFFF)
 
 
 def reset_to_default_cursor_scheme() -> None:
@@ -620,11 +698,13 @@ def apply_refreshed_cursor_scheme(theme_name: str, cursor_files: dict[str, str],
     if cursor_size_pixels:
         backup_current_cursor_scheme()
         set_system_cursor_size(cursor_size_pixels)
-        reset_to_default_cursor_scheme()
-    apply_cursor_scheme(theme_name, cursor_files, backup=not bool(cursor_size_pixels))
+        apply_cursor_scheme(theme_name, cursor_files, backup=False, cursor_size_pixels=cursor_size_pixels)
+        set_system_cursor_size(cursor_size_pixels)
+        return
+    apply_cursor_scheme(theme_name, cursor_files, backup=True)
 
 
-def installer_source(theme_name: str, files: dict[str, str]) -> str:
+def installer_source(theme_name: str, files: dict[str, str], cursor_size_pixels: int | None = None) -> str:
     return f'''import ctypes
 import os
 import shutil
@@ -637,6 +717,7 @@ from tkinter import Tk, messagebox
 
 THEME_NAME = {json.dumps(theme_name, ensure_ascii=False)}
 CURSOR_FILES = {json.dumps(files, ensure_ascii=False, indent=4)}
+CURSOR_SIZE_PIXELS = {json.dumps(cursor_size_pixels)}
 
 
 def resource_path(relative):
@@ -652,6 +733,32 @@ def log_error(exc):
         handle.write(f"\\n## {{datetime.now():%Y-%m-%d %H:%M:%S}} 安装失败\\n\\n```text\\n{{''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))}}\\n```\\n")
 
 
+def broadcast_settings_change(area):
+    message = ctypes.create_unicode_buffer(area)
+    result = ctypes.c_size_t()
+    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, ctypes.cast(message, ctypes.c_void_p), 0x0002, 1000, ctypes.byref(result))
+
+
+def apply_cursor_size(size):
+    if not size:
+        return
+    size = max(1, min(256, int(size)))
+    if size <= 32:
+        step = 1
+    elif size >= 256:
+        step = 15
+    else:
+        step = max(1, min(15, int(round((size - 32) / 16.0)) + 1))
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Control Panel\\Cursors", 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "CursorBaseSize", 0, winreg.REG_DWORD, size)
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Software\\Microsoft\\Accessibility", 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "CursorSize", 0, winreg.REG_DWORD, step)
+    if not ctypes.windll.user32.SystemParametersInfoW(0x2029, 0, ctypes.c_void_p(size), 0x01 | 0x02):
+        raise ctypes.WinError(ctypes.windll.kernel32.GetLastError())
+    broadcast_settings_change("Control Panel\\\\Cursors")
+    broadcast_settings_change("SOFTWARE\\\\Microsoft\\\\Accessibility")
+
+
 def install():
     target_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "MouseCursorThemes" / THEME_NAME
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -662,15 +769,18 @@ def install():
         shutil.copy2(src, dst)
         installed[reg_name] = str(dst)
 
+    apply_cursor_size(CURSOR_SIZE_PIXELS)
     ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0x01 | 0x02)
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\\Cursors", 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, "", 0, winreg.REG_SZ, THEME_NAME)
         winreg.SetValueEx(key, "Scheme Source", 0, winreg.REG_DWORD, 2)
+        if CURSOR_SIZE_PIXELS:
+            winreg.SetValueEx(key, "CursorBaseSize", 0, winreg.REG_DWORD, int(CURSOR_SIZE_PIXELS))
         for reg_name, file_path in installed.items():
             winreg.SetValueEx(key, reg_name, 0, winreg.REG_EXPAND_SZ, file_path)
 
     ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0x01 | 0x02)
-    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\\\Cursors", 0, 1000, None)
+    broadcast_settings_change("Control Panel\\\\Cursors")
     return target_dir
 
 
@@ -752,6 +862,10 @@ def cursor_preview_image_sized(path: Path, box: tuple[int, int] = (180, 140), cu
 
 def size_level_to_pixels(level: int) -> int:
     return max(1, min(15, int(level))) * 16 + 16
+
+
+def pixels_to_size_level(pixels: int) -> int:
+    return max(1, min(15, int(round((max(1, min(256, int(pixels))) - 16) / 16.0))))
 
 
 def render_cursor_with_windows(path: Path, size: int) -> Image.Image | None:
@@ -1135,28 +1249,13 @@ def background_command() -> list[str]:
     return app_command("--background")
 
 
-def start_background_process() -> None:
-    APP_DATA.mkdir(parents=True, exist_ok=True)
-    pid, exe = read_background_pid_file(APP_DATA / "background.pid")
-    if pid and background_process_alive(pid, exe):
-        return
-    creationflags = 0
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        creationflags |= subprocess.CREATE_NO_WINDOW
-    if hasattr(subprocess, "DETACHED_PROCESS"):
-        creationflags |= subprocess.DETACHED_PROCESS
-    subprocess.Popen(
-        background_command(),
-        cwd=str(APP_DIR),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        creationflags=creationflags,
-    )
+def gui_command() -> list[str]:
+    if IS_FROZEN:
+        return [str(Path(sys.executable).resolve())]
+    return [str(Path(sys.executable).resolve()), str(Path(__file__).resolve())]
 
 
-def acquire_background_lock():
-    pid_file = APP_DATA / "background.pid"
+def acquire_process_lock(pid_file: Path):
     APP_DATA.mkdir(parents=True, exist_ok=True)
     while True:
         try:
@@ -1180,11 +1279,61 @@ def acquire_background_lock():
             return None
 
 
+def start_detached_process(command: list[str]) -> None:
+    creationflags = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        creationflags |= subprocess.CREATE_NO_WINDOW
+    if hasattr(subprocess, "DETACHED_PROCESS"):
+        creationflags |= subprocess.DETACHED_PROCESS
+    env = os.environ.copy()
+    if IS_FROZEN:
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    subprocess.Popen(
+        command,
+        cwd=str(APP_DIR),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=creationflags,
+        env=env,
+    )
+
+
+def start_background_process() -> None:
+    APP_DATA.mkdir(parents=True, exist_ok=True)
+    pid, exe = read_background_pid_file(APP_DATA / "background.pid")
+    if pid and background_process_alive(pid, exe):
+        return
+    start_detached_process(background_command())
+
+
+def start_tray_process() -> None:
+    APP_DATA.mkdir(parents=True, exist_ok=True)
+    pid_file = APP_DATA / "tray.pid"
+    pid, exe = read_background_pid_file(pid_file)
+    if pid and background_process_alive(pid, exe):
+        return
+    remove_pid_file(pid_file)
+    start_detached_process(tray_command())
+
+
+def acquire_background_lock():
+    return acquire_process_lock(APP_DATA / "background.pid")
+
+
+def acquire_tray_lock():
+    return acquire_process_lock(APP_DATA / "tray.pid")
+
+
 def remove_pid_file(pid_file: Path) -> None:
-    try:
-        pid_file.unlink()
-    except FileNotFoundError:
-        pass
+    for _ in range(5):
+        try:
+            pid_file.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            time.sleep(0.1)
 
 
 def read_background_pid_file(pid_file: Path) -> tuple[int, str]:
@@ -1236,6 +1385,8 @@ def background_process_alive(pid: int, recorded_exe: str = "") -> bool:
     current_exe = str(Path(sys.executable).resolve())
     image = process_image_path(pid)
     if image:
+        if not IS_FROZEN and Path(image).name.lower().startswith("python"):
+            return True
         return same_windows_path(image, current_exe)
     if recorded_exe:
         return same_windows_path(recorded_exe, current_exe)
@@ -1244,6 +1395,21 @@ def background_process_alive(pid: int, recorded_exe: str = "") -> bool:
 
 def terminate_background_process() -> None:
     pid_file = APP_DATA / "background.pid"
+    pid, exe = read_background_pid_file(pid_file)
+    if not pid or not background_process_alive(pid, exe):
+        remove_pid_file(pid_file)
+        return
+    handle = ctypes.windll.kernel32.OpenProcess(0x0001, False, pid)
+    if handle:
+        try:
+            ctypes.windll.kernel32.TerminateProcess(handle, 0)
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    remove_pid_file(pid_file)
+
+
+def terminate_tray_process() -> None:
+    pid_file = APP_DATA / "tray.pid"
     pid, exe = read_background_pid_file(pid_file)
     if not pid or not background_process_alive(pid, exe):
         remove_pid_file(pid_file)
@@ -1582,7 +1748,7 @@ class CursorThemeBuilder:
             shutil.rmtree(assets_dir)
         assets_dir.mkdir(parents=True, exist_ok=True)
         files: dict[str, str] = {}
-        size = DEFAULT_CURSOR_SIZE
+        size = self.current_cursor_pixels() if hasattr(self, "current_cursor_pixels") else DEFAULT_CURSOR_SIZE
         for role in self.selected_roles():
             source = self.selected[role.reg_name]
             suffix = source.suffix.lower()
@@ -1609,7 +1775,7 @@ class CursorThemeBuilder:
             package_dir = WORK_ROOT / "current_theme"
             files = self.prepare_assets(package_dir)
             target_dir = self.install_assets_to_scheme(theme, files, package_dir / "assets")
-            apply_refreshed_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
+            apply_refreshed_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()}, DEFAULT_CURSOR_SIZE)
             self.save_library_manifest(theme, files, target_dir)
         except Exception as exc:
             log_error("应用失败", exc)
@@ -1658,13 +1824,15 @@ class CursorThemeBuilder:
             messagebox.showwarning("还不能生成", error)
             return
         theme = sanitize_name(self.theme_name.get())
+        pixels = DEFAULT_CURSOR_SIZE
+        installer_theme = sanitize_name(f"{theme}_{pixels}px")
         try:
             package_dir = WORK_ROOT / "installer_package"
             package_dir.mkdir(parents=True, exist_ok=True)
             files = self.prepare_assets(package_dir)
             installer_py = package_dir / "install_cursor_theme.py"
-            installer_py.write_text(installer_source(theme, files), encoding="utf-8")
-            exe_name = f"{theme}_鼠标样式安装器"
+            installer_py.write_text(installer_source(installer_theme, files, pixels), encoding="utf-8")
+            exe_name = f"{installer_theme}_鼠标样式安装器"
             installer_exe = self.build_pyinstaller_exe(installer_py, package_dir / "assets", exe_name)
             winrar = find_winrar()
             if winrar:
@@ -1883,9 +2051,15 @@ def main() -> None:
         return
     if "--tray" in sys.argv:
         try:
+            if pystray:
+                run_pystray_tray()
+                return
+        except Exception as exc:
+            log_error("启动轻量托盘失败，尝试 Qt 托盘", exc)
+        try:
             import fluent_ui
 
-            fluent_ui.run_app(sys.modules[__name__], start_hidden=True)
+            fluent_ui.run_tray_app(sys.modules[__name__])
             return
         except Exception as exc:
             log_error("启动托盘后台失败", exc)
@@ -1898,18 +2072,126 @@ def main() -> None:
     if "--uninstall" in sys.argv or (IS_FROZEN and is_uninstaller_executable(exe_name)):
         uninstall_application()
         return
-    if "--tk" not in sys.argv:
-        try:
-            import fluent_ui
+    try:
+        terminate_background_process()
+        terminate_tray_process()
+        import fluent_ui
 
-            fluent_ui.run_app(sys.modules[__name__])
-            return
-        except Exception as exc:
-            log_error("启动 Fluent 界面失败，已回退旧界面", exc)
-    root_class = TkinterDnD.Tk if TkinterDnD else Tk
-    root = root_class()
-    CursorThemeBuilder(root)
-    root.mainloop()
+        fluent_ui.run_app(sys.modules[__name__])
+        return
+    except Exception as exc:
+        log_error("启动 Fluent 界面失败", exc)
+        try:
+            ctypes.windll.user32.MessageBoxW(0, str(exc), APP_NAME, 0x10)
+        except Exception:
+            pass
+        raise SystemExit(1)
+
+
+def run_pystray_tray() -> None:
+    lock = acquire_tray_lock()
+    if lock is None:
+        return
+    stop_event = threading.Event()
+    state = {"last_key": "", "last_timer_at": 0.0, "timer_index": 0}
+
+    def icon_image() -> Image.Image:
+        for path in (resource_path("icon终.png"), resource_path("icon.png")):
+            if path.exists():
+                return Image.open(path).convert("RGBA")
+        return Image.new("RGBA", (64, 64), "#4f8cff")
+
+    def cleanup() -> None:
+        stop_event.set()
+        try:
+            os.close(lock)
+        except Exception:
+            pass
+        remove_pid_file(APP_DATA / "tray.pid")
+
+    def open_app(icon, _item=None) -> None:
+        start_detached_process(gui_command())
+        cleanup()
+        icon.stop()
+
+    def hide_tray(icon, _item=None) -> None:
+        set_setting_enabled("hide_taskbar_icon", True)
+        start_background_process()
+        cleanup()
+        icon.stop()
+
+    def exit_app(icon, _item=None) -> None:
+        cleanup()
+        icon.stop()
+
+    def apply_scheduled_once() -> None:
+        schedule_items, week_items = load_schedule_state()
+        now = datetime.now()
+        for item in schedule_items:
+            if item.get("mode") == "input":
+                state_name = current_input_state()
+                scheme = item.get(f"{state_name}_scheme", "")
+                key = f"input|{state_name}|{scheme}"
+                if scheme and key != state["last_key"]:
+                    picked = pick_scheduled_scheme(scheme, "随机", 0)
+                    if picked:
+                        apply_library_scheme(picked)
+                    state["last_key"] = key
+                continue
+            if item.get("mode") == "timer":
+                interval = max(1, int(item.get("interval_seconds") or 0))
+                if time.time() - state["last_timer_at"] >= interval:
+                    scheme = pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), state["timer_index"])
+                    state["timer_index"] += 1
+                    state["last_timer_at"] = time.time()
+                    if scheme:
+                        apply_library_scheme(scheme)
+                continue
+            scheme = item.get("scheme", "")
+            key = f"{now:%Y-%m-%d}|{item.get('time')}|{scheme}"
+            if scheme and item.get("time") == now.strftime("%H:%M") and key != state["last_key"]:
+                picked = pick_scheduled_scheme(scheme, item.get("order", "顺序"), 0)
+                if picked:
+                    apply_library_scheme(picked)
+                state["last_key"] = key
+                return
+        scheme = week_items.get(str(now.weekday()))
+        key = f"{now:%Y-%m-%d}|week|{scheme}"
+        if scheme and key != state["last_key"]:
+            picked = pick_scheduled_scheme(scheme, "随机", 0) if scheme == RANDOM_SCHEME_VALUE else scheme
+            if picked:
+                apply_library_scheme(picked)
+            state["last_key"] = key
+
+    def schedule_loop() -> None:
+        while not stop_event.is_set():
+            try:
+                schedule_items, _week_items = load_schedule_state()
+                apply_scheduled_once()
+                if any(item.get("mode") == "input" for item in schedule_items):
+                    delay = 0.12
+                elif any(item.get("mode") == "timer" for item in schedule_items):
+                    delay = 0.5
+                else:
+                    delay = 10.0
+            except Exception as exc:
+                log_error("轻量托盘后台切换失败", exc)
+                delay = 10.0
+            stop_event.wait(delay)
+
+    threading.Thread(target=schedule_loop, daemon=True).start()
+    menu = pystray.Menu(
+        pystray.MenuItem(lambda _item: tray_text("打开"), open_app, default=True),
+        pystray.MenuItem(lambda _item: tray_text(f"当前配置：{configured_current_scheme()}"), None, enabled=False),
+        pystray.MenuItem(lambda _item: tray_text(f"下次切换：{next_switch_text(*load_schedule_state())}"), None, enabled=False),
+        pystray.MenuItem(lambda _item: tray_text("隐藏任务栏"), hide_tray),
+        pystray.MenuItem(lambda _item: tray_text("退出"), exit_app),
+    )
+    icon = pystray.Icon(APP_NAME, icon_image(), APP_NAME, menu=menu)
+    try:
+        icon.run()
+    finally:
+        cleanup()
 
 
 def run_background() -> None:
@@ -1920,6 +2202,8 @@ def run_background() -> None:
     last_timer_at = 0.0
     timer_index = 0
     fast_schedule = False
+    input_schedule = False
+    timer_schedule = False
     while True:
         try:
             items = []
@@ -1931,7 +2215,9 @@ def run_background() -> None:
                 data = json.loads(WEEK_SCHEDULE_FILE.read_text(encoding="utf-8"))
                 week_items = data if isinstance(data, dict) else {}
             now = datetime.now()
-            fast_schedule = any(item.get("mode") == "input" or item.get("mode") == "timer" for item in items)
+            input_schedule = any(item.get("mode") == "input" for item in items)
+            timer_schedule = any(item.get("mode") == "timer" for item in items)
+            fast_schedule = input_schedule or timer_schedule
             for item in items:
                 if item.get("mode") == "input":
                     state = current_input_state()
@@ -1967,7 +2253,7 @@ def run_background() -> None:
                 last_key = key
         except Exception as exc:
             log_error("后台切换失败", exc)
-        time.sleep(0.25 if fast_schedule else 30)
+        time.sleep(0.12 if input_schedule else (0.25 if timer_schedule else 30))
 
 
 def available_scheme_names() -> list[str]:
@@ -1981,12 +2267,36 @@ def available_scheme_names() -> list[str]:
 
 
 def pick_scheduled_scheme(value: str, order: str = "顺序", index: int = 0) -> str:
-    if value != RANDOM_SCHEME_VALUE:
-        return value
     names = available_scheme_names()
     if not names:
         return ""
-    return random.choice(names)
+    if value == RANDOM_SCHEME_VALUE:
+        return random.choice(names)
+    # 顺序：按 scheme_library 中的排序依次切换
+    if value == "顺序":
+        try:
+            current = SCHEDULE_FILE.exists() and json.loads(SCHEDULE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            current = None
+        seq_index = 0
+        if isinstance(current, list):
+            for item in current:
+                if item.get("mode") == "timer":
+                    seq_index = int(item.get("sequential_index", 0) or 0)
+                    break
+        seq_index = (seq_index + 1) % len(names)
+        if isinstance(current, list):
+            for item in current:
+                if item.get("mode") == "timer":
+                    item["sequential_index"] = seq_index
+                    break
+            try:
+                SCHEDULE_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        return names[seq_index]
+    # 固定方案名
+    return value
 
 
 def focused_window_handle() -> int:
@@ -2011,7 +2321,7 @@ def focused_window_handle() -> int:
     return hwnd
 
 
-def ime_status_values(hwnd: int, timeout_ms: int = 50) -> tuple[int, int]:
+def ime_status_values(hwnd: int, timeout_ms: int = 15) -> tuple[int, int]:
     user32 = ctypes.windll.user32
     imm32 = ctypes.windll.imm32
     imm32.ImmGetDefaultIMEWnd.argtypes = [ctypes.c_void_p]
@@ -2042,7 +2352,7 @@ def ime_status_values(hwnd: int, timeout_ms: int = 50) -> tuple[int, int]:
     return send(IMC_GETOPENSTATUS), send(IMC_GETCONVERSIONMODE)
 
 
-def current_input_state(timeout_ms: int = 50) -> str:
+def current_input_state(timeout_ms: int = 15) -> str:
     user32 = ctypes.windll.user32
     caps_on = bool(user32.GetKeyState(0x14) & 1)
     if caps_on:
@@ -2147,6 +2457,13 @@ def create_open_folder_shortcut(folder: Path) -> None:
     create_shortcut(desktop_folder() / "打开鼠标指针文件夹.lnk", explorer, str(folder), folder, explorer)
 
 
+def native_message(title: str, text: str, flags: int = 0x40) -> int:
+    try:
+        return int(ctypes.windll.user32.MessageBoxW(0, text, title, flags))
+    except Exception:
+        return 0
+
+
 def install_application() -> None:
     if not IS_FROZEN:
         raise RuntimeError("安装模式需要先打包成 EXE。")
@@ -2164,43 +2481,22 @@ def install_application() -> None:
         create_open_folder_shortcut(configured_storage_root())
     except Exception as exc:
         log_error("创建鼠标文件夹快捷方式失败", exc)
-    root = Tk()
-    root.withdraw()
-    messagebox.showinfo("安装完成", f"{APP_NAME} 已安装到：\n{INSTALL_ROOT}\n\n桌面和开始菜单快捷方式已创建。")
-    root.destroy()
+    native_message("安装完成", f"{APP_NAME} 已安装到：\n{INSTALL_ROOT}\n\n桌面和开始菜单快捷方式已创建。")
 
 
-def ask_uninstall_choice(root: Tk) -> str:
-    choice = {"value": "keep"}
-    dialog = Toplevel(root)
-    dialog.title("卸载")
-    dialog.geometry("420x190")
-    dialog.resizable(False, False)
-    frame = ttk.Frame(dialog, padding=18)
-    frame.pack(fill=BOTH, expand=True)
-    ttk.Label(frame, text="卸载后是否保留鼠标指针文件？", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w")
-    ttk.Label(frame, text=f"鼠标文件夹：{configured_storage_root()}", wraplength=370).pack(anchor="w", pady=(8, 18))
-    row = ttk.Frame(frame)
-    row.pack(fill="x")
-    def close(value: str) -> None:
-        choice["value"] = value
-        dialog.destroy()
-    ttk.Button(row, text="保留并打开文件夹", command=lambda: close("keep_open")).pack(side=LEFT, padx=(0, 8))
-    ttk.Button(row, text="保留", command=lambda: close("keep")).pack(side=LEFT, padx=(0, 8))
-    ttk.Button(row, text="不保留", command=lambda: close("delete")).pack(side=LEFT)
-    dialog.protocol("WM_DELETE_WINDOW", lambda: close("keep"))
-    dialog.transient(root)
-    dialog.update_idletasks()
-    x = root.winfo_screenwidth() // 2 - dialog.winfo_width() // 2
-    y = root.winfo_screenheight() // 2 - dialog.winfo_height() // 2
-    dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
-    dialog.lift()
-    dialog.attributes("-topmost", True)
-    dialog.after(500, lambda: dialog.attributes("-topmost", False))
-    dialog.focus_force()
-    dialog.grab_set()
-    root.wait_window(dialog)
-    return choice["value"]
+def ask_uninstall_choice() -> str:
+    result = native_message(
+        "卸载",
+        "卸载后是否保留鼠标指针文件？\n\n"
+        f"鼠标文件夹：{configured_storage_root()}\n\n"
+        "是：保留并打开文件夹\n否：保留\n取消：不保留",
+        0x00000003 | 0x00000020,
+    )
+    if result == 6:
+        return "keep_open"
+    if result == 2:
+        return "delete"
+    return "keep"
 
 
 def schedule_install_dir_cleanup() -> None:
@@ -2224,9 +2520,7 @@ def schedule_install_dir_cleanup() -> None:
 
 
 def uninstall_application() -> None:
-    root = Tk()
-    root.withdraw()
-    choice = ask_uninstall_choice(root)
+    choice = ask_uninstall_choice()
     try:
         set_auto_start(False)
         terminate_background_process()
@@ -2242,12 +2536,10 @@ def uninstall_application() -> None:
         schedule_install_dir_cleanup()
         if choice == "keep_open":
             os.startfile(configured_storage_root())
-        messagebox.showinfo("卸载完成", "卸载已完成。")
+        native_message("卸载完成", "卸载已完成。")
     except Exception as exc:
         log_error("卸载失败", exc)
-        messagebox.showerror("卸载失败", str(exc))
-    finally:
-        root.destroy()
+        native_message("卸载失败", str(exc), 0x10)
 
 
 def ani_frame_paths(path: Path) -> list[Path]:
@@ -3433,13 +3725,14 @@ def _v4_apply_now(self) -> None:
     theme = sanitize_name(self.theme_name.get())
     selected = dict(self.selected)
     backend_autostart = bool(self.autostart_enabled.get()) if hasattr(self, "autostart_enabled") else False
+    pixels = self.current_cursor_pixels() if hasattr(self, "current_cursor_pixels") else DEFAULT_CURSOR_SIZE
 
     def work():
         set_auto_start(backend_autostart)
         cursor_files = {reg: str(path) for reg, path in selected.items() if path.suffix.lower() in {".cur", ".ani"}}
         if len(cursor_files) == len(selected):
-            apply_refreshed_cursor_scheme(theme, cursor_files)
-            return theme
+            apply_refreshed_cursor_scheme(theme, cursor_files, pixels)
+            return f"{theme}（{pixels}px）"
         package_dir = WORK_ROOT / "current_theme"
         assets_dir = package_dir / "assets"
         if assets_dir.exists():
@@ -3454,9 +3747,9 @@ def _v4_apply_now(self) -> None:
             convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, DEFAULT_CURSOR_SIZE)
             files[reg_name] = output_name
         target_dir = self.install_assets_to_scheme(theme, files, assets_dir)
-        apply_refreshed_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()})
+        apply_refreshed_cursor_scheme(theme, {reg_name: str(target_dir / name) for reg_name, name in files.items()}, pixels)
         self.save_library_manifest(theme, files, target_dir)
-        return theme
+        return f"{theme}（{pixels}px）"
 
     def done(name):
         if backend_autostart:
@@ -3483,14 +3776,16 @@ def _v4_build_installer(self) -> None:
     data["output_root"] = str(output_dir.resolve())
     save_settings(data)
     theme = sanitize_name(self.theme_name.get())
+    pixels = self.current_cursor_pixels() if hasattr(self, "current_cursor_pixels") else DEFAULT_CURSOR_SIZE
+    installer_theme = sanitize_name(f"{theme}_{pixels}px")
 
     def work():
         package_dir = WORK_ROOT / "installer_package"
         package_dir.mkdir(parents=True, exist_ok=True)
         files = self.prepare_assets(package_dir)
         installer_py = package_dir / "install_cursor_theme.py"
-        installer_py.write_text(installer_source(theme, files), encoding="utf-8")
-        exe_name = f"{theme}_鼠标样式安装器"
+        installer_py.write_text(installer_source(installer_theme, files, pixels), encoding="utf-8")
+        exe_name = f"{installer_theme}_鼠标样式安装器"
         icon_path = self.installer_icon(package_dir)
         return self.build_pyinstaller_exe(installer_py, package_dir / "assets", exe_name, output_dir, icon_path)
 
@@ -4298,13 +4593,6 @@ def _show_settings_page(self) -> None:
     ttk.Button(tool_row, text="检测自启动状态", style="Soft.TButton", command=self.check_autostart_status).pack(side=LEFT, padx=(0, 8))
     ttk.Button(tool_row, text="立即测试后台启动", style="Soft.TButton", command=self.test_background_start).pack(side=LEFT, padx=(0, 8))
     ttk.Button(tool_row, text="恢复应用前鼠标方案", style="Yellow.TButton", command=self.restore_cursor_backup).pack(side=LEFT, padx=(0, 8))
-    ttk.Button(tool_row, text="打开错误记录", style="Blue.TButton", command=self.open_error_log).pack(side=LEFT, padx=(0, 8))
-    ttk.Button(tool_row, text="复制诊断信息", style="Soft.TButton", command=self.copy_diagnostics).pack(side=LEFT)
-    ttk.Label(card, text="跳转链接", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(22, 0))
-    link_row = ttk.Frame(card, style="Card.TFrame")
-    link_row.pack(fill="x", pady=(8, 0))
-    ttk.Button(link_row, text="像素指针指南文章", style="Blue.TButton", command=lambda: webbrowser.open(PIXEL_GUIDE_URL)).pack(side=LEFT, padx=(0, 8))
-    ttk.Button(link_row, text="工具制作 BY ASUNNY", style="Yellow.TButton", command=lambda: webbrowser.open(ASUNNY_URL)).pack(side=LEFT)
 
 
 def _pick_storage_folder(self) -> None:

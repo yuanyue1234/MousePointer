@@ -6,16 +6,18 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from PIL.ImageQt import ImageQt
 from PySide6.QtCore import QMimeData, QPoint, QRect, Qt, QUrl, Signal, QObject, QTimer
 from PySide6.QtGui import QColor, QDrag, QDragEnterEvent, QDropEvent, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractButton,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -56,6 +58,257 @@ from qfluentwidgets import (
     setTheme,
     setThemeColor,
 )
+
+
+CN_TO_EN = {
+    "鼠标指针配置管理器": "Mouse Pointer Manager",
+    "鼠标指针配置生成器": "Mouse Pointer Builder",
+    "鼠标方案": "Schemes",
+    "资源库": "Library",
+    "方案切换": "Switching",
+    "设置": "Settings",
+    "推荐": "推荐",
+    "时间切换": "Time switching",
+    "计时切换": "Timer switching",
+    "星期切换": "Weekday switching",
+    "中英文切换": "Input language switching",
+    "时间切换、计时切换、星期切换、中英文切换只能启用一种。开启或修改后会自动保存。": "Only one switching mode can be enabled. Changes are saved automatically.",
+    "亮色模式": "Light mode",
+    "暗色模式": "Dark mode",
+    "每": "Every",
+    "秒": "Seconds",
+    "分钟": "Minutes",
+    "随机": "Random",
+    "顺序": "Sequential",
+    "随机方案": "Random scheme",
+    "中文输入": "Chinese input",
+    "英文输入": "English input",
+    "大写锁定": "Caps Lock",
+    "后台根据当前前台窗口输入状态切换；大写锁定优先。": "The background service switches by the active input state. Caps Lock has priority.",
+    "打开 Auto Dark Mode": "Open Auto Dark Mode",
+    "打开 InputTip": "Open InputTip",
+    "中英文切换鼠标指针资源（InputTip）": "InputTip cursor resources",
+    "打开指针资源": "Open cursor resources",
+    "鼠标文件存放位置": "Cursor file location",
+    "选择": "Choose",
+    "打开文件夹": "Open folder",
+    "自启动后台": "Start with Windows",
+    "隐藏任务栏": "Hide tray",
+    "开启后开机只保留后台进程；关闭窗口也不会显示托盘图标。": "When enabled, only the background service is kept and no tray icon is shown after closing.",
+    "语言：英文": "Language: English",
+    "保存设置": "Save settings",
+    "检测更新": "Check updates",
+    "GitHub 源地址": "GitHub source",
+    "打开": "Open",
+    "退出": "Exit",
+    "新建": "New",
+    "重命名": "Rename",
+    "删除": "Delete",
+    "导入": "Import",
+    "导入文件夹": "Explorer",
+    "保存": "Save",
+    "截图导出": "Export screenshot",
+    "方案预览截图": "Scheme preview screenshot",
+    "导出完成": "Export complete",
+    "已导出": "Exported",
+    "没有可导出的方案内容。": "There is no scheme content to export.",
+    "没有可导出的鼠标指针资源。": "There are no cursor resources to export.",
+    "请选择导出位置": "Choose export location",
+    "当前配置：": "Current: ",
+    "下次切换：": "Next: ",
+    "调整鼠标焦点": "Adjust cursor hotspot",
+    " 焦点位置": " hotspot",
+    "红色十字就是鼠标真正点击的位置。箭头一般在左上角，文本选择通常在中线附近。": "The red cross is the real click point. Arrows usually use the top-left area; text cursors are usually near the center line.",
+    "焦点：X ": "Hotspot: X ",
+    "已载入：": "Loaded: ",
+    "载入失败": "Load failed",
+    "添加可替换指针资源": "Add replacement cursor resources",
+    "替换鼠标指针[": "Replacement cursors [",
+    "已替换：": "Replaced: ",
+    "已设置焦点：": "Hotspot saved: ",
+    "选择鼠标文件": "Choose cursor file",
+    "导入安装包、压缩包或光标文件": "Import installers, archives, or cursor files",
+    "导入鼠标指针文件夹": "Import cursor folder",
+    "批量导入": "Batch import",
+    "识别到 ": "Detected ",
+    " 份鼠标指针，正在批量添加。": " cursor schemes. Importing them now.",
+    "发现重复方案": "Duplicate scheme",
+    " 已存在，是否继续导入为新副本？\n选择“否”将跳过该方案。": " already exists. Import as a new copy?\nChoose No to skip it.",
+    "已跳过": "Skipped",
+    " 已存在，未重复导入。": " already exists and was skipped.",
+    "导入失败": "Import failed",
+    "导入完成": "Import complete",
+    "已添加：": "Added: ",
+    "请至少选择一个鼠标状态文件。": "Choose at least one cursor state file.",
+    "文件不存在：": "File does not exist: ",
+    "还不能保存": "Cannot save yet",
+    "保存完成": "Save complete",
+    "已保存：": "Saved: ",
+    "保存失败": "Save failed",
+    "还不能应用": "Cannot apply yet",
+    "应用完成": "Apply complete",
+    "正在应用鼠标方案": "Applying cursor scheme",
+    "还不能生成": "Cannot build yet",
+    "选择安装包保存位置": "Choose installer output folder",
+    "生成完成": "Build complete",
+    "正在生成安装包": "Building installer",
+    "已恢复": "Restored",
+    "已恢复应用前鼠标方案": "Restored the previous cursor scheme",
+    "正在恢复鼠标方案": "Restoring cursor scheme",
+    "删除完成": "Delete complete",
+    "已删除：": "Deleted: ",
+    "删除失败": "Delete failed",
+    "操作失败": "Operation failed",
+    "完成": "Complete",
+    "失败": "Failed",
+    "九宫格": "Grid",
+    "资源已添加": "Resources added",
+    "已导入 ": "Imported ",
+    " 个方案": " schemes",
+    " 个鼠标状态": " cursor states",
+    "导入资源包或安装器": "Import resource package or installer",
+    "导入资源文件夹": "Import resource folder",
+    "点击时间框可选择时间，也可以手写具体时间。留空则不切换。": "Click a time field to choose a time, or type one manually. Leave blank to skip.",
+    "应用时间切换": "Apply time switching",
+    "时间切换已保存并开启后台自启动": "Time switching was saved and background startup was enabled.",
+    "按固定间隔自动切换方案。选择“随机方案”时每次从方案库随机挑选。": "Switch at a fixed interval. Random scheme picks from the library each time.",
+    "启用计时切换": "Enable timer switching",
+    "应用计时切换": "Apply timer switching",
+    "计时切换已保存并开启后台自启动": "Timer switching was saved and background startup was enabled.",
+    "切换设置已保存": "Switching settings saved",
+    "切换设置已保存并按当前状态应用": "Switching settings saved and applied to the current state.",
+    "星期切换已保存并开启后台自启动": "Weekday switching was saved and background startup was enabled.",
+    "选择鼠标文件存放位置": "Choose cursor file location",
+    "设置已应用": "Settings applied",
+    "没有可用的 GitHub Release": "No available GitHub Release",
+    "仓库暂无 Release，不能自动下载。最新提交：": "The repository has no Release for automatic download. Latest commit: ",
+    "当前已是最新版本：": "You are already on the latest version: ",
+    "已下载：": "Downloaded: ",
+    "。源码模式不会自动替换。": ". Source mode will not replace the app automatically.",
+    "恢复鼠标方案": "Restore cursor scheme",
+    "程序：": "App: ",
+    "版本：": "Version: ",
+    "当前提交：": "Commit: ",
+    "程序目录：": "App folder: ",
+    "数据目录：": "Data folder: ",
+    "鼠标文件目录：": "Cursor folder: ",
+    "安装包目录：": "Installer folder: ",
+    "自启动启用：": "Startup enabled: ",
+    "Run 项：": "Run entry: ",
+    "启动快捷方式：": "Startup shortcut: ",
+    "任务计划：": "Scheduled task: ",
+    "诊断信息已复制到剪贴板": "Diagnostic info copied to clipboard.",
+    "替换鼠标指针": "Replacement cursors",
+    "添加资源": "Add resource",
+    "清空资源": "Clear resources",
+    "实时预览": "Live preview",
+    "鼠标移入左侧配置行时同步切换": "Hover rows on the left to preview them here.",
+    "预览大小": "Preview size",
+    "鼠标大小": "Cursor size",
+    "实时更新鼠标大小": "Live cursor size",
+    "拖动可实时调整系统鼠标大小，应用和安装包会包含当前大小。": "Drag to update Windows cursor size live. Apply and installers include this size.",
+    "正常选择": "Normal select",
+    "帮助选择": "Help select",
+    "后台运行": "Working in background",
+    "忙": "Busy",
+    "精确选择": "Precision select",
+    "文本选择": "Text select",
+    "手写": "Handwriting",
+    "不可用": "Unavailable",
+    "垂直调整大小": "Vertical resize",
+    "水平调整大小": "Horizontal resize",
+    "沿对角线调整大小 1": "Diagonal resize 1",
+    "沿对角线调整大小 2": "Diagonal resize 2",
+    "移动": "Move",
+    "候选": "Alternate select",
+    "链接选择": "Link select",
+    "位置选择": "Location select",
+    "个人选择": "Person select",
+    "普通箭头": "Default pointer",
+    "帮助提示": "Help pointer",
+    "系统忙碌": "System busy",
+    "准星": "Crosshair",
+    "文本输入": "Text input",
+    "手写笔": "Pen",
+    "禁止": "Blocked",
+    "上下拖动": "Vertical drag",
+    "左右拖动": "Horizontal drag",
+    "左上右下": "Top-left to bottom-right",
+    "右上左下": "Top-right to bottom-left",
+    "四向移动": "Four-way move",
+    "候选选择": "Alternate choice",
+    "链接": "Link",
+    "位置": "Location",
+    "个人": "Person",
+    "鼠标大小设置": "Cursor size settings",
+    "应用": "Apply",
+    "生成安装包": "Build installer",
+    "恢复": "Restore",
+    "选择、导入、预览并应用鼠标指针方案": "Choose, import, preview, and apply cursor schemes.",
+    "打开在线资源库下载文件，放入鼠标文件目录后点击刷新。": "Open the online library, download files into the cursor folder, then refresh.",
+    "在线资源库": "Online library",
+    "导入资源": "Import resources",
+    "刷新": "Refresh",
+    "恢复上一份鼠标方案": "Restore previous scheme",
+    "暂无资源": "No resources",
+    "拖动鼠标资源到此可以快速替换鼠标文件": "Drop cursor resources here to replace files quickly.",
+    "拖入文件即可导入或替换当前选中项": "Drop files to import or replace the selected item.",
+    "支持拖入 .cur / .ani / 图片 / zip / rar / 7z / exe": "Supports .cur / .ani / images / zip / rar / 7z / exe.",
+    "拖入压缩包、安装器或文件夹添加到资源库": "Drop archives, installers, or folders to add to the library.",
+    "未选择": "Not selected",
+    "星期一": "Monday",
+    "星期二": "Tuesday",
+    "星期三": "Wednesday",
+    "星期四": "Thursday",
+    "星期五": "Friday",
+    "星期六": "Saturday",
+    "星期日": "Sunday",
+    "根据星期自动应用对应方案。留空则当天不切换。": "Apply schemes by weekday. Leave empty to skip that day.",
+    "应用星期切换": "Apply weekday switching",
+}
+
+
+EN_TO_CN = {value: key for key, value in CN_TO_EN.items()}
+
+
+def ui_english_enabled(backend) -> bool:
+    return backend.load_settings().get("english_enabled", "false").lower() in {"1", "true", "yes", "on"}
+
+
+def tr_text(text: str, english: bool) -> str:
+    if not english:
+        return text
+    if text in CN_TO_EN:
+        return CN_TO_EN[text]
+    if text == "让新手小白也能用，让鼠标指针制作者能方便编辑和生成。":
+        return "Mission: make cursor management simple for beginners and practical for cursor creators."
+    if text.startswith("当前配置："):
+        return text.replace("当前配置：", "Current: ", 1)
+    if text.startswith("下次切换："):
+        return text.replace("下次切换：", "Next: ", 1)
+    return text
+
+
+def set_translated_text(widget, text: str, backend) -> None:
+    widget.setProperty("_zh_text", text)
+    widget.setText(tr_text(text, ui_english_enabled(backend)))
+
+
+def restore_cn_text(text: str) -> str:
+    return EN_TO_CN.get(text, text)
+
+
+def apply_widget_language(root: QWidget, english: bool) -> None:
+    widgets = list(root.findChildren(QLabel)) + list(root.findChildren(QAbstractButton))
+    for widget in widgets:
+        text = widget.text()
+        if not text:
+            continue
+        original = widget.property("_zh_text")
+        if original is None:
+            original = restore_cn_text(text)
+            widget.setProperty("_zh_text", original)
+        widget.setText(tr_text(str(original), english))
 
 
 class TaskSignal(QObject):
@@ -427,6 +680,9 @@ class SchemePage(QWidget):
         self.animationIndex = 0
         self.animationTimer = QTimer(self)
         self.animationTimer.timeout.connect(self.nextAnimationFrame)
+        self.sizeApplyTimer = QTimer(self)
+        self.sizeApplyTimer.setSingleShot(True)
+        self.sizeApplyTimer.timeout.connect(self.applyCurrentCursorSize)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 18)
@@ -466,7 +722,9 @@ class SchemePage(QWidget):
         self.importFolderButton.setIcon(FIF.FOLDER)
         self.saveButton = PushButton("保存")
         self.saveButton.setIcon(FIF.SAVE)
-        for button in [self.newButton, self.renameButton, self.deleteButton, self.importButton, self.importFolderButton, self.saveButton]:
+        self.exportPreviewButton = PushButton("截图导出")
+        self.exportPreviewButton.setIcon(FIF.PHOTO)
+        for button in [self.newButton, self.renameButton, self.deleteButton, self.importButton, self.importFolderButton, self.saveButton, self.exportPreviewButton]:
             toolbar.addWidget(button)
         toolbar.addStretch(1)
         left_layout.addLayout(toolbar)
@@ -508,7 +766,7 @@ class SchemePage(QWidget):
         extra_layout.setContentsMargins(12, 10, 12, 10)
         extra_layout.setSpacing(8)
         extra_header = QHBoxLayout()
-        self.extraTitle = StrongBodyLabel("资源盒子")
+        self.extraTitle = StrongBodyLabel("替换鼠标指针")
         self.extraAddButton = PushButton("添加资源")
         self.extraAddButton.setIcon(FIF.ADD)
         self.extraAddButton.setMinimumWidth(118)
@@ -554,13 +812,21 @@ class SchemePage(QWidget):
         right_layout.addLayout(size_row)
         self.sizeSlider = Slider(Qt.Horizontal)
         self.sizeSlider.setRange(1, 15)
-        self.sizeSlider.setValue(3)
+        self.sizeLevel = self.backend.pixels_to_size_level(self.backend.get_current_cursor_size())
+        self.sizeSlider.setValue(self.sizeLevel)
         self.sizeSlider.valueChanged.connect(self.onSizeChanged)
         right_layout.addWidget(self.sizeSlider)
-        self.sizeTip = CaptionLabel("推荐范围：2-7")
-        self.sizeTip.setWordWrap(True)
-        self.sizeTip.setTextColor("#64748b", "#ef4444")
-        right_layout.addWidget(self.sizeTip)
+        live_size_row = QHBoxLayout()
+        live_size_row.addWidget(BodyLabel("实时更新鼠标大小"))
+        self.liveSizeSwitch = SwitchButton()
+        self.liveSizeSwitch.setChecked(True)
+        live_size_row.addWidget(self.liveSizeSwitch)
+        live_size_row.addStretch(1)
+        right_layout.addLayout(live_size_row)
+        self.applyTip = CaptionLabel("拖动可实时调整系统鼠标大小，应用和安装包会包含当前大小。")
+        self.applyTip.setWordWrap(True)
+        self.applyTip.setTextColor("#64748b", "#94a3b8")
+        right_layout.addWidget(self.applyTip)
 
         self.largePreview = PreviewPane()
         right_layout.addWidget(self.largePreview, 1)
@@ -587,7 +853,7 @@ class SchemePage(QWidget):
         action_row.addWidget(self.restoreButton, 1, 0)
         action_row.addWidget(self.applyButton, 1, 1)
         right_layout.addLayout(action_row)
-        self.status = CaptionLabel("更改鼠标至对应大小后应用方案")
+        self.status = CaptionLabel("")
         self.status.setWordWrap(True)
         self.status.setTextColor("#64748b", "#94a3b8")
         right_layout.addWidget(self.status)
@@ -603,10 +869,12 @@ class SchemePage(QWidget):
         self.renameButton.clicked.connect(self.renameScheme)
         self.applyButton.clicked.connect(self.applyScheme)
         self.buildButton.clicked.connect(self.buildInstaller)
+        self.exportPreviewButton.clicked.connect(self.exportPreviewScreenshot)
         self.restoreButton.clicked.connect(self.restoreCursor)
         self.sizeSettingsButton.clicked.connect(self.openPointerSettings)
         self.extraAddButton.clicked.connect(self.importExtraResources)
         self.extraClearButton.clicked.connect(self.clearExtraResources)
+        self.onSizeChanged(self.sizeLevel)
         self.refreshSchemes()
 
     def openPointerSettings(self):
@@ -700,10 +968,14 @@ class SchemePage(QWidget):
 
     def updateExtraBox(self) -> None:
         name = self.schemeBox.currentText().strip()
-        self.extraTitle.setText(f"资源盒子[{name}]" if name else "资源盒子")
+        title = f"替换鼠标指针[{name}]" if name else "替换鼠标指针"
+        if ui_english_enabled(self.backend):
+            title = f"{tr_text('替换鼠标指针', True)}[{name}]" if name else tr_text("替换鼠标指针", True)
+        self.extraTitle.setText(title)
         self.clearGrid(self.extraGrid)
         if not self.extraFiles:
-            empty = CaptionLabel("无文件")
+            empty = CaptionLabel(tr_text("拖动鼠标资源到此可以快速替换鼠标文件", ui_english_enabled(self.backend)))
+            empty.setAlignment(Qt.AlignCenter)
             empty.setTextColor("#64748b", "#94a3b8")
             self.extraGrid.addWidget(empty, 0, 0)
             return
@@ -853,8 +1125,8 @@ class SchemePage(QWidget):
         role = self.backend.ROLE_BY_REG.get(reg_name)
         path = self.selected.get(reg_name)
         if role:
-            self.previewName.setText(role.label)
-        self.previewFile.setText(str(path) if path else "未选择")
+            set_translated_text(self.previewName, role.label, self.backend)
+        self.previewFile.setText(str(path) if path else tr_text("未选择", ui_english_enabled(self.backend)))
         if not path or not path.exists():
             self.largePreview.setPreview(self.renderRoleIconPixmap(role))
             return
@@ -912,13 +1184,17 @@ class SchemePage(QWidget):
         self.sizeLevel = max(1, min(15, int(value)))
         pixels = self.backend.size_level_to_pixels(self.sizeLevel)
         self.sizeText.setText(f"{self.sizeLevel} / {pixels}px")
-        if 2 <= self.sizeLevel <= 7:
-            self.sizeTip.setText("推荐范围：2-7")
-            self.sizeTip.setTextColor("#64748b", "#94a3b8")
-        else:
-            self.sizeTip.setText("推荐范围：2-7，当前大小可能过大或过小")
-            self.sizeTip.setTextColor("#ef4444", "#ef4444")
+        if getattr(self, "liveSizeSwitch", None) and self.liveSizeSwitch.isChecked():
+            self.sizeApplyTimer.start(120)
         self.updateLargePreview(self.current_preview)
+
+    def applyCurrentCursorSize(self) -> None:
+        pixels = self.backend.size_level_to_pixels(self.sizeLevel)
+        try:
+            self.backend.set_system_cursor_size(pixels)
+        except Exception as exc:
+            self.backend.log_error("Fluent 实时调整鼠标大小失败", exc)
+            InfoBar.error(title="鼠标大小", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=4000, parent=self.window())
 
     def pickFileForRole(self, reg_name: str):
         file_name, _ = QFileDialog.getOpenFileName(
@@ -1069,12 +1345,13 @@ class SchemePage(QWidget):
             shutil.rmtree(assets_dir)
         assets_dir.mkdir(parents=True, exist_ok=True)
         files: dict[str, str] = {}
+        cursor_size = self.backend.size_level_to_pixels(self.sizeLevel)
         for reg_name, source in self.selected.items():
             role = self.backend.ROLE_BY_REG[reg_name]
             suffix = source.suffix.lower()
             output_name = f"{role.file_stem}{suffix if suffix in {'.cur', '.ani'} else '.cur'}"
             output = assets_dir / output_name
-            self.backend.convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, self.backend.DEFAULT_CURSOR_SIZE, self.hotspots.get(reg_name))
+            self.backend.convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, cursor_size, self.hotspots.get(reg_name))
             files[reg_name] = output_name
         return files
 
@@ -1127,14 +1404,6 @@ class SchemePage(QWidget):
             return
         theme = self.backend.sanitize_name(self.schemeBox.currentText() or "当前方案")
         pixels = self.backend.size_level_to_pixels(self.sizeLevel)
-        QMessageBox.information(
-            self,
-            "应用前提示",
-            f"当前将按 {self.sizeLevel} / {pixels}px 应用鼠标大小。\n\n"
-            "请根据鼠标素材的实际尺寸选择合适大小：如果素材本身只有 32px，设置过大可能会明显变糊；"
-            "如果素材包含 64px 或更高尺寸，放大后通常会更清晰。\n\n"
-            "应用流程会先写入鼠标大小，然后重置为 Windows 默认指针，最后应用当前方案。",
-        )
 
         def work():
             package_dir = self.backend.WORK_ROOT / "fluent_current_theme"
@@ -1142,9 +1411,78 @@ class SchemePage(QWidget):
             target_dir = self.installAssetsToScheme(theme, files, package_dir / "assets")
             self.backend.apply_refreshed_cursor_scheme(theme, {reg: str(target_dir / name) for reg, name in files.items()}, pixels)
             self.writeManifest(theme, files, target_dir)
-            return theme
+            return f"{theme}（{pixels}px）"
 
         self.runTask("正在应用鼠标方案", work, lambda name: self.showInfo("应用完成", f"已应用：{name}"))
+
+    def exportPreviewScreenshot(self):
+        resources = [
+            (self.backend.ROLE_BY_REG[reg_name], path)
+            for reg_name, path in self.selected.items()
+            if path and path.exists() and reg_name in self.backend.ROLE_BY_REG
+        ]
+        if not resources:
+            self.showWarn("截图导出", "没有可导出的鼠标指针资源。")
+            return
+        default_dir = self.backend.configured_output_root()
+        default_dir.mkdir(parents=True, exist_ok=True)
+        theme = self.backend.sanitize_name(self.schemeBox.currentText() or "鼠标方案")
+        default_path = default_dir / f"{theme}_方案预览截图.png"
+        file_name, _ = QFileDialog.getSaveFileName(self, "请选择导出位置", str(default_path), "PNG (*.png)")
+        if not file_name:
+            return
+        target = Path(file_name)
+        if target.suffix.lower() != ".png":
+            target = target.with_suffix(".png")
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        def work():
+            columns = 5
+            tile_w = 168
+            tile_h = 162
+            padding = 24
+            header_h = 58
+            rows = (len(resources) + columns - 1) // columns
+            width = padding * 2 + columns * tile_w
+            height = padding * 2 + header_h + rows * tile_h
+            image = Image.new("RGBA", (width, height), (245, 250, 255, 255))
+            draw = ImageDraw.Draw(image)
+            title_font = self.previewExportFont(24, bold=True)
+            label_font = self.previewExportFont(15)
+            small_font = self.previewExportFont(11)
+            draw.text((padding, padding), theme, fill=(15, 23, 42, 255), font=title_font)
+            draw.text((padding, padding + 32), f"{len(resources)} 个鼠标状态", fill=(100, 116, 139, 255), font=small_font)
+
+            for index, (role, path) in enumerate(resources):
+                row = index // columns
+                col = index % columns
+                x = padding + col * tile_w
+                y = padding + header_h + row * tile_h
+                card = (x + 8, y + 8, x + tile_w - 8, y + tile_h - 8)
+                draw.rounded_rectangle(card, radius=12, fill=(255, 255, 255, 235), outline=(219, 234, 254, 255), width=1)
+                preview = self.backend.cursor_preview_image_sized(path, (118, 104), self.backend.size_level_to_pixels(self.sizeLevel)).convert("RGBA")
+                image.alpha_composite(preview, (x + (tile_w - preview.width) // 2, y + 20))
+                label = role.label
+                bbox = draw.textbbox((0, 0), label, font=label_font)
+                label_x = x + max(10, (tile_w - (bbox[2] - bbox[0])) // 2)
+                draw.text((label_x, y + 128), label, fill=(30, 41, 59, 255), font=label_font)
+            image.convert("RGB").save(target, "PNG")
+            return target
+
+        self.runTask("截图导出", work, lambda path: self.showInfo("导出完成", f"已导出：{path}"))
+
+    def previewExportFont(self, size: int, bold: bool = False):
+        candidates = [
+            Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / ("msyhbd.ttc" if bold else "msyh.ttc"),
+            Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / ("seguisb.ttf" if bold else "segoeui.ttf"),
+        ]
+        for path in candidates:
+            try:
+                if path.exists():
+                    return ImageFont.truetype(str(path), size)
+            except Exception:
+                pass
+        return ImageFont.load_default()
 
     def buildInstaller(self):
         error = self.validate()
@@ -1161,14 +1499,16 @@ class SchemePage(QWidget):
         data["output_root"] = str(output_dir.resolve())
         self.backend.save_settings(data)
         theme = self.backend.sanitize_name(self.schemeBox.currentText() or "鼠标方案")
+        pixels = self.backend.size_level_to_pixels(self.sizeLevel)
+        installer_theme = self.backend.sanitize_name(f"{theme}_{pixels}px")
 
         def work():
             package_dir = self.backend.WORK_ROOT / "fluent_installer_package"
             package_dir.mkdir(parents=True, exist_ok=True)
             files = self.prepareAssets(package_dir)
             installer_py = package_dir / "install_cursor_theme.py"
-            installer_py.write_text(self.backend.installer_source(theme, files), encoding="utf-8")
-            exe_name = f"{theme}_鼠标样式安装器"
+            installer_py.write_text(self.backend.installer_source(installer_theme, files, pixels), encoding="utf-8")
+            exe_name = f"{installer_theme}_鼠标样式安装器"
             icon_path = self.installerIcon(package_dir)
             python = self.backend.find_python_with_pyinstaller()
             command = [
@@ -1422,13 +1762,19 @@ class ResourcePage(QWidget):
             preview_grid.setHorizontalSpacing(6)
             preview_grid.setVerticalSpacing(6)
             columns = 5 if self.gridMode else 9
-            for role_index, role in enumerate(self.backend.CURSOR_ROLES):
-                preview = CursorPreview(46 if self.gridMode else 38)
+            shown_index = 0
+            for role in self.backend.CURSOR_ROLES:
                 file_name = files.get(role.reg_name)
-                path = scheme_dir / file_name if file_name else None
+                if not file_name:
+                    continue
+                path = scheme_dir / file_name
+                if not path.exists():
+                    continue
+                preview = CursorPreview(46 if self.gridMode else 38)
                 preview.setPath(self.backend, path, 44 if self.gridMode else 34, role=role)
                 preview.setToolTip(role.label)
-                preview_grid.addWidget(preview, role_index // columns, role_index % columns)
+                preview_grid.addWidget(preview, shown_index // columns, shown_index % columns)
+                shown_index += 1
             layout.addLayout(preview_grid, 1)
             action_row = QHBoxLayout()
             delete_btn = PushButton("删除")
@@ -1609,8 +1955,8 @@ class TimerPage(QWidget):
         self.unit.addItems(["秒", "分钟"])
         self.scheme = ComboBox()
         self.scheme.addItem("")
-        self.scheme.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
-        self.scheme.addItems(self.schemeNames())
+        self.scheme.addItem("随机", self.backend.RANDOM_SCHEME_VALUE)
+        self.scheme.addItem("顺序", "顺序")
         row.addWidget(self.enabled)
         row.addWidget(BodyLabel("每"))
         row.addWidget(self.interval)
@@ -1644,7 +1990,12 @@ class TimerPage(QWidget):
                 self.unit.setCurrentText("秒")
                 self.interval.setValue(seconds)
             value = timer.get("scheme", "")
-            self.scheme.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
+            if value == self.backend.RANDOM_SCHEME_VALUE:
+                self.scheme.setCurrentText("随机")
+            elif value == "顺序":
+                self.scheme.setCurrentText("顺序")
+            else:
+                self.scheme.setCurrentText(value)
         except Exception:
             pass
 
@@ -1721,7 +2072,11 @@ class SwitchPage(QWidget):
         self.timerInterval.setValue(5)
         self.timerUnit = ComboBox()
         self.timerUnit.addItems(["秒", "分钟"])
-        self.timerScheme = self.createSchemeBox()
+        self.timerScheme = ComboBox()
+        self.timerScheme.setMinimumWidth(160)
+        self.timerScheme.addItem("")
+        self.timerScheme.addItem("随机", self.backend.RANDOM_SCHEME_VALUE)
+        self.timerScheme.addItem("顺序", "顺序")
         timer_layout.addWidget(self.timerInterval)
         timer_layout.addWidget(self.timerUnit)
         timer_layout.addWidget(self.timerScheme)
@@ -1802,7 +2157,7 @@ class SwitchPage(QWidget):
         return box
 
     def allSchemeBoxes(self) -> list[ComboBox]:
-        return [self.lightScheme, self.darkScheme, self.timerScheme, *self.weekCombos.values(), *self.inputCombos.values()]
+        return [self.lightScheme, self.darkScheme, *self.weekCombos.values(), *self.inputCombos.values()]
 
     def refreshSchemeBoxes(self) -> None:
         if not hasattr(self, "timerScheme"):
@@ -1824,10 +2179,29 @@ class SwitchPage(QWidget):
 
     def currentSchemeValue(self, combo: ComboBox) -> str:
         data = combo.currentData()
-        return str(data) if data else combo.currentText().strip()
+        if data:
+            text = str(data)
+            if combo is self.timerScheme and text == self.backend.RANDOM_SCHEME_VALUE:
+                return self.backend.RANDOM_SCHEME_VALUE
+            return text
+        text = combo.currentText().strip()
+        if combo is self.timerScheme and text == "随机":
+            return self.backend.RANDOM_SCHEME_VALUE
+        if combo is self.timerScheme and text == "顺序":
+            return "顺序"
+        return text
 
     def setSchemeValue(self, combo: ComboBox, value: str):
-        combo.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
+        if combo is self.timerScheme:
+            # 计时切换只有"随机"和"顺序"两个选项
+            if value == self.backend.RANDOM_SCHEME_VALUE:
+                combo.setCurrentText("随机")
+            elif value == "顺序":
+                combo.setCurrentText("顺序")
+            else:
+                combo.setCurrentText(value)
+        else:
+            combo.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
 
     def onModeChanged(self, mode: str, checked: bool):
         if checked:
@@ -2035,9 +2409,9 @@ class SettingsPage(QWidget):
         self.backend = backend
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
-        layout.setSpacing(14)
+        layout.setSpacing(16)
         layout.addWidget(SubtitleLabel("设置"))
-        mission = CaptionLabel(f"宗旨：{self.backend.SOFTWARE_MISSION}")
+        mission = CaptionLabel(self.backend.SOFTWARE_MISSION)
         mission.setTextColor("#64748b", "#94a3b8")
         layout.addWidget(mission)
 
@@ -2046,6 +2420,7 @@ class SettingsPage(QWidget):
         storage_card = CardWidget()
         row = QHBoxLayout(storage_card)
         row.setContentsMargins(16, 14, 16, 14)
+        row.setSpacing(10)
         row.addWidget(StrongBodyLabel("鼠标文件存放位置"))
         row.addWidget(self.storage, 1)
         pick = PushButton("选择")
@@ -2056,6 +2431,10 @@ class SettingsPage(QWidget):
         row.addWidget(open_storage)
         layout.addWidget(storage_card)
 
+        switch_card = CardWidget()
+        switch_layout = QVBoxLayout(switch_card)
+        switch_layout.setContentsMargins(16, 14, 16, 14)
+        switch_layout.setSpacing(12)
         autostart_row = QHBoxLayout()
         autostart_row.addWidget(StrongBodyLabel("自启动后台"))
         self.autostart = SwitchButton()
@@ -2063,7 +2442,7 @@ class SettingsPage(QWidget):
         autostart_row.addWidget(self.autostart)
         autostart_row.addStretch(1)
         hide_row = QHBoxLayout()
-        hide_row.addWidget(StrongBodyLabel("隐藏任务栏图标"))
+        hide_row.addWidget(StrongBodyLabel("隐藏任务栏"))
         self.hideTaskbarIcon = SwitchButton()
         self.hideTaskbarIcon.setChecked(self.backend.hide_taskbar_icon_enabled())
         hide_row.addWidget(self.hideTaskbarIcon)
@@ -2071,22 +2450,30 @@ class SettingsPage(QWidget):
         hide_tip = CaptionLabel("开启后开机只保留后台进程；关闭窗口也不会显示托盘图标。")
         hide_tip.setWordWrap(True)
         hide_tip.setTextColor("#64748b", "#94a3b8")
+
+        english_row = QHBoxLayout()
+        english_row.addWidget(StrongBodyLabel("语言：英文"))
+        self.englishSwitch = SwitchButton()
+        self.englishSwitch.setChecked(self.backend.load_settings().get("english_enabled", "false").lower() == "true")
+        english_row.addWidget(self.englishSwitch)
+        english_row.addStretch(1)
+        switch_layout.addLayout(autostart_row)
+        switch_layout.addLayout(hide_row)
+        switch_layout.addWidget(hide_tip)
+        switch_layout.addLayout(english_row)
+
         save = PrimaryPushButton("保存设置")
         save.clicked.connect(self.save)
         tools = QHBoxLayout()
+        tools.setSpacing(10)
         self.updateButton = PrimaryPushButton("检测更新")
         self.updateButton.setIcon(FIF.UPDATE)
-        self.errorButton = PushButton("打开错误记录")
-        self.errorButton.setIcon(FIF.DOCUMENT)
-        self.copyDiagButton = PushButton("复制诊断信息")
-        self.copyDiagButton.setIcon(FIF.COPY)
-        for button in [self.updateButton, self.errorButton, self.copyDiagButton]:
+        for button in [save, self.updateButton]:
+            button.setMinimumWidth(120)
             tools.addWidget(button)
         tools.addStretch(1)
         link_row = QHBoxLayout()
         for item in [
-            ("像素指针指南文章", self.backend.PIXEL_GUIDE_URL, FIF.LINK),
-            ("工具制作 BY ASUNNY", self.backend.ASUNNY_URL, FIF.LINK),
             ("GitHub 源地址", self.backend.configured_github_url(), FIF.GITHUB),
         ]:
             text, url, icon = item
@@ -2095,16 +2482,11 @@ class SettingsPage(QWidget):
             btn.clicked.connect(lambda _checked=False, u=url: webbrowser.open(u))
             link_row.addWidget(btn)
         link_row.addStretch(1)
-        layout.addLayout(autostart_row)
-        layout.addLayout(hide_row)
-        layout.addWidget(hide_tip)
-        layout.addWidget(save, alignment=Qt.AlignLeft)
+        layout.addWidget(switch_card)
         layout.addLayout(tools)
         layout.addLayout(link_row)
         layout.addStretch(1)
         self.updateButton.clicked.connect(self.checkUpdates)
-        self.errorButton.clicked.connect(self.openErrorLog)
-        self.copyDiagButton.clicked.connect(self.copyDiagnostics)
 
     def pickStorage(self):
         folder = QFileDialog.getExistingDirectory(self, "选择鼠标文件存放位置", self.storage.text())
@@ -2122,8 +2504,14 @@ class SettingsPage(QWidget):
             data = self.backend.load_settings()
             data["storage_root"] = str(Path(self.storage.text()).resolve())
             data["hide_taskbar_icon"] = "1" if self.hideTaskbarIcon.isChecked() else "0"
+            data["english_enabled"] = "true" if self.englishSwitch.isChecked() else "false"
+            data.pop("close_tip_enabled", None)
             self.backend.save_settings(data)
             self.backend.set_auto_start(self.autostart.isChecked())
+            if hasattr(self.window(), "applyLanguage"):
+                self.window().applyLanguage()
+            if hasattr(self.window(), "syncTrayIconVisibility"):
+                self.window().syncTrayIconVisibility()
             InfoBar.success(title="已保存", content="设置已应用", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
         except Exception as exc:
             self.backend.log_error("Fluent 设置保存失败", exc)
@@ -2209,7 +2597,7 @@ class SettingsPage(QWidget):
             f"安装包目录：{self.backend.configured_output_root()}",
             f"GitHub：{self.backend.configured_github_url()}",
             f"自启动启用：{self.backend.auto_start_enabled()}",
-            f"隐藏任务栏图标：{self.backend.hide_taskbar_icon_enabled()}",
+            f"隐藏任务栏：{self.backend.hide_taskbar_icon_enabled()}",
             f"Run 项：{self.backend.run_auto_start_exists()}",
             f"启动快捷方式：{self.backend.startup_script_path()} / 存在={self.backend.startup_script_path().exists()}",
             f"任务计划：{self.backend.SCHEDULED_TASK_NAME} / 存在={self.backend.scheduled_task_exists()}",
@@ -2251,21 +2639,63 @@ class MousePointerFluentWindow(FluentWindow):
         self.switchPage.setObjectName("switchPage")
         self.settingsPage.setObjectName("settingsPage")
 
-        self.addSubInterface(self.schemePage, FIF.BRUSH, "鼠标方案")
-        self.addSubInterface(self.resourcePage, FIF.FOLDER, "资源库")
-        self.addSubInterface(self.switchPage, FIF.DATE_TIME, "方案切换")
-        self.addSubInterface(self.settingsPage, FIF.SETTING, "设置", NavigationItemPosition.BOTTOM)
+        english = ui_english_enabled(backend)
+        self.addSubInterface(self.schemePage, FIF.BRUSH, tr_text("鼠标方案", english))
+        self.addSubInterface(self.resourcePage, FIF.FOLDER, tr_text("资源库", english))
+        self.addSubInterface(self.switchPage, FIF.DATE_TIME, tr_text("方案切换", english))
+        self.addSubInterface(self.settingsPage, FIF.SETTING, tr_text("设置", english), NavigationItemPosition.BOTTOM)
         self.navigationInterface.setAcrylicEnabled(True)
         self.navigationInterface.setMinimumWidth(188)
         self.navigationInterface.setMaximumWidth(188)
         self.createTrayIcon()
+        self.applyLanguage()
         self.scheduleTimer = QTimer(self)
         self.scheduleTimer.timeout.connect(self.checkScheduledSwitch)
-        self.scheduleTimer.start(250)
+        self.scheduleTimer.start(1000)
+
+    def applyLanguage(self):
+        english = ui_english_enabled(self.backend)
+        self.setWindowTitle(tr_text(self.backend.APP_NAME, english))
+        apply_widget_language(self, english)
+        self.refreshNavigationText(english)
+        self.schemePage.updateExtraBox()
+        self.schemePage.updateLargePreview(self.schemePage.current_preview)
+        self.refreshTrayMenu()
+
+    def refreshNavigationText(self, english: bool):
+        for route_key, text in [
+            ("schemePage", "鼠标方案"),
+            ("resourcePage", "资源库"),
+            ("switchPage", "方案切换"),
+            ("settingsPage", "设置"),
+        ]:
+            try:
+                item = self.navigationInterface.widget(route_key)
+                if item:
+                    item.setText(tr_text(text, english))
+            except Exception:
+                pass
+
+    def syncTrayIconVisibility(self):
+        if not self.trayIcon:
+            return
+        if self.backend.hide_taskbar_icon_enabled():
+            self.trayIcon.hide()
+        else:
+            self.trayIcon.show()
 
     def createTrayIcon(self):
         icon = self.windowIcon()
         self.trayIcon = QSystemTrayIcon(icon, self)
+        self.refreshTrayMenu()
+        self.trayIcon.activated.connect(self.onTrayActivated)
+        if not self.backend.hide_taskbar_icon_enabled():
+            self.trayIcon.show()
+
+    def refreshTrayMenu(self):
+        if not self.trayIcon:
+            return
+        english = ui_english_enabled(self.backend)
         menu = QMenu()
         open_action = menu.addAction("打开")
         open_action.triggered.connect(self.openFromTray)
@@ -2276,14 +2706,13 @@ class MousePointerFluentWindow(FluentWindow):
         next_action = menu.addAction(f"下次切换：{next_text}")
         next_action.setEnabled(False)
         menu.addSeparator()
-        hide_action = menu.addAction("隐藏任务栏图标")
+        hide_action = menu.addAction("隐藏任务栏")
         hide_action.triggered.connect(self.hideTrayIconNow)
         exit_action = menu.addAction("退出")
         exit_action.triggered.connect(self.exitFromTray)
+        for action in menu.actions():
+            action.setText(tr_text(action.text(), english))
         self.trayIcon.setContextMenu(menu)
-        self.trayIcon.activated.connect(self.onTrayActivated)
-        if not self.backend.hide_taskbar_icon_enabled():
-            self.trayIcon.show()
 
     def onTrayActivated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
@@ -2312,6 +2741,10 @@ class MousePointerFluentWindow(FluentWindow):
         try:
             schedule_items, week_items = self.backend.load_schedule_state()
             now = datetime.now()
+            has_fast_mode = any(item.get("mode") in {"input", "timer"} for item in schedule_items)
+            target_interval = 250 if any(item.get("mode") == "input" for item in schedule_items) else 1000 if has_fast_mode else 10000
+            if self.scheduleTimer.interval() != target_interval:
+                self.scheduleTimer.setInterval(target_interval)
             for item in schedule_items:
                 if item.get("mode") == "input":
                     state = self.backend.current_input_state()
@@ -2354,22 +2787,157 @@ class MousePointerFluentWindow(FluentWindow):
         if self.exiting:
             event.accept()
             return
-        if self.settingsPage.autostart.isChecked() or self.backend.auto_start_enabled():
-            try:
+        try:
+            if self.settingsPage.autostart.isChecked() or self.backend.auto_start_enabled():
                 self.backend.set_auto_start(True)
-                if self.backend.hide_taskbar_icon_enabled():
-                    self.backend.start_background_process()
-                    event.accept()
-                    return
-                if self.trayIcon:
-                    self.trayIcon.show()
-                    self.trayIcon.showMessage(self.backend.APP_NAME, "已保留后台运行。", QSystemTrayIcon.Information, 1800)
-                self.hide()
-                event.ignore()
-                return
-            except Exception as exc:
-                self.backend.log_error("Fluent 保留后台失败", exc)
+            if self.backend.hide_taskbar_icon_enabled():
+                self.backend.start_background_process()
+            else:
+                self.backend.start_tray_process()
+            if self.trayIcon:
+                self.trayIcon.hide()
+            self.exiting = True
+            event.accept()
+            QTimer.singleShot(0, QApplication.quit)
+            return
+        except Exception as exc:
+            self.backend.log_error("Fluent 保留后台失败", exc)
+        self.exiting = True
         event.accept()
+        QTimer.singleShot(0, QApplication.quit)
+
+
+class LightweightTrayApp(QObject):
+    def __init__(self, backend, lock_fd, parent=None):
+        super().__init__(parent)
+        self.backend = backend
+        self.lock_fd = lock_fd
+        self.lastScheduleKey = ""
+        self.lastTimerAt = 0.0
+        self.timerScheduleIndex = 0
+        self.exiting = False
+        icon_path = backend.resource_path("icon终.png")
+        icon = QIcon(str(icon_path)) if icon_path.exists() else QIcon()
+        self.trayIcon = QSystemTrayIcon(icon, self)
+        self.refreshMenu()
+        self.trayIcon.activated.connect(self.onActivated)
+        self.trayIcon.show()
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.checkScheduledSwitch)
+        self.timer.start(1000)
+
+    def refreshMenu(self):
+        english = ui_english_enabled(self.backend)
+        menu = QMenu()
+        open_action = menu.addAction("打开")
+        open_action.triggered.connect(self.openMainWindow)
+        menu.addSeparator()
+        current_action = menu.addAction(f"当前配置：{self.backend.configured_current_scheme()}")
+        current_action.setEnabled(False)
+        next_text = self.backend.next_switch_text(*self.backend.load_schedule_state())
+        next_action = menu.addAction(f"下次切换：{next_text}")
+        next_action.setEnabled(False)
+        menu.addSeparator()
+        hide_action = menu.addAction("隐藏任务栏")
+        hide_action.triggered.connect(self.hideTrayAndKeepBackground)
+        exit_action = menu.addAction("退出")
+        exit_action.triggered.connect(self.quitTray)
+        for action in menu.actions():
+            action.setText(tr_text(action.text(), english))
+        self.trayIcon.setContextMenu(menu)
+
+    def onActivated(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.openMainWindow()
+
+    def openMainWindow(self):
+        if self.exiting:
+            return
+        self.exiting = True
+        self.backend.start_detached_process(self.backend.gui_command())
+        self.cleanup()
+        QApplication.quit()
+
+    def hideTrayAndKeepBackground(self):
+        self.backend.set_setting_enabled("hide_taskbar_icon", True)
+        self.backend.start_background_process()
+        self.quitTray()
+
+    def quitTray(self):
+        self.exiting = True
+        self.cleanup()
+        QApplication.quit()
+
+    def cleanup(self):
+        if self.trayIcon:
+            self.trayIcon.hide()
+        try:
+            os.close(self.lock_fd)
+        except Exception:
+            pass
+        self.backend.remove_pid_file(self.backend.APP_DATA / "tray.pid")
+
+    def checkScheduledSwitch(self):
+        try:
+            schedule_items, week_items = self.backend.load_schedule_state()
+            now = datetime.now()
+            has_fast_mode = any(item.get("mode") in {"input", "timer"} for item in schedule_items)
+            target_interval = 250 if any(item.get("mode") == "input" for item in schedule_items) else 1000 if has_fast_mode else 10000
+            if self.timer.interval() != target_interval:
+                self.timer.setInterval(target_interval)
+            for item in schedule_items:
+                if item.get("mode") == "input":
+                    state = self.backend.current_input_state()
+                    scheme = item.get(f"{state}_scheme", "")
+                    key = f"input|{state}|{scheme}"
+                    if scheme and key != self.lastScheduleKey:
+                        picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
+                        if picked:
+                            self.backend.apply_library_scheme(picked)
+                            self.refreshMenu()
+                        self.lastScheduleKey = key
+                    continue
+                if item.get("mode") == "timer":
+                    interval = max(1, int(item.get("interval_seconds") or 0))
+                    if time.time() - self.lastTimerAt >= interval:
+                        scheme = self.backend.pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), self.timerScheduleIndex)
+                        self.timerScheduleIndex += 1
+                        self.lastTimerAt = time.time()
+                        if scheme:
+                            self.backend.apply_library_scheme(scheme)
+                            self.refreshMenu()
+                    continue
+                scheme = item.get("scheme", "")
+                key = f"{now:%Y-%m-%d}|{item.get('time')}|{scheme}"
+                if scheme and item.get("time") == now.strftime("%H:%M") and key != self.lastScheduleKey:
+                    picked = self.backend.pick_scheduled_scheme(scheme, item.get("order", "顺序"), 0)
+                    if picked:
+                        self.backend.apply_library_scheme(picked)
+                        self.refreshMenu()
+                    self.lastScheduleKey = key
+                    return
+            scheme = week_items.get(str(now.weekday()))
+            key = f"{now:%Y-%m-%d}|week|{scheme}"
+            if scheme and key != self.lastScheduleKey:
+                picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0) if scheme == self.backend.RANDOM_SCHEME_VALUE else scheme
+                if picked:
+                    self.backend.apply_library_scheme(picked)
+                    self.refreshMenu()
+                self.lastScheduleKey = key
+        except Exception as exc:
+            self.backend.log_error("Fluent 轻量托盘切换失败", exc)
+
+
+def run_tray_app(backend) -> None:
+    lock = backend.acquire_tray_lock()
+    if lock is None:
+        return
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    tray = LightweightTrayApp(backend, lock)
+    app.aboutToQuit.connect(tray.cleanup)
+    app.exec()
 
 
 def run_app(backend, start_hidden: bool = False) -> None:
