@@ -68,7 +68,7 @@ SCHEDULED_TASK_NAME = "MousePointerBackground"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
 DEFAULT_GITHUB_URL = "https://github.com/yuanyue1234/MousePointer"
-APP_VERSION = "1.0.13"
+APP_VERSION = "1.0.15"
 BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
 PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
@@ -176,7 +176,25 @@ def set_system_cursor_size(pixels: int) -> None:
     SPI_SETCURSORS = 0x0057
     SPIF_UPDATEINIFILE = 0x01
     SPIF_SENDCHANGE = 0x02
-    ctypes.windll.user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
+    user32 = ctypes.windll.user32
+    user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
+    HWND_BROADCAST = 0xFFFF
+    WM_SETTINGCHANGE = 0x001A
+    SMTO_ABORTIFHUNG = 0x0002
+    message = ctypes.create_unicode_buffer("Control Panel\\Cursors")
+    result = ctypes.c_size_t()
+    try:
+        user32.SendMessageTimeoutW(
+            ctypes.c_void_p(HWND_BROADCAST),
+            WM_SETTINGCHANGE,
+            0,
+            ctypes.cast(message, ctypes.c_void_p),
+            SMTO_ABORTIFHUNG,
+            100,
+            ctypes.byref(result),
+        )
+    except Exception:
+        pass
 
 
 def bundled_archives() -> list[Path]:
@@ -1930,7 +1948,7 @@ def run_background() -> None:
                 last_key = key
         except Exception as exc:
             log_error("后台切换失败", exc)
-        time.sleep(1 if fast_schedule else 30)
+        time.sleep(0.25 if fast_schedule else 30)
 
 
 def available_scheme_names() -> list[str]:
@@ -1983,7 +2001,7 @@ def ime_status_values(hwnd: int, timeout_ms: int = 50) -> tuple[int, int]:
         ctypes.c_void_p,
         ctypes.wintypes.UINT,
         ctypes.c_size_t,
-        ctypes.c_size_t,
+        ctypes.c_void_p,
         ctypes.wintypes.UINT,
         ctypes.wintypes.UINT,
         ctypes.POINTER(ctypes.c_size_t),
@@ -1999,7 +2017,7 @@ def ime_status_values(hwnd: int, timeout_ms: int = 50) -> tuple[int, int]:
 
     def send(command: int) -> int:
         result = ctypes.c_size_t()
-        ok = user32.SendMessageTimeoutW(ime_hwnd, WM_IME_CONTROL, command, 0, SMTO_ABORTIFHUNG, timeout_ms, ctypes.byref(result))
+        ok = user32.SendMessageTimeoutW(ime_hwnd, WM_IME_CONTROL, command, None, SMTO_ABORTIFHUNG, timeout_ms, ctypes.byref(result))
         return int(result.value) if ok else 0
 
     return send(IMC_GETOPENSTATUS), send(IMC_GETCONVERSIONMODE)

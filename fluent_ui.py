@@ -511,10 +511,10 @@ class SchemePage(QWidget):
         self.extraTitle = StrongBodyLabel("资源盒子")
         self.extraAddButton = PushButton("添加资源")
         self.extraAddButton.setIcon(FIF.ADD)
-        self.extraAddButton.setFixedWidth(102)
+        self.extraAddButton.setMinimumWidth(118)
         self.extraClearButton = PushButton("清空资源")
         self.extraClearButton.setIcon(FIF.DELETE)
-        self.extraClearButton.setFixedWidth(102)
+        self.extraClearButton.setMinimumWidth(118)
         extra_header.addWidget(self.extraTitle)
         extra_header.addStretch(1)
         extra_header.addWidget(self.extraAddButton)
@@ -560,7 +560,7 @@ class SchemePage(QWidget):
         self.sizeSlider.setValue(3)
         self.sizeSlider.valueChanged.connect(self.onSizeChanged)
         right_layout.addWidget(self.sizeSlider)
-        self.sizeTip = CaptionLabel("推荐范围：2-7，仅用于预览判断，不会写入系统或安装包")
+        self.sizeTip = CaptionLabel("推荐范围：2-7")
         self.sizeTip.setWordWrap(True)
         self.sizeTip.setTextColor("#64748b", "#ef4444")
         right_layout.addWidget(self.sizeTip)
@@ -745,13 +745,15 @@ class SchemePage(QWidget):
             self.extraFiles = [item for item in self.extraFiles if not (item.exists() and item.resolve() == target)]
         except Exception:
             self.extraFiles = [item for item in self.extraFiles if item != path]
-        self.persistExtraFiles()
         self.updateExtraBox()
+        QApplication.processEvents()
+        self.persistExtraFiles(refresh_ui=False)
 
     def clearExtraResources(self) -> None:
         self.extraFiles = []
-        self.persistExtraFiles()
         self.updateExtraBox()
+        QApplication.processEvents()
+        self.persistExtraFiles(refresh_ui=False)
 
     def uniqueFileName(self, folder: Path, file_name: str) -> str:
         candidate = self.backend.sanitize_name(Path(file_name).stem) or "resource"
@@ -795,7 +797,7 @@ class SchemePage(QWidget):
             extra_names.append(f"extras/{output_name}")
         return extra_names
 
-    def persistExtraFiles(self) -> None:
+    def persistExtraFiles(self, refresh_ui: bool = True) -> None:
         scheme_dir = self.currentSchemeDir()
         if not scheme_dir or not (scheme_dir / "scheme.json").exists():
             return
@@ -806,7 +808,8 @@ class SchemePage(QWidget):
         manifest["extras"] = extra_names
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         self.extraFiles = [scheme_dir / name for name in extra_names if (scheme_dir / name).exists()]
-        self.updateExtraBox()
+        if refresh_ui:
+            self.updateExtraBox()
 
     def importExtraResources(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -832,9 +835,17 @@ class SchemePage(QWidget):
                 self.appendExtraResource(old_path)
         self.selected[reg_name] = path
         self.rows[reg_name].setPath(path)
-        self.persistExtraFiles()
+        self.removeExtraFromMemory(path)
+        self.updateExtraBox()
         self.updateLargePreview(reg_name)
         self.status.setText(f"已替换：{self.backend.ROLE_BY_REG[reg_name].label}")
+
+    def removeExtraFromMemory(self, path: Path) -> None:
+        try:
+            target = path.resolve()
+            self.extraFiles = [item for item in self.extraFiles if not (item.exists() and item.resolve() == target)]
+        except Exception:
+            self.extraFiles = [item for item in self.extraFiles if item != path]
 
     def editHotspotForRole(self, reg_name: str) -> None:
         role = self.backend.ROLE_BY_REG.get(reg_name)
@@ -915,7 +926,7 @@ class SchemePage(QWidget):
         pixels = self.backend.size_level_to_pixels(self.sizeLevel)
         self.sizeText.setText(f"{self.sizeLevel} / {pixels}px")
         if 2 <= self.sizeLevel <= 7:
-            self.sizeTip.setText("推荐范围：2-7，仅用于预览判断，不会写入系统或安装包")
+            self.sizeTip.setText("推荐范围：2-7")
             self.sizeTip.setTextColor("#64748b", "#94a3b8")
         else:
             self.sizeTip.setText("推荐范围：2-7，当前大小可能过大或过小")
@@ -1339,6 +1350,8 @@ class ResourcePage(QWidget):
         self.restoreButton.setIcon(FIF.RETURN)
         self.gridButton = ToggleButton("九宫格")
         self.gridButton.setIcon(FIF.TILES)
+        for button in [self.openWeb, self.importButton, self.importFolderButton, self.refresh, self.restoreButton, self.gridButton]:
+            button.setMinimumWidth(104)
         row.addWidget(self.openWeb)
         row.addWidget(self.importButton)
         row.addWidget(self.importFolderButton)
@@ -1424,8 +1437,10 @@ class ResourcePage(QWidget):
             action_row = QHBoxLayout()
             delete_btn = PushButton("删除")
             delete_btn.setIcon(FIF.DELETE)
+            delete_btn.setMinimumWidth(86)
             delete_btn.clicked.connect(lambda _checked=False, n=name, b=delete_btn: self.deleteOrRestoreResource(n, b))
             apply_btn = PrimaryPushButton("应用")
+            apply_btn.setMinimumWidth(86)
             apply_btn.clicked.connect(lambda _checked=False, n=name: self.applyResource(n))
             action_row.addWidget(delete_btn)
             action_row.addWidget(apply_btn)
@@ -1747,7 +1762,7 @@ class SwitchPage(QWidget):
         input_title.addStretch(1)
         input_layout.addLayout(input_title, 0, 0, 1, 4)
         for index, (key, label) in enumerate([("zh", "中文输入"), ("en", "英文输入"), ("upper", "大写锁定")]):
-            combo = self.createSchemeBox()
+            combo = self.createSchemeBox(False)
             self.inputCombos[key] = combo
             input_layout.addWidget(BodyLabel(label), index + 1, 0)
             input_layout.addWidget(combo, index + 1, 1)
@@ -1780,11 +1795,12 @@ class SwitchPage(QWidget):
         box.setText("")
         return box
 
-    def createSchemeBox(self) -> ComboBox:
+    def createSchemeBox(self, include_random: bool = True) -> ComboBox:
         box = ComboBox()
         box.setMinimumWidth(220)
         box.addItem("")
-        box.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
+        if include_random:
+            box.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
         for name in self.scheme_page.schemeNames():
             box.addItem(name)
         return box
@@ -1798,14 +1814,16 @@ class SwitchPage(QWidget):
         old_loading = self.loading
         self.loading = True
         names = self.scheme_page.schemeNames()
+        input_boxes = {id(box) for box in self.inputCombos.values()}
         for box in self.allSchemeBoxes():
             value = self.currentSchemeValue(box)
             box.clear()
             box.addItem("")
-            box.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
+            if id(box) not in input_boxes:
+                box.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
             for name in names:
                 box.addItem(name)
-            self.setSchemeValue(box, value)
+            self.setSchemeValue(box, "" if id(box) in input_boxes and value == self.backend.RANDOM_SCHEME_VALUE else value)
         self.loading = old_loading
 
     def currentSchemeValue(self, combo: ComboBox) -> str:
@@ -2247,7 +2265,7 @@ class MousePointerFluentWindow(FluentWindow):
         self.createTrayIcon()
         self.scheduleTimer = QTimer(self)
         self.scheduleTimer.timeout.connect(self.checkScheduledSwitch)
-        self.scheduleTimer.start(1_000)
+        self.scheduleTimer.start(250)
 
     def createTrayIcon(self):
         icon = self.windowIcon()
