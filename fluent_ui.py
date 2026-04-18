@@ -89,6 +89,9 @@ def role_icon_path(backend, role) -> Path:
     return backend.resource_path(f"assets/role_icons/{role.file_stem}.png")
 
 
+EXTRA_RESOURCE_EXTS = {".cur", ".ani", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}
+
+
 def pixmap_from_image(image: Image.Image, target_size: int | None = None) -> QPixmap:
     qimage = ImageQt(image.convert("RGBA"))
     pixmap = QPixmap.fromImage(qimage)
@@ -102,7 +105,7 @@ class CursorPreview(QLabel):
         super().__init__(parent)
         self.setFixedSize(size, size)
         self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("border-radius: 8px; background: rgba(246, 250, 255, 0.9);")
+        self.setStyleSheet("border-radius: 8px; background: #f8fbff;")
 
     def setPath(self, backend, path: Path | None, size: int = 42, role=None) -> None:
         if not path or not path.exists():
@@ -244,12 +247,27 @@ class CursorRow(QWidget):
         self.preview.setPath(self.backend, path, role=self.role)
 
 
+class ExtraResourceItem(QWidget):
+    def __init__(self, backend, path: Path, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(58, 58)
+        self.setToolTip(path.name)
+        self.setObjectName("extraResourceItem")
+        self.setStyleSheet("#extraResourceItem { background: #ffffff; border: none; border-radius: 8px; } #extraResourceItem:hover { background: #eef7ff; }")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        preview = CursorPreview(48)
+        preview.setPath(backend, path, 42)
+        layout.addWidget(preview, alignment=Qt.AlignCenter)
+
+
 class SchemePage(QWidget):
     def __init__(self, backend, parent=None):
         super().__init__(parent)
         self.backend = backend
         self.rows: dict[str, CursorRow] = {}
         self.selected: dict[str, Path] = {}
+        self.extraFiles: list[Path] = []
         self.current_preview = "Arrow"
         self.sizeLevel = 3
         self.animationFrames: list[QPixmap] = []
@@ -323,6 +341,37 @@ class SchemePage(QWidget):
         self.scroll.setWidget(self.rowWidget)
         left_layout.addWidget(self.scroll, 1)
 
+        self.extraBox = QWidget()
+        self.extraBox.setObjectName("extraBox")
+        self.extraBox.setMinimumHeight(170)
+        self.extraBox.setMaximumHeight(210)
+        self.extraBox.setStyleSheet("#extraBox { background: rgba(255, 255, 255, 0.82); border: none; border-radius: 8px; }")
+        extra_layout = QVBoxLayout(self.extraBox)
+        extra_layout.setContentsMargins(12, 10, 12, 10)
+        extra_layout.setSpacing(8)
+        extra_header = QHBoxLayout()
+        self.extraTitle = StrongBodyLabel("资源盒子")
+        self.extraAddButton = PushButton("添加资源")
+        self.extraAddButton.setIcon(FIF.ADD)
+        self.extraAddButton.setFixedWidth(102)
+        extra_header.addWidget(self.extraTitle)
+        extra_header.addStretch(1)
+        extra_header.addWidget(self.extraAddButton)
+        extra_layout.addLayout(extra_header)
+        self.extraScroll = ScrollArea()
+        self.extraScroll.setWidgetResizable(True)
+        self.extraScroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.extraScroll.setStyleSheet("QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
+        self.extraWidget = QWidget()
+        self.extraWidget.setStyleSheet("background: transparent;")
+        self.extraGrid = QGridLayout(self.extraWidget)
+        self.extraGrid.setContentsMargins(0, 0, 0, 0)
+        self.extraGrid.setHorizontalSpacing(8)
+        self.extraGrid.setVerticalSpacing(8)
+        self.extraScroll.setWidget(self.extraWidget)
+        extra_layout.addWidget(self.extraScroll, 1)
+        left_layout.addWidget(self.extraBox)
+
         right = CardWidget()
         right.setFixedWidth(460)
         right.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
@@ -394,6 +443,7 @@ class SchemePage(QWidget):
         self.buildButton.clicked.connect(self.buildInstaller)
         self.restoreButton.clicked.connect(self.restoreCursor)
         self.sizeSettingsButton.clicked.connect(self.openPointerSettings)
+        self.extraAddButton.clicked.connect(self.importExtraResources)
         self.refreshSchemes()
 
     def openPointerSettings(self):
@@ -418,6 +468,19 @@ class SchemePage(QWidget):
                 names.append(path.name)
         return sorted(names, key=lambda name: self.backend.scheme_order_value(root / name))
 
+    def currentSchemeDir(self) -> Path | None:
+        name = self.schemeBox.currentText().strip()
+        if not name:
+            return None
+        return self.backend.SCHEME_LIBRARY / self.backend.sanitize_name(name)
+
+    def readManifest(self, name: str) -> tuple[Path, dict]:
+        scheme_dir = self.backend.SCHEME_LIBRARY / self.backend.sanitize_name(name)
+        manifest_path = scheme_dir / "scheme.json"
+        if not manifest_path.exists():
+            return scheme_dir, {}
+        return scheme_dir, json.loads(manifest_path.read_text(encoding="utf-8"))
+
     def refreshSchemes(self):
         current = self.schemeBox.currentText()
         self.schemeBox.clear()
@@ -425,6 +488,7 @@ class SchemePage(QWidget):
         self.schemeBox.addItems(names)
         if current in names:
             self.schemeBox.setCurrentText(current)
+            self.loadScheme(current)
         elif names:
             self.schemeBox.setCurrentIndex(0)
             self.loadScheme(names[0])
@@ -433,22 +497,121 @@ class SchemePage(QWidget):
 
     def clearSelection(self):
         self.selected.clear()
+        self.extraFiles = []
         for row in self.rows.values():
             row.setPath(None)
         self.updateLargePreview("Arrow")
+        self.updateExtraBox()
 
     def loadScheme(self, name: str):
         if not name:
             return
         try:
             scheme_dir, files = self.backend.scheme_manifest(name)
+            _manifest_dir, manifest = self.readManifest(name)
             self.selected = {reg: scheme_dir / file_name for reg, file_name in files.items() if (scheme_dir / file_name).exists()}
+            self.extraFiles = []
+            for file_name in manifest.get("extras", []):
+                path = scheme_dir / file_name
+                if path.exists() and path.suffix.lower() in EXTRA_RESOURCE_EXTS:
+                    self.extraFiles.append(path)
             for reg, row in self.rows.items():
                 row.setPath(self.selected.get(reg))
             self.updateLargePreview(self.current_preview)
+            self.updateExtraBox()
             self.status.setText(f"已载入：{name}")
         except Exception as exc:
             self.showError("载入失败", exc)
+
+    def clearGrid(self, layout: QGridLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+    def updateExtraBox(self) -> None:
+        name = self.schemeBox.currentText().strip()
+        self.extraTitle.setText(f"资源盒子[{name}]" if name else "资源盒子")
+        self.clearGrid(self.extraGrid)
+        if not self.extraFiles:
+            empty = CaptionLabel("无文件")
+            empty.setTextColor("#64748b", "#94a3b8")
+            self.extraGrid.addWidget(empty, 0, 0)
+            return
+        for index, path in enumerate(self.extraFiles):
+            row = index // 3
+            col = index % 3
+            self.extraGrid.addWidget(ExtraResourceItem(self.backend, path), row, col)
+        self.extraGrid.setRowStretch(max(3, (len(self.extraFiles) + 2) // 3), 1)
+
+    def uniqueFileName(self, folder: Path, file_name: str) -> str:
+        candidate = self.backend.sanitize_name(Path(file_name).stem) or "resource"
+        suffix = Path(file_name).suffix.lower()
+        output = f"{candidate}{suffix}"
+        index = 2
+        while (folder / output).exists():
+            output = f"{candidate}_{index}{suffix}"
+            index += 1
+        return output
+
+    def stageExtraFiles(self, staging_dir: Path, sources: list[Path] | None = None) -> list[Path]:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        staged = []
+        source_list = self.extraFiles if sources is None else sources
+        for source in source_list:
+            if not source.exists() or source.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+                continue
+            output_name = self.uniqueFileName(staging_dir, source.name)
+            target = staging_dir / output_name
+            shutil.copy2(source, target)
+            staged.append(target)
+        return staged
+
+    def copyExtraFilesToScheme(self, scheme_dir: Path, sources: list[Path] | None = None) -> list[str]:
+        extras_dir = scheme_dir / "extras"
+        if extras_dir.exists():
+            shutil.rmtree(extras_dir)
+        extras_dir.mkdir(parents=True, exist_ok=True)
+        extra_names: list[str] = []
+        source_list = self.extraFiles if sources is None else sources
+        for source in source_list:
+            if not source.exists() or source.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+                continue
+            output_name = self.uniqueFileName(extras_dir, source.name)
+            target = extras_dir / output_name
+            if source.resolve() != target.resolve():
+                shutil.copy2(source, target)
+            extra_names.append(f"extras/{output_name}")
+        return extra_names
+
+    def persistExtraFiles(self) -> None:
+        scheme_dir = self.currentSchemeDir()
+        if not scheme_dir or not (scheme_dir / "scheme.json").exists():
+            return
+        staged = self.stageExtraFiles(self.backend.WORK_ROOT / "fluent_extra_stage")
+        extra_names = self.copyExtraFilesToScheme(scheme_dir, staged)
+        manifest_path = scheme_dir / "scheme.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["extras"] = extra_names
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.extraFiles = [scheme_dir / name for name in extra_names if (scheme_dir / name).exists()]
+        self.updateExtraBox()
+
+    def importExtraResources(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "添加可替换指针资源",
+            str(self.backend.configured_storage_root()),
+            "可替换资源 (*.cur *.ani *.png *.jpg *.jpeg *.bmp *.gif *.webp *.ico);;所有文件 (*.*)",
+        )
+        if not files:
+            return
+        self.extraFiles.extend([Path(file) for file in files if Path(file).suffix.lower() in EXTRA_RESOURCE_EXTS])
+        self.persistExtraFiles()
+        self.updateExtraBox()
 
     def updateLargePreview(self, reg_name: str):
         self.current_preview = reg_name
@@ -599,6 +762,20 @@ class SchemePage(QWidget):
             return child_roots
         return [extracted]
 
+    def extraResourcesFromRoot(self, root: Path, mapping: dict[str, Path]) -> list[Path]:
+        mapped = {path.resolve() for path in mapping.values() if path.exists()}
+        extras = []
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+                continue
+            try:
+                if path.resolve() in mapped:
+                    continue
+            except Exception:
+                pass
+            extras.append(path)
+        return extras
+
     def importRootAsScheme(self, root: Path, raw_name: str) -> str:
         try:
             name = self.backend.sanitize_name(raw_name)
@@ -628,7 +805,8 @@ class SchemePage(QWidget):
                 output_name = f"{role.file_stem}{source.suffix.lower()}"
                 shutil.copy2(source, scheme_dir / output_name)
                 files[reg_name] = output_name
-            self.writeManifest(name, files, scheme_dir)
+            extra_names = self.copyExtraFilesToScheme(scheme_dir, self.extraResourcesFromRoot(root, mapping))
+            self.writeManifest(name, files, scheme_dir, extra_names)
             self.showInfo("导入完成", f"已添加：{name}")
             return name
         except Exception as exc:
@@ -667,9 +845,11 @@ class SchemePage(QWidget):
             shutil.copy2(assets_dir / name, target_dir / name)
         return target_dir
 
-    def writeManifest(self, theme: str, files: dict[str, str], folder: Path):
+    def writeManifest(self, theme: str, files: dict[str, str], folder: Path, extras: list[str] | None = None):
         folder.mkdir(parents=True, exist_ok=True)
         manifest = {"name": theme, "files": files, "order": self.backend.time.time(), "saved_at": datetime.now().isoformat()}
+        if extras:
+            manifest["extras"] = extras
         (folder / "scheme.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def saveScheme(self):
@@ -682,12 +862,15 @@ class SchemePage(QWidget):
             package_dir = self.backend.WORK_ROOT / "fluent_library_save"
             files = self.prepareAssets(package_dir)
             scheme_dir = self.backend.SCHEME_LIBRARY / theme
+            staged_extras = self.stageExtraFiles(self.backend.WORK_ROOT / "fluent_library_extra_stage")
             if scheme_dir.exists():
                 shutil.rmtree(scheme_dir)
             shutil.copytree(package_dir / "assets", scheme_dir)
-            self.writeManifest(theme, files, scheme_dir)
+            extra_names = self.copyExtraFilesToScheme(scheme_dir, staged_extras)
+            self.writeManifest(theme, files, scheme_dir, extra_names)
             self.refreshSchemes()
             self.schemeBox.setCurrentText(theme)
+            self.loadScheme(theme)
             self.showInfo("保存完成", f"已保存：{theme}")
         except Exception as exc:
             self.showError("保存失败", exc)
@@ -1081,7 +1264,7 @@ class SchedulePage(QWidget):
         self.darkScheme = ComboBox()
         for widget in [self.lightScheme, self.darkScheme]:
             widget.addItem("")
-            widget.addItem("随机", self.backend.RANDOM_SCHEME_VALUE)
+            widget.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
             widget.addItems(self.schemeNames())
         for title, time_edit, scheme in [("亮色模式", self.lightTime, self.lightScheme), ("暗色模式", self.darkTime, self.darkScheme)]:
             card = CardWidget()
@@ -1115,7 +1298,7 @@ class SchedulePage(QWidget):
 
     def setSchemeValue(self, combo: ComboBox, value: str):
         if value == self.backend.RANDOM_SCHEME_VALUE:
-            combo.setCurrentText("随机")
+            combo.setCurrentText("随机方案")
         else:
             combo.setCurrentText(value)
 
@@ -1156,7 +1339,7 @@ class TimerPage(QWidget):
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("计时切换"))
-        layout.addWidget(CaptionLabel("按固定间隔自动切换方案。选择“随机”时每次从方案库随机挑选。"))
+        layout.addWidget(CaptionLabel("按固定间隔自动切换方案。选择“随机方案”时每次从方案库随机挑选。"))
         card = CardWidget()
         row = QHBoxLayout(card)
         row.setContentsMargins(16, 14, 16, 14)
@@ -1168,7 +1351,7 @@ class TimerPage(QWidget):
         self.unit.addItems(["秒", "分钟"])
         self.scheme = ComboBox()
         self.scheme.addItem("")
-        self.scheme.addItem("随机", self.backend.RANDOM_SCHEME_VALUE)
+        self.scheme.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
         self.scheme.addItems(self.schemeNames())
         row.addWidget(self.enabled)
         row.addWidget(BodyLabel("每"))
@@ -1203,7 +1386,7 @@ class TimerPage(QWidget):
                 self.unit.setCurrentText("秒")
                 self.interval.setValue(seconds)
             value = timer.get("scheme", "")
-            self.scheme.setCurrentText("随机" if value == self.backend.RANDOM_SCHEME_VALUE else value)
+            self.scheme.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
         except Exception:
             pass
 
@@ -1324,7 +1507,7 @@ class SwitchPage(QWidget):
         box = ComboBox()
         box.setMinimumWidth(220)
         box.addItem("")
-        box.addItem("随机", self.backend.RANDOM_SCHEME_VALUE)
+        box.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
         box.addItems(self.scheme_page.schemeNames())
         return box
 
@@ -1333,7 +1516,7 @@ class SwitchPage(QWidget):
         return str(data) if data else combo.currentText().strip()
 
     def setSchemeValue(self, combo: ComboBox, value: str):
-        combo.setCurrentText("随机" if value == self.backend.RANDOM_SCHEME_VALUE else value)
+        combo.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
 
     def onModeChanged(self, mode: str, checked: bool):
         if not checked:
@@ -1433,7 +1616,7 @@ class WeekPage(QWidget):
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("星期切换"))
         layout.addWidget(CaptionLabel("根据星期自动应用对应方案。留空则当天不切换。"))
-        values = ["", "随机"] + self.scheme_page.schemeNames()
+        values = ["", "随机方案"] + self.scheme_page.schemeNames()
         for index, day in enumerate(self.weekdays):
             card = CardWidget()
             row = QHBoxLayout(card)
@@ -1443,7 +1626,7 @@ class WeekPage(QWidget):
             combo = ComboBox()
             combo.setMinimumWidth(260)
             for value in values:
-                combo.addItem(value, self.backend.RANDOM_SCHEME_VALUE if value == "随机" else None)
+                combo.addItem(value, self.backend.RANDOM_SCHEME_VALUE if value == "随机方案" else None)
             row.addWidget(combo)
             layout.addWidget(card)
             self.combos[str(index)] = combo
@@ -1458,17 +1641,17 @@ class WeekPage(QWidget):
             _items, week_items = self.backend.load_schedule_state()
             for day, combo in self.combos.items():
                 value = week_items.get(day, "")
-                combo.setCurrentText("随机" if value == self.backend.RANDOM_SCHEME_VALUE else value)
+                combo.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
         except Exception:
             pass
 
     def refreshSchemes(self):
-        values = ["", "随机"] + self.scheme_page.schemeNames()
+        values = ["", "随机方案"] + self.scheme_page.schemeNames()
         for combo in self.combos.values():
             current = combo.currentText()
             combo.clear()
             for value in values:
-                combo.addItem(value, self.backend.RANDOM_SCHEME_VALUE if value == "随机" else None)
+                combo.addItem(value, self.backend.RANDOM_SCHEME_VALUE if value == "随机方案" else None)
             if current in values:
                 combo.setCurrentText(current)
 
