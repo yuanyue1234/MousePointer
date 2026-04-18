@@ -124,12 +124,17 @@ class CursorPreview(QLabel):
         if not role:
             self.clear()
             return
-        icon = role_icon_path(backend, role)
-        if not icon.exists():
-            self.clear()
-            return
         try:
-            pixmap = QPixmap(str(icon))
+            cursor_path = backend.default_cursor_path(role)
+            if cursor_path and cursor_path.exists():
+                image = backend.cursor_preview_image_sized(cursor_path, (size * 3, size * 3), min(size * 2, 128)).convert("RGBA")
+                pixmap = pixmap_from_image(image)
+            else:
+                icon = role_icon_path(backend, role)
+                if not icon.exists():
+                    self.clear()
+                    return
+                pixmap = QPixmap(str(icon))
             self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         except Exception:
             self.clear()
@@ -279,6 +284,13 @@ class HotspotDialog(QDialog):
                 return pixmap_from_image(image)
         except Exception:
             pass
+        cursor_path = backend.default_cursor_path(role)
+        if cursor_path and cursor_path.exists():
+            try:
+                image = backend.cursor_preview_image_sized(cursor_path, (size, size), size).convert("RGBA")
+                return pixmap_from_image(image)
+            except Exception:
+                pass
         return QPixmap(str(role_icon_path(backend, role))).scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
     def onRatioChanged(self, x: float, y: float):
@@ -298,17 +310,16 @@ class CursorRow(QWidget):
         self.role = role
         self.path: Path | None = None
         self.setAcceptDrops(True)
-        self.setMinimumHeight(70)
+        self.setMinimumHeight(84)
         self.setObjectName("cursorRow")
-        bg = "#ffffff" if index % 2 == 0 else "#f8fbff"
-        self.setStyleSheet(f"#cursorRow {{ background: {bg}; border: none; border-radius: 8px; }} #cursorRow:hover {{ background: #eef7ff; }} #roleCell, #fileCell {{ background: rgba(239, 246, 255, 0.72); border-radius: 8px; }}")
+        self.setStyleSheet("#cursorRow { background: #ffffff; border: none; border-radius: 8px; } #cursorRow:hover { background: #f4fbff; }")
 
         layout = QGridLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setHorizontalSpacing(12)
         layout.setColumnStretch(2, 1)
 
-        self.preview = CursorPreview(58)
+        self.preview = CursorPreview(66)
         self.preview.setStyleSheet("border: 1px dashed #93c5fd; border-radius: 8px; background: #ffffff;")
         self.preview.mousePressEvent = lambda _event: self.previewClicked.emit(self.role.reg_name)
         self.name = StrongBodyLabel(role.label)
@@ -324,21 +335,15 @@ class CursorRow(QWidget):
         self.pickButton.clicked.connect(lambda: self.picked.emit(self.role.reg_name))
 
         text_box = QWidget()
-        text_box.setObjectName("roleCell")
         text_layout = QVBoxLayout(text_box)
-        text_layout.setContentsMargins(8, 5, 8, 5)
+        text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(2)
         text_layout.addWidget(self.name)
         text_layout.addWidget(self.tip)
-        file_box = QWidget()
-        file_box.setObjectName("fileCell")
-        file_layout = QVBoxLayout(file_box)
-        file_layout.setContentsMargins(8, 5, 8, 5)
-        file_layout.addWidget(self.file)
 
         layout.addWidget(self.preview, 0, 0, 2, 1)
         layout.addWidget(text_box, 0, 1, 2, 1)
-        layout.addWidget(file_box, 0, 2, 2, 1)
+        layout.addWidget(self.file, 0, 2, 2, 1)
         layout.addWidget(self.pickButton, 0, 3, 2, 1)
 
     def enterEvent(self, event) -> None:
@@ -374,14 +379,14 @@ class ExtraResourceItem(QWidget):
         super().__init__(parent)
         self.path = path
         self.dragStart = QPoint()
-        self.setFixedSize(58, 58)
+        self.setFixedSize(56, 56)
         self.setToolTip(path.name)
         self.setObjectName("extraResourceItem")
         self.setStyleSheet("#extraResourceItem { background: #ffffff; border: none; border-radius: 8px; } #extraResourceItem:hover { background: #eef7ff; }")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
-        preview = CursorPreview(48)
-        preview.setPath(backend, path, 42)
+        preview = CursorPreview(46)
+        preview.setPath(backend, path, 40)
         layout.addWidget(preview, alignment=Qt.AlignCenter)
 
     def mousePressEvent(self, event) -> None:
@@ -485,8 +490,8 @@ class SchemePage(QWidget):
 
         self.extraBox = QWidget()
         self.extraBox.setObjectName("extraBox")
-        self.extraBox.setMinimumHeight(150)
-        self.extraBox.setMaximumHeight(185)
+        self.extraBox.setMinimumHeight(184)
+        self.extraBox.setMaximumHeight(220)
         self.extraBox.setStyleSheet("#extraBox { background: rgba(255, 255, 255, 0.82); border: none; border-radius: 8px; }")
         extra_layout = QVBoxLayout(self.extraBox)
         extra_layout.setContentsMargins(12, 10, 12, 10)
@@ -815,6 +820,14 @@ class SchemePage(QWidget):
     def renderRoleIconPixmap(self, role) -> QPixmap:
         if not role:
             return QPixmap()
+        cursor_path = self.backend.default_cursor_path(role)
+        if cursor_path and cursor_path.exists():
+            try:
+                size = min(180, max(96, self.backend.size_level_to_pixels(self.sizeLevel)))
+                image = self.backend.cursor_preview_image_sized(cursor_path, (size, size), size).convert("RGBA")
+                return pixmap_from_image(image)
+            except Exception:
+                pass
         icon = role_icon_path(self.backend, role)
         if icon.exists():
             pixmap = QPixmap(str(icon))
@@ -1586,11 +1599,15 @@ class SwitchPage(QWidget):
         self.modeSwitches: dict[str, SwitchButton] = {}
         self.weekCombos: dict[str, ComboBox] = {}
         self.inputCombos: dict[str, ComboBox] = {}
+        self.loading = False
+        self.saveTimer = QTimer(self)
+        self.saveTimer.setSingleShot(True)
+        self.saveTimer.timeout.connect(self.save)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("方案切换"))
-        layout.addWidget(CaptionLabel("时间切换、计时切换、星期切换只能启用一种。"))
+        layout.addWidget(CaptionLabel("时间切换、计时切换、星期切换、中英文切换只能启用一种。开启或修改后会自动保存。"))
 
         self.timeCard = CardWidget()
         time_layout = QGridLayout(self.timeCard)
@@ -1675,17 +1692,20 @@ class SwitchPage(QWidget):
         layout.addWidget(self.inputCard)
 
         layout.addStretch(1)
-        bottom = QHBoxLayout()
-        bottom.addStretch(1)
-        self.applyButton = PrimaryPushButton("应用")
-        self.applyButton.setIcon(FIF.ACCEPT)
-        bottom.addWidget(self.applyButton)
-        layout.addLayout(bottom)
 
         for mode, switch in self.modeSwitches.items():
             switch.checkedChanged.connect(lambda checked, m=mode: self.onModeChanged(m, checked))
-        self.applyButton.clicked.connect(self.save)
+        for widget in [self.lightTime, self.darkTime, self.lightScheme, self.darkScheme, self.timerUnit, self.timerScheme, *self.weekCombos.values(), *self.inputCombos.values()]:
+            try:
+                widget.currentTextChanged.connect(self.scheduleSave)
+            except Exception:
+                pass
+        self.timerInterval.valueChanged.connect(self.scheduleSave)
         self.load()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.refreshSchemeBoxes()
 
     def createTimeBox(self) -> EditableComboBox:
         box = EditableComboBox()
@@ -1699,8 +1719,28 @@ class SwitchPage(QWidget):
         box.setMinimumWidth(220)
         box.addItem("")
         box.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
-        box.addItems(self.scheme_page.schemeNames())
+        for name in self.scheme_page.schemeNames():
+            box.addItem(name)
         return box
+
+    def allSchemeBoxes(self) -> list[ComboBox]:
+        return [self.lightScheme, self.darkScheme, self.timerScheme, *self.weekCombos.values(), *self.inputCombos.values()]
+
+    def refreshSchemeBoxes(self) -> None:
+        if not hasattr(self, "timerScheme"):
+            return
+        old_loading = self.loading
+        self.loading = True
+        names = self.scheme_page.schemeNames()
+        for box in self.allSchemeBoxes():
+            value = self.currentSchemeValue(box)
+            box.clear()
+            box.addItem("")
+            box.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
+            for name in names:
+                box.addItem(name)
+            self.setSchemeValue(box, value)
+        self.loading = old_loading
 
     def currentSchemeValue(self, combo: ComboBox) -> str:
         data = combo.currentData()
@@ -1710,11 +1750,16 @@ class SwitchPage(QWidget):
         combo.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
 
     def onModeChanged(self, mode: str, checked: bool):
-        if not checked:
+        if checked:
+            for key, switch in self.modeSwitches.items():
+                if key != mode and switch.isChecked():
+                    switch.setChecked(False)
+        self.scheduleSave()
+
+    def scheduleSave(self, *args):
+        if self.loading:
             return
-        for key, switch in self.modeSwitches.items():
-            if key != mode and switch.isChecked():
-                switch.setChecked(False)
+        self.saveTimer.start(250)
 
     def activeMode(self) -> str:
         for mode, switch in self.modeSwitches.items():
@@ -1724,6 +1769,7 @@ class SwitchPage(QWidget):
 
     def load(self):
         try:
+            self.loading = True
             items, week_items = self.backend.load_schedule_state()
             by_mode = {item.get("mode"): item for item in items}
             light = by_mode.get("light", {})
@@ -1756,8 +1802,12 @@ class SwitchPage(QWidget):
                 self.timeSwitch.setChecked(True)
         except Exception:
             pass
+        finally:
+            self.loading = False
 
     def save(self):
+        if self.loading:
+            return
         try:
             mode = self.activeMode()
             items = []

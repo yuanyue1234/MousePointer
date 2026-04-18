@@ -68,7 +68,7 @@ SCHEDULED_TASK_NAME = "MousePointerBackground"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
 DEFAULT_GITHUB_URL = "https://github.com/yuanyue1234/MousePointer"
-APP_VERSION = "1.0.12"
+APP_VERSION = "1.0.13"
 BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
 PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
@@ -107,6 +107,25 @@ CURSOR_ROLES: list[CursorRole] = [
 ]
 
 ROLE_BY_REG = {role.reg_name: role for role in CURSOR_ROLES}
+DEFAULT_CURSOR_FILES = {
+    "Arrow": "aero_arrow.cur",
+    "Help": "aero_helpsel.cur",
+    "AppStarting": "aero_working.ani",
+    "Wait": "aero_busy.ani",
+    "Crosshair": "cross_r.cur",
+    "IBeam": "beam_r.cur",
+    "NWPen": "aero_pen.cur",
+    "No": "aero_unavail.cur",
+    "SizeNS": "aero_ns.cur",
+    "SizeWE": "aero_ew.cur",
+    "SizeNWSE": "aero_nwse.cur",
+    "SizeNESW": "aero_nesw.cur",
+    "SizeAll": "aero_move.cur",
+    "UpArrow": "aero_up.cur",
+    "Hand": "aero_link.cur",
+    "Person": "aero_person.cur",
+    "Pin": "aero_pin.cur",
+}
 DEFAULT_SCHEME_NAMES = ["01方案", "02方案"]
 DEFAULT_ARCHIVE_KEYWORDS = ["小垚", "鼠鼠"]
 RANDOM_SCHEME_VALUE = "__random__"
@@ -133,6 +152,15 @@ def resource_path(relative: str) -> Path:
     if base:
         return Path(base) / relative
     return APP_DIR / relative
+
+
+def default_cursor_path(role_or_reg) -> Path | None:
+    reg_name = getattr(role_or_reg, "reg_name", str(role_or_reg))
+    file_name = DEFAULT_CURSOR_FILES.get(reg_name)
+    if not file_name:
+        return None
+    path = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Cursors" / file_name
+    return path if path.exists() else None
 
 
 def bundled_archives() -> list[Path]:
@@ -1838,6 +1866,7 @@ def run_background() -> None:
     last_key = ""
     last_timer_at = 0.0
     timer_index = 0
+    fast_schedule = False
     while True:
         try:
             items = []
@@ -1849,7 +1878,18 @@ def run_background() -> None:
                 data = json.loads(WEEK_SCHEDULE_FILE.read_text(encoding="utf-8"))
                 week_items = data if isinstance(data, dict) else {}
             now = datetime.now()
+            fast_schedule = any(item.get("mode") == "input" or item.get("mode") == "timer" for item in items)
             for item in items:
+                if item.get("mode") == "input":
+                    state = current_input_state()
+                    scheme = item.get(f"{state}_scheme", "")
+                    key = f"input|{state}|{scheme}"
+                    if scheme and key != last_key:
+                        picked = pick_scheduled_scheme(scheme, "随机", 0)
+                        if picked:
+                            apply_library_scheme(picked)
+                        last_key = key
+                    continue
                 if item.get("mode") == "timer":
                     interval = max(1, int(item.get("interval_seconds") or 0))
                     if time.time() - last_timer_at >= interval:
@@ -1874,7 +1914,7 @@ def run_background() -> None:
                 last_key = key
         except Exception as exc:
             log_error("后台切换失败", exc)
-        time.sleep(30)
+        time.sleep(1 if fast_schedule else 30)
 
 
 def available_scheme_names() -> list[str]:
@@ -1896,42 +1936,67 @@ def pick_scheduled_scheme(value: str, order: str = "顺序", index: int = 0) -> 
     return random.choice(names)
 
 
-def current_input_state() -> str:
+def focused_window_handle() -> int:
     user32 = ctypes.windll.user32
     user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
     user32.GetWindowThreadProcessId.argtypes = [ctypes.wintypes.HWND, ctypes.c_void_p]
     user32.GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
-    user32.GetKeyboardLayout.argtypes = [ctypes.wintypes.DWORD]
-    user32.GetKeyboardLayout.restype = ctypes.wintypes.HKL
+    user32.GetGUIThreadInfo.argtypes = [ctypes.wintypes.DWORD, ctypes.c_void_p]
+    user32.GetGUIThreadInfo.restype = ctypes.wintypes.BOOL
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return 0
+    thread_id = user32.GetWindowThreadProcessId(hwnd, None)
+    size = 72 if ctypes.sizeof(ctypes.c_void_p) == 8 else 48
+    buf = ctypes.create_string_buffer(size)
+    struct.pack_into("<I", buf, 0, size)
+    if user32.GetGUIThreadInfo(thread_id, ctypes.byref(buf)):
+        focus_offset = 16 if ctypes.sizeof(ctypes.c_void_p) == 8 else 12
+        focused = struct.unpack_from("<Q" if ctypes.sizeof(ctypes.c_void_p) == 8 else "<I", buf, focus_offset)[0]
+        if focused:
+            return focused
+    return hwnd
+
+
+def ime_status_values(hwnd: int, timeout_ms: int = 50) -> tuple[int, int]:
+    user32 = ctypes.windll.user32
+    imm32 = ctypes.windll.imm32
+    imm32.ImmGetDefaultIMEWnd.argtypes = [ctypes.wintypes.HWND]
+    imm32.ImmGetDefaultIMEWnd.restype = ctypes.wintypes.HWND
+    user32.SendMessageTimeoutW.argtypes = [
+        ctypes.wintypes.HWND,
+        ctypes.wintypes.UINT,
+        ctypes.wintypes.WPARAM,
+        ctypes.wintypes.LPARAM,
+        ctypes.wintypes.UINT,
+        ctypes.wintypes.UINT,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    user32.SendMessageTimeoutW.restype = ctypes.wintypes.LPARAM
+    ime_hwnd = imm32.ImmGetDefaultIMEWnd(hwnd)
+    if not ime_hwnd:
+        return 0, 0
+    WM_IME_CONTROL = 0x0283
+    IMC_GETCONVERSIONMODE = 0x0001
+    IMC_GETOPENSTATUS = 0x0005
+    SMTO_ABORTIFHUNG = 0x0002
+
+    def send(command: int) -> int:
+        result = ctypes.c_size_t()
+        ok = user32.SendMessageTimeoutW(ime_hwnd, WM_IME_CONTROL, command, 0, SMTO_ABORTIFHUNG, timeout_ms, ctypes.byref(result))
+        return int(result.value) if ok else 0
+
+    return send(IMC_GETOPENSTATUS), send(IMC_GETCONVERSIONMODE)
+
+
+def current_input_state(timeout_ms: int = 50) -> str:
+    user32 = ctypes.windll.user32
     caps_on = bool(user32.GetKeyState(0x14) & 1)
     if caps_on:
         return "upper"
-    hwnd = user32.GetForegroundWindow()
-    thread_id = user32.GetWindowThreadProcessId(hwnd, None) if hwnd else 0
-    hkl = user32.GetKeyboardLayout(thread_id)
-    lang_id = hkl & 0xFFFF
-    primary_lang = lang_id & 0x3FF
-    if primary_lang == 0x04:
-        try:
-            imm32 = ctypes.windll.imm32
-            imm32.ImmGetContext.argtypes = [ctypes.wintypes.HWND]
-            imm32.ImmGetContext.restype = ctypes.wintypes.HANDLE
-            imm32.ImmGetConversionStatus.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong)]
-            imm32.ImmGetConversionStatus.restype = ctypes.wintypes.BOOL
-            imm32.ImmReleaseContext.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.HANDLE]
-            himc = imm32.ImmGetContext(hwnd)
-            if himc:
-                conversion = ctypes.c_ulong()
-                sentence = ctypes.c_ulong()
-                try:
-                    if imm32.ImmGetConversionStatus(himc, ctypes.byref(conversion), ctypes.byref(sentence)):
-                        return "zh" if (conversion.value & 0x0001) else "en"
-                finally:
-                    imm32.ImmReleaseContext(hwnd, himc)
-        except Exception:
-            pass
-        return "zh"
-    return "en"
+    hwnd = focused_window_handle()
+    open_status, conversion_mode = ime_status_values(hwnd, timeout_ms)
+    return "zh" if open_status and (conversion_mode & 1) else "en"
 
 
 def apply_library_scheme(theme: str) -> None:
