@@ -173,11 +173,11 @@ def set_system_cursor_size(pixels: int) -> None:
             winreg.SetValueEx(key, "CursorSize", 0, winreg.REG_DWORD, level)
     except Exception:
         pass
-    SPI_SETCURSORS = 0x0057
-    SPIF_UPDATEINIFILE = 0x01
-    SPIF_SENDCHANGE = 0x02
+    refresh_mouse_parameters()
+
+
+def broadcast_cursor_change(timeout_ms: int = 500) -> None:
     user32 = ctypes.windll.user32
-    user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
     HWND_BROADCAST = 0xFFFF
     WM_SETTINGCHANGE = 0x001A
     SMTO_ABORTIFHUNG = 0x0002
@@ -190,11 +190,20 @@ def set_system_cursor_size(pixels: int) -> None:
             0,
             ctypes.cast(message, ctypes.c_void_p),
             SMTO_ABORTIFHUNG,
-            100,
+            timeout_ms,
             ctypes.byref(result),
         )
     except Exception:
         pass
+
+
+def default_cursor_scheme_files() -> dict[str, str]:
+    files = {}
+    for role in CURSOR_ROLES:
+        path = default_cursor_path(role)
+        if path and path.exists():
+            files[role.reg_name] = str(path)
+    return files
 
 
 def bundled_archives() -> list[Path]:
@@ -580,29 +589,39 @@ def restore_cursor_backup() -> None:
             value = item.get("value", "")
             value_type = int(item.get("type", winreg.REG_EXPAND_SZ))
             winreg.SetValueEx(key, name, 0, value_type, value)
-    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
-    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\Cursors", 0x0002, 200, None)
+    refresh_mouse_parameters()
 
 
-def apply_cursor_scheme(theme_name: str, cursor_files: dict[str, str]) -> None:
-    backup_current_cursor_scheme()
+def apply_cursor_scheme(theme_name: str, cursor_files: dict[str, str], backup: bool = True) -> None:
+    if backup:
+        backup_current_cursor_scheme()
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors", 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, "", 0, winreg.REG_SZ, theme_name)
         winreg.SetValueEx(key, "Scheme Source", 0, winreg.REG_DWORD, 2)
         for reg_name, file_path in cursor_files.items():
             winreg.SetValueEx(key, reg_name, 0, winreg.REG_EXPAND_SZ, file_path)
-    ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
-    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\Cursors", 0x0002, 200, None)
+    refresh_mouse_parameters()
     update_setting("current_scheme", theme_name)
 
 
 def refresh_mouse_parameters() -> None:
     ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0x01 | 0x02)
-    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Control Panel\\\\Cursors", 0x0002, 200, None)
+    broadcast_cursor_change()
 
 
-def apply_refreshed_cursor_scheme(theme_name: str, cursor_files: dict[str, str]) -> None:
-    apply_cursor_scheme(theme_name, cursor_files)
+def reset_to_default_cursor_scheme() -> None:
+    defaults = default_cursor_scheme_files()
+    if not defaults:
+        raise RuntimeError("未找到 Windows 默认鼠标指针文件。")
+    apply_cursor_scheme("Windows 默认", defaults, backup=False)
+
+
+def apply_refreshed_cursor_scheme(theme_name: str, cursor_files: dict[str, str], cursor_size_pixels: int | None = None) -> None:
+    if cursor_size_pixels:
+        backup_current_cursor_scheme()
+        set_system_cursor_size(cursor_size_pixels)
+        reset_to_default_cursor_scheme()
+    apply_cursor_scheme(theme_name, cursor_files, backup=not bool(cursor_size_pixels))
 
 
 def installer_source(theme_name: str, files: dict[str, str]) -> str:

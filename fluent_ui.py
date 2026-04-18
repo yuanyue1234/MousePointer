@@ -546,14 +546,11 @@ class SchemePage(QWidget):
         right_layout.addWidget(preview_tip)
 
         size_row = QHBoxLayout()
-        size_row.addWidget(BodyLabel("预览大小"))
+        size_row.addWidget(BodyLabel("鼠标大小"))
         self.sizeText = CaptionLabel("3 / 64px")
         self.sizeText.setTextColor("#64748b", "#94a3b8")
-        self.applySizeButton = PushButton("应用到系统")
-        self.applySizeButton.setFixedWidth(104)
         size_row.addStretch(1)
         size_row.addWidget(self.sizeText)
-        size_row.addWidget(self.applySizeButton)
         right_layout.addLayout(size_row)
         self.sizeSlider = Slider(Qt.Horizontal)
         self.sizeSlider.setRange(1, 15)
@@ -608,7 +605,6 @@ class SchemePage(QWidget):
         self.buildButton.clicked.connect(self.buildInstaller)
         self.restoreButton.clicked.connect(self.restoreCursor)
         self.sizeSettingsButton.clicked.connect(self.openPointerSettings)
-        self.applySizeButton.clicked.connect(self.applySystemCursorSize)
         self.extraAddButton.clicked.connect(self.importExtraResources)
         self.extraClearButton.clicked.connect(self.clearExtraResources)
         self.refreshSchemes()
@@ -618,15 +614,6 @@ class SchemePage(QWidget):
             os.startfile("ms-settings:easeofaccess-mousepointer")
         except Exception:
             os.startfile("control.exe")
-
-    def applySystemCursorSize(self):
-        try:
-            pixels = self.backend.size_level_to_pixels(self.sizeLevel)
-            self.backend.set_system_cursor_size(pixels)
-            self.status.setText(f"已请求系统应用鼠标大小：{pixels}px")
-            self.showInfo("已应用", "鼠标大小已写入系统设置并刷新光标")
-        except Exception as exc:
-            self.showError("鼠标大小设置失败", exc)
 
     def schemeNames(self) -> list[str]:
         root = self.backend.SCHEME_LIBRARY
@@ -1139,12 +1126,21 @@ class SchemePage(QWidget):
             self.showWarn("还不能应用", error)
             return
         theme = self.backend.sanitize_name(self.schemeBox.currentText() or "当前方案")
+        pixels = self.backend.size_level_to_pixels(self.sizeLevel)
+        QMessageBox.information(
+            self,
+            "应用前提示",
+            f"当前将按 {self.sizeLevel} / {pixels}px 应用鼠标大小。\n\n"
+            "请根据鼠标素材的实际尺寸选择合适大小：如果素材本身只有 32px，设置过大可能会明显变糊；"
+            "如果素材包含 64px 或更高尺寸，放大后通常会更清晰。\n\n"
+            "应用流程会先写入鼠标大小，然后重置为 Windows 默认指针，最后应用当前方案。",
+        )
 
         def work():
             package_dir = self.backend.WORK_ROOT / "fluent_current_theme"
             files = self.prepareAssets(package_dir)
             target_dir = self.installAssetsToScheme(theme, files, package_dir / "assets")
-            self.backend.apply_refreshed_cursor_scheme(theme, {reg: str(target_dir / name) for reg, name in files.items()})
+            self.backend.apply_refreshed_cursor_scheme(theme, {reg: str(target_dir / name) for reg, name in files.items()}, pixels)
             self.writeManifest(theme, files, target_dir)
             return theme
 
