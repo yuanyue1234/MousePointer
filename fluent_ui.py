@@ -12,10 +12,12 @@ from pathlib import Path
 
 from PIL import Image
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QPoint, Qt, Signal, QObject, QTimer
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QMimeData, QPoint, QRect, Qt, QUrl, Signal, QObject, QTimer
+from PySide6.QtGui import QColor, QDrag, QDragEnterEvent, QDropEvent, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
@@ -189,25 +191,126 @@ class PreviewPane(QWidget):
         painter.drawPixmap(x, y, self.pixmap)
 
 
+class HotspotCanvas(QWidget):
+    ratioChanged = Signal(float, float)
+
+    def __init__(self, pixmap: QPixmap, ratio: tuple[float, float], parent=None):
+        super().__init__(parent)
+        self.pixmap = pixmap
+        self.ratio = ratio
+        self.setMinimumSize(360, 360)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#cbd5e1"), 1, Qt.DashLine))
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 8, 8)
+        if self.pixmap.isNull():
+            return
+        target = self.targetRect()
+        painter.drawPixmap(target, self.pixmap)
+        x = target.x() + self.ratio[0] * target.width()
+        y = target.y() + self.ratio[1] * target.height()
+        painter.setPen(QPen(QColor("#ef4444"), 2))
+        painter.drawLine(int(x) - 12, int(y), int(x) + 12, int(y))
+        painter.drawLine(int(x), int(y) - 12, int(x), int(y) + 12)
+        painter.setPen(QPen(QColor("#0f172a"), 1))
+        painter.drawEllipse(QPoint(int(x), int(y)), 4, 4)
+
+    def targetRect(self):
+        size = self.pixmap.size()
+        scaled = size.scaled(self.rect().adjusted(18, 18, -18, -18).size(), Qt.KeepAspectRatio)
+        x = (self.width() - scaled.width()) // 2
+        y = (self.height() - scaled.height()) // 2
+        return QRect(x, y, scaled.width(), scaled.height())
+
+    def mousePressEvent(self, event) -> None:
+        target = self.targetRect()
+        if target.width() <= 0 or target.height() <= 0:
+            return
+        pos = event.position().toPoint()
+        x = max(target.left(), min(pos.x(), target.right()))
+        y = max(target.top(), min(pos.y(), target.bottom()))
+        self.ratio = ((x - target.x()) / max(1, target.width()), (y - target.y()) / max(1, target.height()))
+        self.ratioChanged.emit(self.ratio[0], self.ratio[1])
+        self.update()
+
+
+class HotspotDialog(QDialog):
+    def __init__(self, backend, role, path: Path | None, ratio: tuple[float, float], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("调整鼠标焦点")
+        self.ratio = ratio
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
+        title = SubtitleLabel(f"{role.label} 焦点位置")
+        tip = CaptionLabel("红色十字就是鼠标真正点击的位置。箭头一般在左上角，文本选择通常在中线附近。")
+        tip.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(tip)
+        pixmap = self.buildPixmap(backend, role, path)
+        self.canvas = HotspotCanvas(pixmap, ratio)
+        self.canvas.ratioChanged.connect(self.onRatioChanged)
+        layout.addWidget(self.canvas)
+        self.valueText = CaptionLabel("")
+        self.valueText.setTextColor("#64748b", "#94a3b8")
+        layout.addWidget(self.valueText)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.onRatioChanged(*ratio)
+
+    def buildPixmap(self, backend, role, path: Path | None) -> QPixmap:
+        size = 256
+        try:
+            if path and path.exists():
+                image = None
+                if path.suffix.lower() == ".ani":
+                    frames = backend.ani_frame_paths(path)
+                    if frames:
+                        path = frames[0]
+                if path.suffix.lower() in {".cur", ".ani"}:
+                    image = backend.render_cursor_with_windows(path, size)
+                if image is None:
+                    image = backend.centered_rgba(backend.image_from_path(path), size)
+                return pixmap_from_image(image)
+        except Exception:
+            pass
+        return QPixmap(str(role_icon_path(backend, role))).scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    def onRatioChanged(self, x: float, y: float):
+        self.ratio = (x, y)
+        self.valueText.setText(f"焦点：X {x:.2f} / Y {y:.2f}")
+
+
 class CursorRow(QWidget):
     hovered = Signal(str)
     picked = Signal(str)
+    dropped = Signal(str, object)
+    previewClicked = Signal(str)
 
-    def __init__(self, backend, role, parent=None):
+    def __init__(self, backend, role, index: int = 0, parent=None):
         super().__init__(parent)
         self.backend = backend
         self.role = role
         self.path: Path | None = None
+        self.setAcceptDrops(True)
         self.setMinimumHeight(70)
         self.setObjectName("cursorRow")
-        self.setStyleSheet("#cursorRow { background: #ffffff; border: none; border-radius: 8px; } #cursorRow:hover { background: #f6fbff; }")
+        bg = "#ffffff" if index % 2 == 0 else "#f8fbff"
+        self.setStyleSheet(f"#cursorRow {{ background: {bg}; border: none; border-radius: 8px; }} #cursorRow:hover {{ background: #eef7ff; }} #roleCell, #fileCell {{ background: rgba(239, 246, 255, 0.72); border-radius: 8px; }}")
 
         layout = QGridLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setHorizontalSpacing(12)
         layout.setColumnStretch(2, 1)
 
-        self.preview = CursorPreview(48)
+        self.preview = CursorPreview(58)
+        self.preview.setStyleSheet("border: 1px dashed #93c5fd; border-radius: 8px; background: #ffffff;")
+        self.preview.mousePressEvent = lambda _event: self.previewClicked.emit(self.role.reg_name)
         self.name = StrongBodyLabel(role.label)
         self.tip = CaptionLabel(role.tip)
         self.tip.setTextColor("#64748b", "#94a3b8")
@@ -221,15 +324,21 @@ class CursorRow(QWidget):
         self.pickButton.clicked.connect(lambda: self.picked.emit(self.role.reg_name))
 
         text_box = QWidget()
+        text_box.setObjectName("roleCell")
         text_layout = QVBoxLayout(text_box)
-        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setContentsMargins(8, 5, 8, 5)
         text_layout.setSpacing(2)
         text_layout.addWidget(self.name)
         text_layout.addWidget(self.tip)
+        file_box = QWidget()
+        file_box.setObjectName("fileCell")
+        file_layout = QVBoxLayout(file_box)
+        file_layout.setContentsMargins(8, 5, 8, 5)
+        file_layout.addWidget(self.file)
 
         layout.addWidget(self.preview, 0, 0, 2, 1)
         layout.addWidget(text_box, 0, 1, 2, 1)
-        layout.addWidget(self.file, 0, 2, 2, 1)
+        layout.addWidget(file_box, 0, 2, 2, 1)
         layout.addWidget(self.pickButton, 0, 3, 2, 1)
 
     def enterEvent(self, event) -> None:
@@ -246,10 +355,25 @@ class CursorRow(QWidget):
             self.file.setToolTip("")
         self.preview.setPath(self.backend, path, role=self.role)
 
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        path = Path(urls[0].toLocalFile())
+        if path.exists() and path.suffix.lower() in EXTRA_RESOURCE_EXTS:
+            self.dropped.emit(self.role.reg_name, path)
+            event.acceptProposedAction()
+
 
 class ExtraResourceItem(QWidget):
     def __init__(self, backend, path: Path, parent=None):
         super().__init__(parent)
+        self.path = path
+        self.dragStart = QPoint()
         self.setFixedSize(58, 58)
         self.setToolTip(path.name)
         self.setObjectName("extraResourceItem")
@@ -260,6 +384,21 @@ class ExtraResourceItem(QWidget):
         preview.setPath(backend, path, 42)
         layout.addWidget(preview, alignment=Qt.AlignCenter)
 
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.dragStart = event.position().toPoint()
+
+    def mouseMoveEvent(self, event) -> None:
+        if not event.buttons() & Qt.LeftButton:
+            return
+        if (event.position().toPoint() - self.dragStart).manhattanLength() < QApplication.startDragDistance():
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(self.path))])
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.CopyAction)
+
 
 class SchemePage(QWidget):
     def __init__(self, backend, parent=None):
@@ -267,6 +406,7 @@ class SchemePage(QWidget):
         self.backend = backend
         self.rows: dict[str, CursorRow] = {}
         self.selected: dict[str, Path] = {}
+        self.hotspots: dict[str, tuple[float, float]] = {}
         self.extraFiles: list[Path] = []
         self.current_preview = "Arrow"
         self.sizeLevel = 3
@@ -332,9 +472,11 @@ class SchemePage(QWidget):
         self.rowLayout.setContentsMargins(2, 2, 8, 2)
         self.rowLayout.setSpacing(8)
         for role in self.backend.CURSOR_ROLES:
-            row = CursorRow(backend, role)
+            row = CursorRow(backend, role, len(self.rows))
             row.hovered.connect(self.updateLargePreview)
             row.picked.connect(self.pickFileForRole)
+            row.dropped.connect(self.applyFileToRole)
+            row.previewClicked.connect(self.editHotspotForRole)
             self.rows[role.reg_name] = row
             self.rowLayout.addWidget(row)
         self.rowLayout.addStretch(1)
@@ -343,8 +485,8 @@ class SchemePage(QWidget):
 
         self.extraBox = QWidget()
         self.extraBox.setObjectName("extraBox")
-        self.extraBox.setMinimumHeight(170)
-        self.extraBox.setMaximumHeight(210)
+        self.extraBox.setMinimumHeight(150)
+        self.extraBox.setMaximumHeight(185)
         self.extraBox.setStyleSheet("#extraBox { background: rgba(255, 255, 255, 0.82); border: none; border-radius: 8px; }")
         extra_layout = QVBoxLayout(self.extraBox)
         extra_layout.setContentsMargins(12, 10, 12, 10)
@@ -497,6 +639,7 @@ class SchemePage(QWidget):
 
     def clearSelection(self):
         self.selected.clear()
+        self.hotspots.clear()
         self.extraFiles = []
         for row in self.rows.values():
             row.setPath(None)
@@ -510,6 +653,10 @@ class SchemePage(QWidget):
             scheme_dir, files = self.backend.scheme_manifest(name)
             _manifest_dir, manifest = self.readManifest(name)
             self.selected = {reg: scheme_dir / file_name for reg, file_name in files.items() if (scheme_dir / file_name).exists()}
+            self.hotspots = {}
+            for reg, value in manifest.get("hotspots", {}).items():
+                if isinstance(value, list) and len(value) == 2:
+                    self.hotspots[reg] = (float(value[0]), float(value[1]))
             self.extraFiles = []
             for file_name in manifest.get("extras", []):
                 path = scheme_dir / file_name
@@ -540,10 +687,10 @@ class SchemePage(QWidget):
             self.extraGrid.addWidget(empty, 0, 0)
             return
         for index, path in enumerate(self.extraFiles):
-            row = index // 3
-            col = index % 3
+            row = index // 6
+            col = index % 6
             self.extraGrid.addWidget(ExtraResourceItem(self.backend, path), row, col)
-        self.extraGrid.setRowStretch(max(3, (len(self.extraFiles) + 2) // 3), 1)
+        self.extraGrid.setRowStretch(max(2, (len(self.extraFiles) + 5) // 6), 1)
 
     def uniqueFileName(self, folder: Path, file_name: str) -> str:
         candidate = self.backend.sanitize_name(Path(file_name).stem) or "resource"
@@ -612,6 +759,23 @@ class SchemePage(QWidget):
         self.extraFiles.extend([Path(file) for file in files if Path(file).suffix.lower() in EXTRA_RESOURCE_EXTS])
         self.persistExtraFiles()
         self.updateExtraBox()
+
+    def applyFileToRole(self, reg_name: str, path: Path) -> None:
+        self.selected[reg_name] = path
+        self.rows[reg_name].setPath(path)
+        self.updateLargePreview(reg_name)
+        self.status.setText(f"已替换：{self.backend.ROLE_BY_REG[reg_name].label}")
+
+    def editHotspotForRole(self, reg_name: str) -> None:
+        role = self.backend.ROLE_BY_REG.get(reg_name)
+        if not role:
+            return
+        path = self.selected.get(reg_name)
+        ratio = self.hotspots.get(reg_name, role.hotspot_ratio)
+        dialog = HotspotDialog(self.backend, role, path, ratio, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.hotspots[reg_name] = dialog.ratio
+            self.status.setText(f"已设置焦点：{role.label}")
 
     def updateLargePreview(self, reg_name: str):
         self.current_preview = reg_name
@@ -739,7 +903,8 @@ class SchemePage(QWidget):
                 self.showInfo("批量导入", f"识别到 {len(roots)} 份鼠标指针，正在批量添加。")
             for root in roots:
                 name = package.stem if len(roots) == 1 else root.name
-                imported.append(self.importRootAsScheme(root, name))
+                search_root = extracted if len(roots) == 1 else root.parent
+                imported.append(self.importRootAsScheme(root, name, search_root))
             return imported
         except Exception as exc:
             self.showError("导入失败", exc)
@@ -762,10 +927,11 @@ class SchemePage(QWidget):
             return child_roots
         return [extracted]
 
-    def extraResourcesFromRoot(self, root: Path, mapping: dict[str, Path]) -> list[Path]:
+    def extraResourcesFromRoot(self, root: Path, mapping: dict[str, Path], search_root: Path | None = None) -> list[Path]:
+        base = search_root or root
         mapped = {path.resolve() for path in mapping.values() if path.exists()}
         extras = []
-        for path in root.rglob("*"):
+        for path in base.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in EXTRA_RESOURCE_EXTS:
                 continue
             try:
@@ -776,7 +942,7 @@ class SchemePage(QWidget):
             extras.append(path)
         return extras
 
-    def importRootAsScheme(self, root: Path, raw_name: str) -> str:
+    def importRootAsScheme(self, root: Path, raw_name: str, search_root: Path | None = None) -> str:
         try:
             name = self.backend.sanitize_name(raw_name)
             if name in self.backend.DEFAULT_SCHEME_NAMES:
@@ -805,8 +971,8 @@ class SchemePage(QWidget):
                 output_name = f"{role.file_stem}{source.suffix.lower()}"
                 shutil.copy2(source, scheme_dir / output_name)
                 files[reg_name] = output_name
-            extra_names = self.copyExtraFilesToScheme(scheme_dir, self.extraResourcesFromRoot(root, mapping))
-            self.writeManifest(name, files, scheme_dir, extra_names)
+            extra_names = self.copyExtraFilesToScheme(scheme_dir, self.extraResourcesFromRoot(root, mapping, search_root))
+            self.writeManifest(name, files, scheme_dir, extra_names, {})
             self.showInfo("导入完成", f"已添加：{name}")
             return name
         except Exception as exc:
@@ -832,7 +998,7 @@ class SchemePage(QWidget):
             suffix = source.suffix.lower()
             output_name = f"{role.file_stem}{suffix if suffix in {'.cur', '.ani'} else '.cur'}"
             output = assets_dir / output_name
-            self.backend.convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, self.backend.DEFAULT_CURSOR_SIZE)
+            self.backend.convert_to_cursor(source, output.with_suffix(".cur") if suffix not in {".cur", ".ani"} else output, role, self.backend.DEFAULT_CURSOR_SIZE, self.hotspots.get(reg_name))
             files[reg_name] = output_name
         return files
 
@@ -845,11 +1011,14 @@ class SchemePage(QWidget):
             shutil.copy2(assets_dir / name, target_dir / name)
         return target_dir
 
-    def writeManifest(self, theme: str, files: dict[str, str], folder: Path, extras: list[str] | None = None):
+    def writeManifest(self, theme: str, files: dict[str, str], folder: Path, extras: list[str] | None = None, hotspots: dict[str, tuple[float, float]] | None = None):
         folder.mkdir(parents=True, exist_ok=True)
         manifest = {"name": theme, "files": files, "order": self.backend.time.time(), "saved_at": datetime.now().isoformat()}
         if extras:
             manifest["extras"] = extras
+        hotspot_data = self.hotspots if hotspots is None else hotspots
+        if hotspot_data:
+            manifest["hotspots"] = {reg: [ratio[0], ratio[1]] for reg, ratio in hotspot_data.items()}
         (folder / "scheme.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def saveScheme(self):
@@ -1416,6 +1585,7 @@ class SwitchPage(QWidget):
         self.scheme_page = scheme_page
         self.modeSwitches: dict[str, SwitchButton] = {}
         self.weekCombos: dict[str, ComboBox] = {}
+        self.inputCombos: dict[str, ComboBox] = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
@@ -1482,6 +1652,27 @@ class SwitchPage(QWidget):
             week_layout.addWidget(BodyLabel(day), row, col)
             week_layout.addWidget(combo, row, col + 1)
         layout.addWidget(self.weekCard)
+
+        self.inputCard = CardWidget()
+        input_layout = QGridLayout(self.inputCard)
+        input_layout.setContentsMargins(16, 14, 16, 14)
+        input_title = QHBoxLayout()
+        input_title.addWidget(StrongBodyLabel("中英文切换"))
+        self.inputSwitch = SwitchButton()
+        self.modeSwitches["input"] = self.inputSwitch
+        input_title.addWidget(self.inputSwitch)
+        input_title.addStretch(1)
+        input_layout.addLayout(input_title, 0, 0, 1, 4)
+        for index, (key, label) in enumerate([("zh", "中文输入"), ("en", "英文输入"), ("upper", "大写锁定")]):
+            combo = self.createSchemeBox()
+            self.inputCombos[key] = combo
+            input_layout.addWidget(BodyLabel(label), index + 1, 0)
+            input_layout.addWidget(combo, index + 1, 1)
+        input_tip = CaptionLabel("后台根据当前前台窗口输入状态切换；大写锁定优先。")
+        input_tip.setWordWrap(True)
+        input_tip.setTextColor("#64748b", "#94a3b8")
+        input_layout.addWidget(input_tip, 4, 0, 1, 2)
+        layout.addWidget(self.inputCard)
 
         layout.addStretch(1)
         bottom = QHBoxLayout()
@@ -1550,9 +1741,14 @@ class SwitchPage(QWidget):
                 self.timerUnit.setCurrentText("秒")
                 self.timerInterval.setValue(seconds)
             self.setSchemeValue(self.timerScheme, timer.get("scheme", ""))
+            input_item = by_mode.get("input", {})
+            for key, combo in self.inputCombos.items():
+                self.setSchemeValue(combo, input_item.get(f"{key}_scheme", ""))
             for day, combo in self.weekCombos.items():
                 self.setSchemeValue(combo, week_items.get(day, ""))
-            if timer.get("scheme"):
+            if input_item:
+                self.inputSwitch.setChecked(True)
+            elif timer.get("scheme"):
                 self.timerSwitch.setChecked(True)
             elif week_items:
                 self.weekSwitch.setChecked(True)
@@ -1583,12 +1779,30 @@ class SwitchPage(QWidget):
                     value = self.currentSchemeValue(combo)
                     if value:
                         week_items[day] = value
+            elif mode == "input":
+                item = {"mode": "input"}
+                for key, combo in self.inputCombos.items():
+                    value = self.currentSchemeValue(combo)
+                    if value:
+                        item[f"{key}_scheme"] = value
+                if len(item) > 1:
+                    items.append(item)
             self.backend.SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
             self.backend.SCHEDULE_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
             self.backend.WEEK_SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
             self.backend.WEEK_SCHEDULE_FILE.write_text(json.dumps(week_items, ensure_ascii=False, indent=2), encoding="utf-8")
             self.backend.set_auto_start(bool(mode))
-            if mode == "week":
+            if mode == "input":
+                input_item = next((item for item in items if item.get("mode") == "input"), {})
+                state = self.backend.current_input_state()
+                scheme = input_item.get(f"{state}_scheme", "")
+                if scheme:
+                    picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
+                    if picked:
+                        self.backend.apply_library_scheme(picked)
+                        self.scheme_page.schemeBox.setCurrentText(picked)
+                        self.scheme_page.loadScheme(picked)
+            elif mode == "week":
                 today = str(datetime.now().weekday())
                 scheme = week_items.get(today)
                 if scheme == self.backend.RANDOM_SCHEME_VALUE:
@@ -1687,6 +1901,9 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("设置"))
+        mission = CaptionLabel(f"宗旨：{self.backend.SOFTWARE_MISSION}")
+        mission.setTextColor("#64748b", "#94a3b8")
+        layout.addWidget(mission)
 
         self.storage = LineEdit()
         self.storage.setText(str(self.backend.configured_storage_root()))
@@ -1908,7 +2125,7 @@ class MousePointerFluentWindow(FluentWindow):
         self.createTrayIcon()
         self.scheduleTimer = QTimer(self)
         self.scheduleTimer.timeout.connect(self.checkScheduledSwitch)
-        self.scheduleTimer.start(30_000)
+        self.scheduleTimer.start(1_000)
 
     def createTrayIcon(self):
         icon = self.windowIcon()
@@ -1960,6 +2177,16 @@ class MousePointerFluentWindow(FluentWindow):
             schedule_items, week_items = self.backend.load_schedule_state()
             now = datetime.now()
             for item in schedule_items:
+                if item.get("mode") == "input":
+                    state = self.backend.current_input_state()
+                    scheme = item.get(f"{state}_scheme", "")
+                    key = f"input|{state}|{scheme}"
+                    if scheme and key != self.lastScheduleKey:
+                        picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
+                        if picked:
+                            self.backend.apply_library_scheme(picked)
+                        self.lastScheduleKey = key
+                    continue
                 if item.get("mode") == "timer":
                     interval = max(1, int(item.get("interval_seconds") or 0))
                     if __import__("time").time() - self.lastTimerAt >= interval:

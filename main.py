@@ -61,13 +61,14 @@ DEFAULT_PREVIEW_SIZE_LEVEL = 3
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RESOURCE_URL = "https://yvtgt-my.sharepoint.com/:f:/g/personal/asunny_yvtgt_onmicrosoft_com/IgD7nqCXTLudSZoRvpzU-H_7AR_SuUTktWE3NfuAgFpIMdU?e=DPXDw4"
 APP_NAME = "鼠标指针配置管理器"
+SOFTWARE_MISSION = "让新手小白也能用，让鼠标指针制作者能方便编辑和生成。"
 AUTO_START_VALUE = APP_NAME
 LEGACY_AUTO_START_VALUE = "MouseCursorThemeBuilder"
 SCHEDULED_TASK_NAME = "MousePointerBackground"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
 DEFAULT_GITHUB_URL = "https://github.com/yuanyue1234/MousePointer"
-APP_VERSION = "1.0.11"
+APP_VERSION = "1.0.12"
 BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
 PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
@@ -436,24 +437,55 @@ def hotspot_for(role: CursorRole, size: int) -> tuple[int, int]:
     return max(0, min(size - 1, x)), max(0, min(size - 1, y))
 
 
-def write_png_cursor(image: Image.Image, output_path: Path, role: CursorRole, size: int) -> None:
+def hotspot_from_ratio(role: CursorRole, size: int, hotspot_ratio: tuple[float, float] | None = None) -> tuple[int, int]:
+    ratio = hotspot_ratio or role.hotspot_ratio
+    x = int(round(ratio[0] * (size - 1)))
+    y = int(round(ratio[1] * (size - 1)))
+    return max(0, min(size - 1, x)), max(0, min(size - 1, y))
+
+
+def write_png_cursor(image: Image.Image, output_path: Path, role: CursorRole, size: int, hotspot_ratio: tuple[float, float] | None = None) -> None:
     cursor = centered_rgba(image, size)
     png = io.BytesIO()
     cursor.save(png, format="PNG")
     data = png.getvalue()
-    hot_x, hot_y = hotspot_for(role, size)
+    hot_x, hot_y = hotspot_from_ratio(role, size, hotspot_ratio)
     header = struct.pack("<HHH", 0, 2, 1)
     width_byte = size if size < 256 else 0
     directory = struct.pack("<BBBBHHII", width_byte, width_byte, 0, 0, hot_x, hot_y, len(data), 22)
     output_path.write_bytes(header + directory + data)
 
 
-def convert_to_cursor(source: Path, output_path: Path, role: CursorRole, size: int) -> None:
+def rewrite_cur_hotspot(source: Path, output_path: Path, hotspot_ratio: tuple[float, float]) -> None:
+    data = bytearray(source.read_bytes())
+    if len(data) < 6:
+        shutil.copy2(source, output_path)
+        return
+    reserved, icon_type, count = struct.unpack_from("<HHH", data, 0)
+    if reserved != 0 or icon_type != 2 or count <= 0:
+        shutil.copy2(source, output_path)
+        return
+    for index in range(count):
+        offset = 6 + index * 16
+        if offset + 16 > len(data):
+            break
+        width = data[offset] or 256
+        height = data[offset + 1] or 256
+        hot_x = max(0, min(width - 1, int(round(hotspot_ratio[0] * (width - 1)))))
+        hot_y = max(0, min(height - 1, int(round(hotspot_ratio[1] * (height - 1)))))
+        struct.pack_into("<HH", data, offset + 4, hot_x, hot_y)
+    output_path.write_bytes(data)
+
+
+def convert_to_cursor(source: Path, output_path: Path, role: CursorRole, size: int, hotspot_ratio: tuple[float, float] | None = None) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if source.suffix.lower() == ".cur" and hotspot_ratio:
+        rewrite_cur_hotspot(source, output_path.with_suffix(".cur"), hotspot_ratio)
+        return
     if source.suffix.lower() in {".cur", ".ani"}:
         shutil.copy2(source, output_path.with_suffix(source.suffix.lower()))
         return
-    write_png_cursor(image_from_path(source), output_path, role, size)
+    write_png_cursor(image_from_path(source), output_path, role, size, hotspot_ratio)
 
 
 def current_cursor_scheme_data() -> dict:
@@ -1862,6 +1894,44 @@ def pick_scheduled_scheme(value: str, order: str = "顺序", index: int = 0) -> 
     if not names:
         return ""
     return random.choice(names)
+
+
+def current_input_state() -> str:
+    user32 = ctypes.windll.user32
+    user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.wintypes.HWND, ctypes.c_void_p]
+    user32.GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
+    user32.GetKeyboardLayout.argtypes = [ctypes.wintypes.DWORD]
+    user32.GetKeyboardLayout.restype = ctypes.wintypes.HKL
+    caps_on = bool(user32.GetKeyState(0x14) & 1)
+    if caps_on:
+        return "upper"
+    hwnd = user32.GetForegroundWindow()
+    thread_id = user32.GetWindowThreadProcessId(hwnd, None) if hwnd else 0
+    hkl = user32.GetKeyboardLayout(thread_id)
+    lang_id = hkl & 0xFFFF
+    primary_lang = lang_id & 0x3FF
+    if primary_lang == 0x04:
+        try:
+            imm32 = ctypes.windll.imm32
+            imm32.ImmGetContext.argtypes = [ctypes.wintypes.HWND]
+            imm32.ImmGetContext.restype = ctypes.wintypes.HANDLE
+            imm32.ImmGetConversionStatus.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong)]
+            imm32.ImmGetConversionStatus.restype = ctypes.wintypes.BOOL
+            imm32.ImmReleaseContext.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.HANDLE]
+            himc = imm32.ImmGetContext(hwnd)
+            if himc:
+                conversion = ctypes.c_ulong()
+                sentence = ctypes.c_ulong()
+                try:
+                    if imm32.ImmGetConversionStatus(himc, ctypes.byref(conversion), ctypes.byref(sentence)):
+                        return "zh" if (conversion.value & 0x0001) else "en"
+                finally:
+                    imm32.ImmReleaseContext(hwnd, himc)
+        except Exception:
+            pass
+        return "zh"
+    return "en"
 
 
 def apply_library_scheme(theme: str) -> None:
