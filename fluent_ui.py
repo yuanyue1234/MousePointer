@@ -108,12 +108,17 @@ CN_TO_EN = {
     "导入文件夹": "Explorer",
     "保存": "Save",
     "截图导出": "Export screenshot",
-    "方案预览截图": "Scheme preview screenshot",
+    "方案预览截图": "Scheme preview",
     "导出完成": "Export complete",
     "已导出": "Exported",
     "没有可导出的方案内容。": "There is no scheme content to export.",
     "没有可导出的鼠标指针资源。": "There are no cursor resources to export.",
     "请选择导出位置": "Choose export location",
+    "是否在桌面添加快捷方式？": "Add a desktop shortcut?",
+    "创建快捷方式": "Create shortcut",
+    "快捷方式已创建": "Shortcut created",
+    "自动保存": "Auto save",
+    "已自动保存": "Auto saved",
     "当前配置：": "Current: ",
     "下次切换：": "Next: ",
     "调整鼠标焦点": "Adjust cursor hotspot",
@@ -678,6 +683,7 @@ class SchemePage(QWidget):
         self.sizeLevel = 3
         self.animationFrames: list[QPixmap] = []
         self.animationIndex = 0
+        self.loadingScheme = False
         self.animationTimer = QTimer(self)
         self.animationTimer.timeout.connect(self.nextAnimationFrame)
         self.sizeApplyTimer = QTimer(self)
@@ -720,11 +726,9 @@ class SchemePage(QWidget):
         self.importButton.setIcon(FIF.DOWNLOAD)
         self.importFolderButton = PushButton("导入文件夹")
         self.importFolderButton.setIcon(FIF.FOLDER)
-        self.saveButton = PushButton("保存")
-        self.saveButton.setIcon(FIF.SAVE)
         self.exportPreviewButton = PushButton("截图导出")
         self.exportPreviewButton.setIcon(FIF.PHOTO)
-        for button in [self.newButton, self.renameButton, self.deleteButton, self.importButton, self.importFolderButton, self.saveButton, self.exportPreviewButton]:
+        for button in [self.newButton, self.renameButton, self.deleteButton, self.importButton, self.importFolderButton, self.exportPreviewButton]:
             toolbar.addWidget(button)
         toolbar.addStretch(1)
         left_layout.addLayout(toolbar)
@@ -863,7 +867,6 @@ class SchemePage(QWidget):
 
         self.importButton.clicked.connect(self.importPackage)
         self.importFolderButton.clicked.connect(self.importFolder)
-        self.saveButton.clicked.connect(self.saveScheme)
         self.newButton.clicked.connect(self.newScheme)
         self.deleteButton.clicked.connect(self.deleteScheme)
         self.renameButton.clicked.connect(self.renameScheme)
@@ -938,6 +941,7 @@ class SchemePage(QWidget):
     def loadScheme(self, name: str):
         if not name:
             return
+        self.loadingScheme = True
         try:
             scheme_dir, files = self.backend.scheme_manifest(name)
             _manifest_dir, manifest = self.readManifest(name)
@@ -958,6 +962,8 @@ class SchemePage(QWidget):
             self.status.setText(f"已载入：{name}")
         except Exception as exc:
             self.showError("载入失败", exc)
+        finally:
+            self.loadingScheme = False
 
     def clearGrid(self, layout: QGridLayout) -> None:
         while layout.count():
@@ -1006,13 +1012,13 @@ class SchemePage(QWidget):
             self.extraFiles = [item for item in self.extraFiles if item != path]
         self.updateExtraBox()
         QApplication.processEvents()
-        self.persistExtraFiles(refresh_ui=False)
+        self.autoSaveCurrentScheme()
 
     def clearExtraResources(self) -> None:
         self.extraFiles = []
         self.updateExtraBox()
         QApplication.processEvents()
-        self.persistExtraFiles(refresh_ui=False)
+        self.autoSaveCurrentScheme()
 
     def uniqueFileName(self, folder: Path, file_name: str) -> str:
         candidate = self.backend.sanitize_name(Path(file_name).stem) or "resource"
@@ -1070,6 +1076,47 @@ class SchemePage(QWidget):
         if refresh_ui:
             self.updateExtraBox()
 
+    def ensureSchemeInBox(self, theme: str) -> None:
+        exists = False
+        for index in range(self.schemeBox.count()):
+            if self.schemeBox.itemText(index) == theme:
+                exists = True
+                break
+        if not exists:
+            blocked = self.schemeBox.blockSignals(True)
+            self.schemeBox.addItem(theme)
+            self.schemeBox.setCurrentText(theme)
+            self.schemeBox.blockSignals(blocked)
+
+    def autoSaveCurrentScheme(self) -> None:
+        if self.loadingScheme or not self.selected:
+            return
+        theme = self.backend.sanitize_name(self.schemeBox.currentText() or "新方案")
+        try:
+            package_dir = self.backend.WORK_ROOT / "fluent_autosave"
+            extra_stage = self.backend.WORK_ROOT / "fluent_autosave_extra_stage"
+            files = self.prepareAssets(package_dir)
+            if not files:
+                return
+            staged_extras = self.stageExtraFiles(extra_stage)
+            scheme_dir = self.backend.SCHEME_LIBRARY / theme
+            if scheme_dir.exists():
+                shutil.rmtree(scheme_dir)
+            shutil.copytree(package_dir / "assets", scheme_dir)
+            extra_names = self.copyExtraFilesToScheme(scheme_dir, staged_extras)
+            self.writeManifest(theme, files, scheme_dir, extra_names)
+            self.selected = {reg_name: scheme_dir / file_name for reg_name, file_name in files.items() if (scheme_dir / file_name).exists()}
+            self.extraFiles = [scheme_dir / name for name in extra_names if (scheme_dir / name).exists()]
+            for reg_name, row in self.rows.items():
+                row.setPath(self.selected.get(reg_name))
+            self.ensureSchemeInBox(theme)
+            self.updateExtraBox()
+            self.updateLargePreview(self.current_preview)
+            self.status.setText("已自动保存")
+        except Exception as exc:
+            self.backend.log_error("Fluent 自动保存失败", exc)
+            self.status.setText(f"自动保存失败：{exc}")
+
     def importExtraResources(self):
         files, _ = QFileDialog.getOpenFileNames(
             self,
@@ -1081,7 +1128,7 @@ class SchemePage(QWidget):
             return
         for file in files:
             self.appendExtraResource(Path(file))
-        self.persistExtraFiles()
+        self.autoSaveCurrentScheme()
         self.updateExtraBox()
 
     def applyFileToRole(self, reg_name: str, path: Path) -> None:
@@ -1098,6 +1145,7 @@ class SchemePage(QWidget):
         self.updateExtraBox()
         self.updateLargePreview(reg_name)
         self.status.setText(f"已替换：{self.backend.ROLE_BY_REG[reg_name].label}")
+        self.autoSaveCurrentScheme()
 
     def removeExtraFromMemory(self, path: Path) -> None:
         try:
@@ -1116,6 +1164,7 @@ class SchemePage(QWidget):
         if dialog.exec() == QDialog.Accepted:
             self.hotspots[reg_name] = dialog.ratio
             self.status.setText(f"已设置焦点：{role.label}")
+            self.autoSaveCurrentScheme()
 
     def updateLargePreview(self, reg_name: str):
         self.current_preview = reg_name
@@ -1209,6 +1258,7 @@ class SchemePage(QWidget):
         self.selected[reg_name] = path
         self.rows[reg_name].setPath(path)
         self.updateLargePreview(reg_name)
+        self.autoSaveCurrentScheme()
 
     def handleDropped(self, paths: list[Path]):
         packages = [p for p in paths if p.is_dir() or p.suffix.lower() in {".zip", ".rar", ".7z", ".exe"}]
@@ -1222,6 +1272,8 @@ class SchemePage(QWidget):
             self.selected[self.current_preview] = path
             self.rows[self.current_preview].setPath(path)
         self.updateLargePreview(self.current_preview)
+        if files:
+            self.autoSaveCurrentScheme()
 
     def importPackage(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -1235,6 +1287,8 @@ class SchemePage(QWidget):
             if path.suffix.lower() in {".cur", ".ani"}:
                 self.selected[self.current_preview] = path
                 self.rows[self.current_preview].setPath(path)
+                self.updateLargePreview(self.current_preview)
+                self.autoSaveCurrentScheme()
             else:
                 self.importPackagePath(path)
         if files:
@@ -1427,13 +1481,13 @@ class SchemePage(QWidget):
         default_dir = self.backend.configured_output_root()
         default_dir.mkdir(parents=True, exist_ok=True)
         theme = self.backend.sanitize_name(self.schemeBox.currentText() or "鼠标方案")
-        default_path = default_dir / f"{theme}_方案预览截图.png"
-        file_name, _ = QFileDialog.getSaveFileName(self, "请选择导出位置", str(default_path), "PNG (*.png)")
+        default_path = default_dir / f"{theme}_方案预览截图.gif"
+        file_name, _ = QFileDialog.getSaveFileName(self, "请选择导出位置", str(default_path), "GIF (*.gif)")
         if not file_name:
             return
         target = Path(file_name)
-        if target.suffix.lower() != ".png":
-            target = target.with_suffix(".png")
+        if target.suffix.lower() != ".gif":
+            target = target.with_suffix(".gif")
         target.parent.mkdir(parents=True, exist_ok=True)
 
         def work():
@@ -1445,31 +1499,50 @@ class SchemePage(QWidget):
             rows = (len(resources) + columns - 1) // columns
             width = padding * 2 + columns * tile_w
             height = padding * 2 + header_h + rows * tile_h
-            image = Image.new("RGBA", (width, height), (245, 250, 255, 255))
-            draw = ImageDraw.Draw(image)
             title_font = self.previewExportFont(24, bold=True)
             label_font = self.previewExportFont(15)
             small_font = self.previewExportFont(11)
-            draw.text((padding, padding), theme, fill=(15, 23, 42, 255), font=title_font)
-            draw.text((padding, padding + 32), f"{len(resources)} 个鼠标状态", fill=(100, 116, 139, 255), font=small_font)
-
-            for index, (role, path) in enumerate(resources):
-                row = index // columns
-                col = index % columns
-                x = padding + col * tile_w
-                y = padding + header_h + row * tile_h
-                card = (x + 8, y + 8, x + tile_w - 8, y + tile_h - 8)
-                draw.rounded_rectangle(card, radius=12, fill=(255, 255, 255, 235), outline=(219, 234, 254, 255), width=1)
-                preview = self.backend.cursor_preview_image_sized(path, (118, 104), self.backend.size_level_to_pixels(self.sizeLevel)).convert("RGBA")
-                image.alpha_composite(preview, (x + (tile_w - preview.width) // 2, y + 20))
-                label = role.label
-                bbox = draw.textbbox((0, 0), label, font=label_font)
-                label_x = x + max(10, (tile_w - (bbox[2] - bbox[0])) // 2)
-                draw.text((label_x, y + 128), label, fill=(30, 41, 59, 255), font=label_font)
-            image.convert("RGB").save(target, "PNG")
+            resource_frames = [(role, self.previewExportSources(path)) for role, path in resources]
+            frame_count = max((len(frames) for _role, frames in resource_frames), default=1)
+            frame_count = max(1, min(36, frame_count))
+            images = []
+            for frame_index in range(frame_count):
+                image = Image.new("RGBA", (width, height), (245, 250, 255, 255))
+                draw = ImageDraw.Draw(image)
+                draw.text((padding, padding), theme, fill=(15, 23, 42, 255), font=title_font)
+                draw.text((padding, padding + 32), f"{len(resources)} 个鼠标状态", fill=(100, 116, 139, 255), font=small_font)
+                for index, (role, frames) in enumerate(resource_frames):
+                    if not frames:
+                        continue
+                    source = frames[frame_index % len(frames)]
+                    row = index // columns
+                    col = index % columns
+                    x = padding + col * tile_w
+                    y = padding + header_h + row * tile_h
+                    card = (x + 8, y + 8, x + tile_w - 8, y + tile_h - 8)
+                    draw.rounded_rectangle(card, radius=12, fill=(255, 255, 255, 235), outline=(219, 234, 254, 255), width=1)
+                    preview = self.previewExportImage(source, (118, 104)).convert("RGBA")
+                    image.alpha_composite(preview, (x + (tile_w - preview.width) // 2, y + 20))
+                    label = role.label
+                    bbox = draw.textbbox((0, 0), label, font=label_font)
+                    label_x = x + max(10, (tile_w - (bbox[2] - bbox[0])) // 2)
+                    draw.text((label_x, y + 128), label, fill=(30, 41, 59, 255), font=label_font)
+                images.append(image.convert("P", palette=Image.Palette.ADAPTIVE))
+            first, rest = images[0], images[1:]
+            first.save(target, "GIF", save_all=True, append_images=rest, duration=90, loop=0, disposal=2)
             return target
 
         self.runTask("截图导出", work, lambda path: self.showInfo("导出完成", f"已导出：{path}"))
+
+    def previewExportSources(self, path: Path) -> list[Path]:
+        if path.suffix.lower() == ".ani":
+            frames = self.backend.ani_frame_paths(path)[:36]
+            if frames:
+                return frames
+        return [path]
+
+    def previewExportImage(self, source: Path, box: tuple[int, int]) -> Image.Image:
+        return self.backend.cursor_preview_image_sized(source, box, self.backend.size_level_to_pixels(self.sizeLevel))
 
     def previewExportFont(self, size: int, bold: bool = False):
         candidates = [
@@ -2653,6 +2726,36 @@ class MousePointerFluentWindow(FluentWindow):
         self.scheduleTimer.timeout.connect(self.checkScheduledSwitch)
         self.scheduleTimer.start(1000)
 
+    def askDesktopShortcutOnFirstLaunch(self):
+        data = self.backend.load_settings()
+        if data.get("desktop_shortcut_prompted") == "1":
+            return
+        shortcut = self.backend.desktop_folder() / f"{self.backend.APP_NAME}.lnk"
+        if shortcut.exists():
+            data["desktop_shortcut_prompted"] = "1"
+            self.backend.save_settings(data)
+            return
+        english = ui_english_enabled(self.backend)
+        title = tr_text("创建快捷方式", english)
+        text = tr_text("是否在桌面添加快捷方式？", english)
+        result = QMessageBox.question(
+            self,
+            title,
+            text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        data["desktop_shortcut_prompted"] = "1"
+        self.backend.save_settings(data)
+        if result != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            path = self.backend.create_desktop_app_shortcut()
+            InfoBar.success(title=title, content=f"{tr_text('快捷方式已创建', english)}：{path}", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self)
+        except Exception as exc:
+            self.backend.log_error("创建桌面快捷方式失败", exc)
+            InfoBar.error(title=title, content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self)
+
     def applyLanguage(self):
         english = ui_english_enabled(self.backend)
         self.setWindowTitle(tr_text(self.backend.APP_NAME, english))
@@ -2951,4 +3054,5 @@ def run_app(backend, start_hidden: bool = False) -> None:
             window.trayIcon.showMessage(backend.APP_NAME, "已在后台运行。", QSystemTrayIcon.Information, 1800)
     else:
         window.show()
+        QTimer.singleShot(600, window.askDesktopShortcutOnFirstLaunch)
     app.exec()

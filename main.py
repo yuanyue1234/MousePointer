@@ -1094,6 +1094,15 @@ def create_shortcut(link_path: Path, target: Path, arguments: str = "", working_
         raise RuntimeError((result.stderr or result.stdout or "创建快捷方式失败").strip())
 
 
+def create_desktop_app_shortcut() -> Path:
+    command = gui_command()
+    target = Path(command[0])
+    arguments = subprocess.list2cmdline(command[1:])
+    link_path = desktop_folder() / f"{APP_NAME}.lnk"
+    create_shortcut(link_path, target, arguments, APP_DIR, target)
+    return link_path
+
+
 def write_startup_script(_command: str) -> None:
     command = startup_command()
     target = Path(command[0])
