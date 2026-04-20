@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -94,6 +95,10 @@ CN_TO_EN = {
     "打开文件夹": "Open folder",
     "添加桌面快捷方式": "Add desktop shortcut",
     "自启动后台": "Start with Windows",
+    "修复自启动": "Repair startup",
+    "自启动状态：未开启": "Startup: Off",
+    "自启动状态：正常": "Startup: OK",
+    "任务计划受限，已使用普通自启动方式": "Task Scheduler is restricted; regular startup is being used.",
     "隐藏任务栏": "Hide tray",
     "开启后开机只保留后台进程；关闭窗口也不会显示托盘图标。": "When enabled, only the background service is kept and no tray icon is shown after closing.",
     "语言：英文": "Language: English",
@@ -121,6 +126,7 @@ CN_TO_EN = {
     "快捷方式已创建": "Shortcut created",
     "自动保存": "Auto save",
     "已自动保存": "Auto saved",
+    "版本：": "Version: ",
     "当前配置：": "Current: ",
     "下次切换：": "Next: ",
     "调整鼠标焦点": "Adjust cursor hotspot",
@@ -293,6 +299,12 @@ def tr_text(text: str, english: bool) -> str:
         return text.replace("当前配置：", "Current: ", 1)
     if text.startswith("下次切换："):
         return text.replace("下次切换：", "Next: ", 1)
+    if text.startswith("自启动状态：未开启"):
+        return text.replace("自启动状态：未开启", "Startup: Off", 1)
+    if text.startswith("自启动状态：正常"):
+        return text.replace("自启动状态：正常", "Startup: OK", 1).replace("注册表", "Registry").replace("启动文件夹", "Startup folder").replace("任务计划", "Task Scheduler").replace("任务计划受限，已使用普通自启动方式", "Task Scheduler is restricted; regular startup is being used.")
+    if text.startswith("版本："):
+        return text.replace("版本：", "Version: ", 1).replace("当前提交：", "Commit: ")
     return text
 
 
@@ -321,6 +333,10 @@ def apply_widget_language(root: QWidget, english: bool) -> None:
 class TaskSignal(QObject):
     finished = Signal(object)
     failed = Signal(str)
+
+
+class GuiCommandBridge(QObject):
+    showRequested = Signal()
 
 
 class DropArea(CardWidget):
@@ -686,6 +702,8 @@ class SchemePage(QWidget):
         self.animationFrames: list[QPixmap] = []
         self.animationIndex = 0
         self.loadingScheme = False
+        self.importSkipped: list[str] = []
+        self.importFailed: list[str] = []
         self.animationTimer = QTimer(self)
         self.animationTimer.timeout.connect(self.nextAnimationFrame)
         self.sizeApplyTimer = QTimer(self)
@@ -1262,12 +1280,39 @@ class SchemePage(QWidget):
         self.updateLargePreview(reg_name)
         self.autoSaveCurrentScheme()
 
+    def beginImportBatch(self) -> None:
+        self.importSkipped = []
+        self.importFailed = []
+
+    def showImportSummary(self, imported: list[str]) -> None:
+        imported = [name for name in imported if name]
+        lines = [f"成功：{len(imported)} 个"]
+        if imported:
+            preview = "、".join(imported[:6])
+            if len(imported) > 6:
+                preview += f" 等 {len(imported)} 个"
+            lines.append(preview)
+        if self.importSkipped:
+            lines.append(f"跳过重复：{len(self.importSkipped)} 个")
+        if self.importFailed:
+            lines.append(f"失败：{len(self.importFailed)} 个，详情见错误记录。")
+        content = "\n".join(lines)
+        if imported:
+            self.showInfo("导入完成", content)
+        elif self.importSkipped:
+            self.showWarn("导入完成", content)
+        elif self.importFailed:
+            self.showWarn("导入失败", content)
+
     def handleDropped(self, paths: list[Path]):
         packages = [p for p in paths if p.is_dir() or p.suffix.lower() in {".zip", ".rar", ".7z", ".exe"}]
         if packages:
+            self.beginImportBatch()
+            imported = []
             for package in packages:
-                self.importPackagePath(package)
+                imported.extend(self.importPackagePath(package))
             self.refreshSchemes()
+            self.showImportSummary(imported)
             return
         files = [p for p in paths if p.suffix.lower() in {".cur", ".ani", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}]
         for path in files:
@@ -1284,6 +1329,8 @@ class SchemePage(QWidget):
             str(self.backend.configured_storage_root()),
             "资源包和光标 (*.zip *.rar *.7z *.exe *.cur *.ani);;所有文件 (*.*)",
         )
+        imported = []
+        self.beginImportBatch()
         for file_name in files:
             path = Path(file_name)
             if path.suffix.lower() in {".cur", ".ani"}:
@@ -1292,15 +1339,19 @@ class SchemePage(QWidget):
                 self.updateLargePreview(self.current_preview)
                 self.autoSaveCurrentScheme()
             else:
-                self.importPackagePath(path)
+                imported.extend(self.importPackagePath(path))
         if files:
             self.refreshSchemes()
+            if imported or self.importSkipped or self.importFailed:
+                self.showImportSummary(imported)
 
     def importFolder(self):
         folder = QFileDialog.getExistingDirectory(self, "导入鼠标指针文件夹", str(self.backend.configured_storage_root()))
         if folder:
-            self.importPackagePath(Path(folder))
+            self.beginImportBatch()
+            imported = self.importPackagePath(Path(folder))
             self.refreshSchemes()
+            self.showImportSummary(imported)
 
     def importPackagePath(self, package: Path) -> list[str]:
         imported = []
@@ -1312,9 +1363,12 @@ class SchemePage(QWidget):
             for root in roots:
                 name = package.stem if len(roots) == 1 else root.name
                 search_root = extracted if len(roots) == 1 else root.parent
-                imported.append(self.importRootAsScheme(root, name, search_root))
+                imported_name = self.importRootAsScheme(root, name, search_root)
+                if imported_name:
+                    imported.append(imported_name)
             return imported
         except Exception as exc:
+            self.importFailed.append(f"{package.name}: {exc}")
             self.showError("导入失败", exc)
             return imported
 
@@ -1359,6 +1413,7 @@ class SchemePage(QWidget):
             if (scheme_dir / "scheme.json").exists():
                 result = QMessageBox.question(self, "发现重复方案", f"{name} 已存在，是否继续导入为新副本？\n选择“否”将跳过该方案。")
                 if result != QMessageBox.Yes:
+                    self.importSkipped.append(name)
                     self.showWarn("已跳过", f"{name} 已存在，未重复导入。")
                     return ""
                 base = name
@@ -1381,9 +1436,10 @@ class SchemePage(QWidget):
                 files[reg_name] = output_name
             extra_names = self.copyExtraFilesToScheme(scheme_dir, self.extraResourcesFromRoot(root, mapping, search_root))
             self.writeManifest(name, files, scheme_dir, extra_names, {})
-            self.showInfo("导入完成", f"已添加：{name}")
+            self.status.setText(f"已添加：{name}")
             return name
         except Exception as exc:
+            self.importFailed.append(f"{raw_name}: {exc}")
             self.showError("导入失败", exc)
             return ""
 
@@ -1394,6 +1450,20 @@ class SchemePage(QWidget):
             if not path.exists():
                 return f"文件不存在：{path}"
         return None
+
+    def missingRoleLabels(self) -> list[str]:
+        return [role.label for role in self.backend.CURSOR_ROLES if role.reg_name not in self.selected]
+
+    def confirmIncompleteScheme(self, action: str) -> bool:
+        missing = self.missingRoleLabels()
+        if not missing:
+            return True
+        preview = "、".join(missing[:6])
+        if len(missing) > 6:
+            preview += f" 等 {len(missing)} 个"
+        text = f"当前方案缺少 {len(missing)} 个鼠标状态：{preview}\n缺少的状态会保留系统当前或默认指针。是否继续{action}？"
+        result = QMessageBox.question(self, "方案不完整", text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        return result == QMessageBox.StandardButton.Yes
 
     def prepareAssets(self, package_dir: Path) -> dict[str, str]:
         assets_dir = package_dir / "assets"
@@ -1457,6 +1527,8 @@ class SchemePage(QWidget):
         error = self.validate()
         if error:
             self.showWarn("还不能应用", error)
+            return
+        if not self.confirmIncompleteScheme("应用"):
             return
         theme = self.backend.sanitize_name(self.schemeBox.currentText() or "当前方案")
         pixels = self.backend.size_level_to_pixels(self.sizeLevel)
@@ -1563,6 +1635,8 @@ class SchemePage(QWidget):
         error = self.validate()
         if error:
             self.showWarn("还不能生成", error)
+            return
+        if not self.confirmIncompleteScheme("生成安装包"):
             return
         default_dir = self.backend.configured_output_root()
         default_dir.mkdir(parents=True, exist_ok=True)
@@ -1905,12 +1979,12 @@ class ResourcePage(QWidget):
 
     def importDroppedResources(self, paths: list[Path]):
         imported = []
+        self.scheme_page.beginImportBatch()
         for path in paths:
             imported.extend([name for name in self.scheme_page.importPackagePath(path) if name])
         self.scheme_page.refreshSchemes()
         self.render()
-        if imported:
-            InfoBar.success(title="资源已添加", content=f"已导入 {len(imported)} 个方案", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=3000, parent=self.window())
+        self.scheme_page.showImportSummary(imported)
 
     def importResources(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -2489,6 +2563,9 @@ class SettingsPage(QWidget):
         mission = CaptionLabel(self.backend.SOFTWARE_MISSION)
         mission.setTextColor("#64748b", "#94a3b8")
         layout.addWidget(mission)
+        version = CaptionLabel(f"版本：{self.backend.APP_VERSION}    当前提交：{self.backend.current_build_commit()}")
+        version.setTextColor("#64748b", "#94a3b8")
+        layout.addWidget(version)
 
         self.storage = LineEdit()
         self.storage.setText(str(self.backend.configured_storage_root()))
@@ -2516,6 +2593,12 @@ class SettingsPage(QWidget):
         self.autostart.setChecked(self.backend.auto_start_enabled())
         autostart_row.addWidget(self.autostart)
         autostart_row.addStretch(1)
+        self.repairStartupButton = PushButton("修复自启动")
+        self.repairStartupButton.setIcon(FIF.SYNC)
+        autostart_row.addWidget(self.repairStartupButton)
+        self.autostartStatus = CaptionLabel("")
+        self.autostartStatus.setWordWrap(True)
+        self.autostartStatus.setTextColor("#64748b", "#94a3b8")
         hide_row = QHBoxLayout()
         hide_row.addWidget(StrongBodyLabel("隐藏任务栏"))
         self.hideTaskbarIcon = SwitchButton()
@@ -2533,6 +2616,7 @@ class SettingsPage(QWidget):
         english_row.addWidget(self.englishSwitch)
         english_row.addStretch(1)
         switch_layout.addLayout(autostart_row)
+        switch_layout.addWidget(self.autostartStatus)
         switch_layout.addLayout(hide_row)
         switch_layout.addWidget(hide_tip)
         switch_layout.addLayout(english_row)
@@ -2565,6 +2649,12 @@ class SettingsPage(QWidget):
         layout.addStretch(1)
         self.updateButton.clicked.connect(self.checkUpdates)
         self.shortcutButton.clicked.connect(self.createDesktopShortcut)
+        self.repairStartupButton.clicked.connect(self.repairStartup)
+        self.refreshStartupStatus()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refreshStartupStatus()
 
     def pickStorage(self):
         folder = QFileDialog.getExistingDirectory(self, "选择鼠标文件存放位置", self.storage.text())
@@ -2586,6 +2676,23 @@ class SettingsPage(QWidget):
             self.backend.log_error("创建桌面快捷方式失败", exc)
             InfoBar.error(title=title, content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
 
+    def refreshStartupStatus(self):
+        try:
+            self.autostartStatus.setText(tr_text(self.backend.startup_status_text(), ui_english_enabled(self.backend)))
+        except Exception as exc:
+            self.autostartStatus.setText(f"自启动状态：检测失败（{exc}）")
+
+    def repairStartup(self):
+        try:
+            self.backend.set_auto_start(True)
+            self.autostart.setChecked(True)
+            self.refreshStartupStatus()
+            InfoBar.success(title="自启动后台", content="已重新写入自启动配置", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
+        except Exception as exc:
+            self.backend.log_error("修复自启动失败", exc)
+            self.refreshStartupStatus()
+            InfoBar.error(title="修复自启动", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
+
     def save(self):
         try:
             self.backend.apply_storage_root(Path(self.storage.text()))
@@ -2600,6 +2707,7 @@ class SettingsPage(QWidget):
                 self.window().applyLanguage()
             if hasattr(self.window(), "syncTrayIconVisibility"):
                 self.window().syncTrayIconVisibility()
+            self.refreshStartupStatus()
             InfoBar.success(title="已保存", content="设置已应用", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
         except Exception as exc:
             self.backend.log_error("Fluent 设置保存失败", exc)
@@ -2701,6 +2809,8 @@ class MousePointerFluentWindow(FluentWindow):
         self.exiting = False
         self.start_hidden = start_hidden
         self.trayIcon: QSystemTrayIcon | None = None
+        self.commandSocket = None
+        self.commandStop = threading.Event()
         self.lastScheduleKey = ""
         self.lastTimerAt = 0.0
         self.timerScheduleIndex = 0
@@ -2789,6 +2899,7 @@ class MousePointerFluentWindow(FluentWindow):
         self.refreshNavigationText(english)
         self.schemePage.updateExtraBox()
         self.schemePage.updateLargePreview(self.schemePage.current_preview)
+        self.settingsPage.refreshStartupStatus()
         self.refreshTrayMenu()
 
     def refreshNavigationText(self, english: bool):
@@ -2852,6 +2963,45 @@ class MousePointerFluentWindow(FluentWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def startCommandServer(self, bridge: GuiCommandBridge):
+        token = os.urandom(16).hex()
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(5)
+        listener.settimeout(0.5)
+        self.commandSocket = listener
+        self.commandStop.clear()
+        self.backend.write_gui_command_state(listener.getsockname()[1], token)
+
+        def loop():
+            while not self.commandStop.is_set():
+                try:
+                    conn, _addr = listener.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                with conn:
+                    try:
+                        payload = json.loads(conn.recv(2048).decode("utf-8", "ignore"))
+                    except Exception:
+                        continue
+                    if payload.get("token") == token and payload.get("command") == "show":
+                        bridge.showRequested.emit()
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    def stopCommandServer(self):
+        self.commandStop.set()
+        if self.commandSocket:
+            try:
+                self.commandSocket.close()
+            except OSError:
+                pass
+            self.commandSocket = None
+        self.backend.clear_gui_command_state()
 
     def hideTrayIconNow(self):
         self.backend.set_setting_enabled("hide_taskbar_icon", True)
@@ -3074,7 +3224,25 @@ def run_app(backend, start_hidden: bool = False) -> None:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    lock = backend.acquire_gui_lock()
+    if lock is None:
+        backend.notify_existing_gui("show")
+        return
     window = MousePointerFluentWindow(backend, start_hidden=start_hidden)
+    bridge = GuiCommandBridge()
+    window.commandBridge = bridge
+    bridge.showRequested.connect(window.openFromTray)
+    window.startCommandServer(bridge)
+
+    def cleanup():
+        window.stopCommandServer()
+        try:
+            os.close(lock)
+        except OSError:
+            pass
+        backend.remove_pid_file(backend.APP_DATA / "gui.pid")
+
+    app.aboutToQuit.connect(cleanup)
     if start_hidden:
         if window.trayIcon and not backend.hide_taskbar_icon_enabled():
             window.trayIcon.show()

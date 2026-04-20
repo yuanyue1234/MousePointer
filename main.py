@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import struct
 import subprocess
 import sys
@@ -49,6 +50,9 @@ SCHEDULE_FILE = APP_DATA / "schedule.json"
 WEEK_SCHEDULE_FILE = APP_DATA / "week_schedule.json"
 CURSOR_BACKUP_FILE = APP_DATA / "cursor_backup.json"
 ERROR_LOG = APP_DIR / "错误记录.txt"
+ERROR_LOG_MAX_BYTES = 2 * 1024 * 1024
+ERROR_LOG_MAX_ARCHIVES = 5
+ERROR_LOG_KEEP_DAYS = 30
 DEFAULT_CURSOR_SIZE = 64
 DEFAULT_PREVIEW_SIZE_LEVEL = 3
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -61,13 +65,15 @@ SCHEDULED_TASK_NAME = "MousePointerBackground"
 PIXEL_GUIDE_URL = "https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg"
 ASUNNY_URL = "https://asunny.top/"
 DEFAULT_GITHUB_URL = "https://github.com/yuanyue1234/MousePointer"
-APP_VERSION = "1.0.20"
+APP_VERSION = "2.0.0"
 BUILD_COMMIT = "source"
 INSTALL_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Programs" / "MouseCursorPointerManager"
 PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
 INSTALLER_EXE_NAME = "鼠标指针配置生成器_安装程序.exe"
 PORTABLE_RELEASE_ASSET_NAME = "MousePointer_Portable.exe"
 INSTALLER_RELEASE_ASSET_NAME = "MousePointer_Installer.exe"
+PREVIEW_IMAGE_CACHE: dict[tuple[str, int, tuple[int, int], int | None], Image.Image] = {}
+PREVIEW_IMAGE_CACHE_LIMIT = 256
 
 
 @dataclass(frozen=True)
@@ -130,8 +136,27 @@ SUPPORTED_TYPES = (
 )
 
 
+def rotate_error_log() -> None:
+    try:
+        if not ERROR_LOG.exists() or ERROR_LOG.stat().st_size < ERROR_LOG_MAX_BYTES:
+            return
+        archive = ERROR_LOG.with_name(f"错误记录_{datetime.now():%Y%m%d_%H%M%S}.txt")
+        ERROR_LOG.replace(archive)
+        archives = sorted(ERROR_LOG.parent.glob("错误记录_*.txt"), key=lambda path: path.stat().st_mtime, reverse=True)
+        cutoff = time.time() - ERROR_LOG_KEEP_DAYS * 24 * 60 * 60
+        for index, path in enumerate(archives):
+            try:
+                if index >= ERROR_LOG_MAX_ARCHIVES or path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def log_error(title: str, exc: BaseException | str) -> None:
     ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+    rotate_error_log()
     if isinstance(exc, BaseException):
         detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     else:
@@ -845,19 +870,39 @@ def cursor_preview_image(path: Path, box: tuple[int, int] = (180, 140)) -> Image
     return cursor_preview_image_sized(path, box)
 
 
+def cached_preview_image(key: tuple[str, int, tuple[int, int], int | None], image_factory) -> Image.Image:
+    cached = PREVIEW_IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached.copy()
+    image = image_factory()
+    PREVIEW_IMAGE_CACHE[key] = image.copy()
+    if len(PREVIEW_IMAGE_CACHE) > PREVIEW_IMAGE_CACHE_LIMIT:
+        PREVIEW_IMAGE_CACHE.pop(next(iter(PREVIEW_IMAGE_CACHE)))
+    return image
+
+
 def cursor_preview_image_sized(path: Path, box: tuple[int, int] = (180, 140), cursor_size: int | None = None) -> Image.Image:
-    margin = 8
-    if path.suffix.lower() in {".cur", ".ani"}:
-        size = cursor_size or max(24, min(box) - margin * 2)
-        rendered = render_cursor_with_windows(path, size)
-        if rendered:
-            bg = Image.new("RGBA", box, (248, 250, 252, 255))
-            bg.alpha_composite(rendered, ((box[0] - rendered.width) // 2, (box[1] - rendered.height) // 2))
-            return bg
-    image = centered_rgba(image_from_path(path), cursor_size or max(16, min(box) - margin * 2))
-    bg = Image.new("RGBA", box, (248, 250, 252, 255))
-    bg.alpha_composite(image, ((box[0] - image.width) // 2, (box[1] - image.height) // 2))
-    return bg
+    try:
+        stat = path.stat()
+        key = (str(path.resolve()).casefold(), int(stat.st_mtime_ns), box, cursor_size)
+    except OSError:
+        key = (str(path), 0, box, cursor_size)
+
+    def render() -> Image.Image:
+        margin = 8
+        if path.suffix.lower() in {".cur", ".ani"}:
+            size = cursor_size or max(24, min(box) - margin * 2)
+            rendered = render_cursor_with_windows(path, size)
+            if rendered:
+                bg = Image.new("RGBA", box, (248, 250, 252, 255))
+                bg.alpha_composite(rendered, ((box[0] - rendered.width) // 2, (box[1] - rendered.height) // 2))
+                return bg
+        image = centered_rgba(image_from_path(path), cursor_size or max(16, min(box) - margin * 2))
+        bg = Image.new("RGBA", box, (248, 250, 252, 255))
+        bg.alpha_composite(image, ((box[0] - image.width) // 2, (box[1] - image.height) // 2))
+        return bg
+
+    return cached_preview_image(key, render)
 
 
 def size_level_to_pixels(level: int) -> int:
@@ -1145,6 +1190,25 @@ def auto_start_enabled() -> bool:
     return run_auto_start_exists() or startup_script_path().exists() or scheduled_task_exists()
 
 
+def startup_status_text() -> str:
+    run_item = run_auto_start_exists()
+    startup_link = startup_script_path().exists()
+    task = scheduled_task_exists()
+    if not (run_item or startup_link or task):
+        return "自启动状态：未开启"
+    parts = []
+    if run_item:
+        parts.append("注册表")
+    if startup_link:
+        parts.append("启动文件夹")
+    if task:
+        parts.append("任务计划")
+    status = "自启动状态：正常（" + "、".join(parts) + "）"
+    if startup_task_blocked() and not task:
+        status += "；任务计划受限，已使用普通自启动方式"
+    return status
+
+
 def startup_task_blocked() -> bool:
     return load_settings().get("startup_task_blocked") == "1"
 
@@ -1332,6 +1396,56 @@ def acquire_background_lock():
 
 def acquire_tray_lock():
     return acquire_process_lock(APP_DATA / "tray.pid")
+
+
+def acquire_gui_lock():
+    return acquire_process_lock(APP_DATA / "gui.pid")
+
+
+def gui_command_state_path() -> Path:
+    return APP_DATA / "gui_command.json"
+
+
+def write_gui_command_state(port: int, token: str) -> None:
+    APP_DATA.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": os.getpid(),
+        "exe": str(Path(sys.executable).resolve()),
+        "port": int(port),
+        "token": token,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    gui_command_state_path().write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def clear_gui_command_state() -> None:
+    try:
+        gui_command_state_path().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def notify_existing_gui(command: str = "show") -> bool:
+    try:
+        state = json.loads(gui_command_state_path().read_text(encoding="utf-8"))
+        pid = int(state.get("pid") or 0)
+        port = int(state.get("port") or 0)
+        token = str(state.get("token") or "")
+        exe = str(state.get("exe") or "")
+        if not pid or not port or not token or not background_process_alive(pid, exe):
+            clear_gui_command_state()
+            remove_pid_file(APP_DATA / "gui.pid")
+            return False
+        payload = json.dumps({"token": token, "command": command}, ensure_ascii=False).encode("utf-8")
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5) as client:
+            client.sendall(payload)
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
 
 
 def remove_pid_file(pid_file: Path) -> None:
@@ -2082,6 +2196,8 @@ def main() -> None:
         uninstall_application()
         return
     try:
+        if notify_existing_gui("show"):
+            return
         terminate_background_process()
         terminate_tray_process()
         import fluent_ui
