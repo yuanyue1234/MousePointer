@@ -933,7 +933,7 @@ class SchemePage(QWidget):
         self.extraClearButton.clicked.connect(self.clearExtraResources)
         self.sizeMinusButton.clicked.connect(lambda: self.changeSizeLevel(-1))
         self.sizePlusButton.clicked.connect(lambda: self.changeSizeLevel(1))
-        self.liveSizeSwitch.clicked.connect(lambda checked=False: self.sizeApplyTimer.start(0) if checked else None)
+        self.liveSizeSwitch.checkedChanged.connect(self.onLiveSizeChanged)
         self.onSizeChanged(self.sizeLevel)
         self.refreshSchemes()
 
@@ -1299,6 +1299,10 @@ class SchemePage(QWidget):
         if getattr(self, "liveSizeSwitch", None) and self.liveSizeSwitch.isChecked():
             self.sizeApplyTimer.start(120)
         self.updateLargePreview(self.current_preview)
+
+    def onLiveSizeChanged(self, checked: bool):
+        if checked:
+            self.sizeApplyTimer.start(0)
 
     def changeSizeLevel(self, delta: int):
         self.onSizeChanged(self.sizeLevel + delta)
