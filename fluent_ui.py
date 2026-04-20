@@ -1451,20 +1451,6 @@ class SchemePage(QWidget):
                 return f"文件不存在：{path}"
         return None
 
-    def missingRoleLabels(self) -> list[str]:
-        return [role.label for role in self.backend.CURSOR_ROLES if role.reg_name not in self.selected]
-
-    def confirmIncompleteScheme(self, action: str) -> bool:
-        missing = self.missingRoleLabels()
-        if not missing:
-            return True
-        preview = "、".join(missing[:6])
-        if len(missing) > 6:
-            preview += f" 等 {len(missing)} 个"
-        text = f"当前方案缺少 {len(missing)} 个鼠标状态：{preview}\n缺少的状态会保留系统当前或默认指针。是否继续{action}？"
-        result = QMessageBox.question(self, "方案不完整", text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        return result == QMessageBox.StandardButton.Yes
-
     def prepareAssets(self, package_dir: Path) -> dict[str, str]:
         assets_dir = package_dir / "assets"
         if assets_dir.exists():
@@ -1527,8 +1513,6 @@ class SchemePage(QWidget):
         error = self.validate()
         if error:
             self.showWarn("还不能应用", error)
-            return
-        if not self.confirmIncompleteScheme("应用"):
             return
         theme = self.backend.sanitize_name(self.schemeBox.currentText() or "当前方案")
         pixels = self.backend.size_level_to_pixels(self.sizeLevel)
@@ -1635,8 +1619,6 @@ class SchemePage(QWidget):
         error = self.validate()
         if error:
             self.showWarn("还不能生成", error)
-            return
-        if not self.confirmIncompleteScheme("生成安装包"):
             return
         default_dir = self.backend.configured_output_root()
         default_dir.mkdir(parents=True, exist_ok=True)

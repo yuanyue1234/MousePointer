@@ -72,8 +72,6 @@ PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
 INSTALLER_EXE_NAME = "鼠标指针配置生成器_安装程序.exe"
 PORTABLE_RELEASE_ASSET_NAME = "MousePointer_Portable.exe"
 INSTALLER_RELEASE_ASSET_NAME = "MousePointer_Installer.exe"
-PREVIEW_IMAGE_CACHE: dict[tuple[str, int, tuple[int, int], int | None], Image.Image] = {}
-PREVIEW_IMAGE_CACHE_LIMIT = 256
 
 
 @dataclass(frozen=True)
@@ -870,39 +868,19 @@ def cursor_preview_image(path: Path, box: tuple[int, int] = (180, 140)) -> Image
     return cursor_preview_image_sized(path, box)
 
 
-def cached_preview_image(key: tuple[str, int, tuple[int, int], int | None], image_factory) -> Image.Image:
-    cached = PREVIEW_IMAGE_CACHE.get(key)
-    if cached is not None:
-        return cached.copy()
-    image = image_factory()
-    PREVIEW_IMAGE_CACHE[key] = image.copy()
-    if len(PREVIEW_IMAGE_CACHE) > PREVIEW_IMAGE_CACHE_LIMIT:
-        PREVIEW_IMAGE_CACHE.pop(next(iter(PREVIEW_IMAGE_CACHE)))
-    return image
-
-
 def cursor_preview_image_sized(path: Path, box: tuple[int, int] = (180, 140), cursor_size: int | None = None) -> Image.Image:
-    try:
-        stat = path.stat()
-        key = (str(path.resolve()).casefold(), int(stat.st_mtime_ns), box, cursor_size)
-    except OSError:
-        key = (str(path), 0, box, cursor_size)
-
-    def render() -> Image.Image:
-        margin = 8
-        if path.suffix.lower() in {".cur", ".ani"}:
-            size = cursor_size or max(24, min(box) - margin * 2)
-            rendered = render_cursor_with_windows(path, size)
-            if rendered:
-                bg = Image.new("RGBA", box, (248, 250, 252, 255))
-                bg.alpha_composite(rendered, ((box[0] - rendered.width) // 2, (box[1] - rendered.height) // 2))
-                return bg
-        image = centered_rgba(image_from_path(path), cursor_size or max(16, min(box) - margin * 2))
-        bg = Image.new("RGBA", box, (248, 250, 252, 255))
-        bg.alpha_composite(image, ((box[0] - image.width) // 2, (box[1] - image.height) // 2))
-        return bg
-
-    return cached_preview_image(key, render)
+    margin = 8
+    if path.suffix.lower() in {".cur", ".ani"}:
+        size = cursor_size or max(24, min(box) - margin * 2)
+        rendered = render_cursor_with_windows(path, size)
+        if rendered:
+            bg = Image.new("RGBA", box, (248, 250, 252, 255))
+            bg.alpha_composite(rendered, ((box[0] - rendered.width) // 2, (box[1] - rendered.height) // 2))
+            return bg
+    image = centered_rgba(image_from_path(path), cursor_size or max(16, min(box) - margin * 2))
+    bg = Image.new("RGBA", box, (248, 250, 252, 255))
+    bg.alpha_composite(image, ((box[0] - image.width) // 2, (box[1] - image.height) // 2))
+    return bg
 
 
 def size_level_to_pixels(level: int) -> int:
