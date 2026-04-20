@@ -75,9 +75,9 @@ jobs:
               request("DELETE", f"{api}/releases/{old_release['id']}")
 
           release_body = (
-              "鼠标指针配置生成器绿色版。\n\n"
-              "- 鼠标指针配置生成器_绿色程序.exe：标准单文件程序\n"
-              "- 不包含安装版、zip、rar、onedir 或最小版。"
+              "Mouse Pointer Manager portable build.\n\n"
+              "- MousePointer_Portable.exe: standard single-file executable\n"
+              "- No installer, zip, rar, onedir, or minimal build is included."
           )
           _, release = request("POST", f"{api}/releases", {
               "tag_name": tag,
@@ -92,7 +92,7 @@ jobs:
           asset = Path("release-assets/鼠标指针配置生成器_绿色程序.exe")
           if not asset.exists():
               raise FileNotFoundError(asset)
-          release_name = "鼠标指针配置生成器_绿色程序.exe"
+          release_name = "MousePointer_Portable.exe"
           upload_url = f"{upload_base}?name={urllib.parse.quote(release_name)}"
           request("POST", upload_url, asset.read_bytes(), "application/octet-stream")
           print(f"uploaded {release_name}")
