@@ -92,6 +92,7 @@ CN_TO_EN = {
     "鼠标文件存放位置": "Cursor file location",
     "选择": "Choose",
     "打开文件夹": "Open folder",
+    "添加桌面快捷方式": "Add desktop shortcut",
     "自启动后台": "Start with Windows",
     "隐藏任务栏": "Hide tray",
     "开启后开机只保留后台进程；关闭窗口也不会显示托盘图标。": "When enabled, only the background service is kept and no tray icon is shown after closing.",
@@ -115,6 +116,7 @@ CN_TO_EN = {
     "没有可导出的鼠标指针资源。": "There are no cursor resources to export.",
     "请选择导出位置": "Choose export location",
     "是否在桌面添加快捷方式？": "Add a desktop shortcut?",
+    "后续也可以在设置里添加桌面快捷方式。": "You can also add it later from Settings.",
     "创建快捷方式": "Create shortcut",
     "快捷方式已创建": "Shortcut created",
     "自动保存": "Auto save",
@@ -2541,7 +2543,9 @@ class SettingsPage(QWidget):
         tools.setSpacing(10)
         self.updateButton = PrimaryPushButton("检测更新")
         self.updateButton.setIcon(FIF.UPDATE)
-        for button in [save, self.updateButton]:
+        self.shortcutButton = PushButton("添加桌面快捷方式")
+        self.shortcutButton.setIcon(FIF.LINK)
+        for button in [save, self.updateButton, self.shortcutButton]:
             button.setMinimumWidth(120)
             tools.addWidget(button)
         tools.addStretch(1)
@@ -2560,6 +2564,7 @@ class SettingsPage(QWidget):
         layout.addLayout(link_row)
         layout.addStretch(1)
         self.updateButton.clicked.connect(self.checkUpdates)
+        self.shortcutButton.clicked.connect(self.createDesktopShortcut)
 
     def pickStorage(self):
         folder = QFileDialog.getExistingDirectory(self, "选择鼠标文件存放位置", self.storage.text())
@@ -2570,6 +2575,16 @@ class SettingsPage(QWidget):
         folder = Path(self.storage.text()).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
         os.startfile(folder)
+
+    def createDesktopShortcut(self):
+        english = ui_english_enabled(self.backend)
+        title = tr_text("创建快捷方式", english)
+        try:
+            path = self.backend.create_desktop_app_shortcut()
+            InfoBar.success(title=title, content=f"{tr_text('快捷方式已创建', english)}：{path}", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
+        except Exception as exc:
+            self.backend.log_error("创建桌面快捷方式失败", exc)
+            InfoBar.error(title=title, content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
 
     def save(self):
         try:
@@ -2726,6 +2741,17 @@ class MousePointerFluentWindow(FluentWindow):
         self.scheduleTimer.timeout.connect(self.checkScheduledSwitch)
         self.scheduleTimer.start(1000)
 
+    def centerOnScreen(self):
+        screen = QApplication.screenAt(self.cursor().pos()) or QApplication.primaryScreen()
+        if not screen:
+            return
+        available = screen.availableGeometry()
+        frame = self.frameGeometry()
+        frame.moveCenter(available.center())
+        x = max(available.left(), min(frame.left(), available.right() - frame.width() + 1))
+        y = max(available.top(), min(frame.top(), available.bottom() - frame.height() + 1))
+        self.move(x, y)
+
     def askDesktopShortcutOnFirstLaunch(self):
         data = self.backend.load_settings()
         if data.get("desktop_shortcut_prompted") == "1":
@@ -2737,7 +2763,7 @@ class MousePointerFluentWindow(FluentWindow):
             return
         english = ui_english_enabled(self.backend)
         title = tr_text("创建快捷方式", english)
-        text = tr_text("是否在桌面添加快捷方式？", english)
+        text = f"{tr_text('是否在桌面添加快捷方式？', english)}\n\n{tr_text('后续也可以在设置里添加桌面快捷方式。', english)}"
         result = QMessageBox.question(
             self,
             title,
@@ -2822,6 +2848,7 @@ class MousePointerFluentWindow(FluentWindow):
             self.openFromTray()
 
     def openFromTray(self):
+        self.centerOnScreen()
         self.showNormal()
         self.raise_()
         self.activateWindow()
@@ -3053,6 +3080,7 @@ def run_app(backend, start_hidden: bool = False) -> None:
             window.trayIcon.show()
             window.trayIcon.showMessage(backend.APP_NAME, "已在后台运行。", QSystemTrayIcon.Information, 1800)
     else:
+        window.centerOnScreen()
         window.show()
         QTimer.singleShot(600, window.askDesktopShortcutOnFirstLaunch)
     app.exec()
