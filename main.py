@@ -181,6 +181,11 @@ def default_cursor_path(role_or_reg) -> Path | None:
 
 def set_system_cursor_size(pixels: int) -> None:
     pixels = max(1, min(256, int(pixels)))
+    try:
+        if get_current_cursor_size() == pixels:
+            return
+    except Exception:
+        pass
     if pixels <= 32:
         level = 1
     elif pixels >= 256:
@@ -200,15 +205,15 @@ def set_system_cursor_size(pixels: int) -> None:
     SPIF_SENDCHANGE = 0x02
     if not user32.SystemParametersInfoW(SPI_SETCURSORBASESIZE, 0, ctypes.c_void_p(pixels), SPIF_UPDATEINIFILE | SPIF_SENDCHANGE):
         raise ctypes.WinError(ctypes.windll.kernel32.GetLastError())
-    broadcast_cursor_change()
-    broadcast_cursor_change_for_area(r"SOFTWARE\Microsoft\Accessibility")
+    broadcast_cursor_change(120)
+    broadcast_cursor_change_for_area(r"SOFTWARE\Microsoft\Accessibility", 120)
 
 
-def broadcast_cursor_change(timeout_ms: int = 500) -> None:
+def broadcast_cursor_change(timeout_ms: int = 120) -> None:
     broadcast_cursor_change_for_area("Control Panel\\Cursors", timeout_ms)
 
 
-def broadcast_cursor_change_for_area(area: str, timeout_ms: int = 500) -> None:
+def broadcast_cursor_change_for_area(area: str, timeout_ms: int = 120) -> None:
     user32 = ctypes.windll.user32
     HWND_BROADCAST = 0xFFFF
     WM_SETTINGCHANGE = 0x001A
@@ -722,7 +727,6 @@ def apply_refreshed_cursor_scheme(theme_name: str, cursor_files: dict[str, str],
         backup_current_cursor_scheme()
         set_system_cursor_size(cursor_size_pixels)
         apply_cursor_scheme(theme_name, cursor_files, backup=False, cursor_size_pixels=cursor_size_pixels)
-        set_system_cursor_size(cursor_size_pixels)
         return
     apply_cursor_scheme(theme_name, cursor_files, backup=True)
 

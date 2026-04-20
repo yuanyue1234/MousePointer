@@ -50,7 +50,6 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     ScrollArea,
-    Slider,
     StrongBodyLabel,
     SubtitleLabel,
     SwitchButton,
@@ -361,6 +360,34 @@ class DropArea(CardWidget):
         paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.toLocalFile()]
         if paths:
             self.dropped.emit(paths)
+
+
+class SegmentedSizeBar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.value = 3
+        self.setFixedHeight(20)
+        self.setMinimumWidth(180)
+
+    def setValue(self, value: int) -> None:
+        self.value = max(1, min(15, int(value)))
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        gap = 4
+        count = 15
+        width = max(2, int((self.width() - gap * (count - 1)) / count))
+        height = 8
+        y = int((self.height() - height) / 2)
+        for index in range(count):
+            x = index * (width + gap)
+            active = index < self.value
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor("#4f8cff" if active else "#dbeafe"))
+            painter.drawRoundedRect(QRect(x, y, width, height), 4, 4)
 
 
 def role_icon_path(backend, role) -> Path:
@@ -834,20 +861,27 @@ class SchemePage(QWidget):
         size_row.addStretch(1)
         size_row.addWidget(self.sizeText)
         right_layout.addLayout(size_row)
-        self.sizeSlider = Slider(Qt.Horizontal)
-        self.sizeSlider.setRange(1, 15)
         self.sizeLevel = self.backend.pixels_to_size_level(self.backend.get_current_cursor_size())
-        self.sizeSlider.setValue(self.sizeLevel)
-        self.sizeSlider.valueChanged.connect(self.onSizeChanged)
-        right_layout.addWidget(self.sizeSlider)
+        size_control = QHBoxLayout()
+        size_control.setSpacing(8)
+        self.sizeMinusButton = PushButton("-")
+        self.sizeMinusButton.setFixedWidth(38)
+        self.sizePlusButton = PushButton("+")
+        self.sizePlusButton.setFixedWidth(38)
+        self.sizeProgress = SegmentedSizeBar()
+        self.sizeProgress.setValue(self.sizeLevel)
+        size_control.addWidget(self.sizeMinusButton)
+        size_control.addWidget(self.sizeProgress, 1)
+        size_control.addWidget(self.sizePlusButton)
+        right_layout.addLayout(size_control)
         live_size_row = QHBoxLayout()
         live_size_row.addWidget(BodyLabel("实时更新鼠标大小"))
         self.liveSizeSwitch = SwitchButton()
-        self.liveSizeSwitch.setChecked(True)
+        self.liveSizeSwitch.setChecked(False)
         live_size_row.addWidget(self.liveSizeSwitch)
         live_size_row.addStretch(1)
         right_layout.addLayout(live_size_row)
-        self.applyTip = CaptionLabel("拖动可实时调整系统鼠标大小，应用和安装包会包含当前大小。")
+        self.applyTip = CaptionLabel("使用 + / - 调整鼠标大小；开启实时更新后才会立刻写入系统。应用和安装包会包含当前大小。")
         self.applyTip.setWordWrap(True)
         self.applyTip.setTextColor("#64748b", "#94a3b8")
         right_layout.addWidget(self.applyTip)
@@ -897,6 +931,9 @@ class SchemePage(QWidget):
         self.sizeSettingsButton.clicked.connect(self.openPointerSettings)
         self.extraAddButton.clicked.connect(self.importExtraResources)
         self.extraClearButton.clicked.connect(self.clearExtraResources)
+        self.sizeMinusButton.clicked.connect(lambda: self.changeSizeLevel(-1))
+        self.sizePlusButton.clicked.connect(lambda: self.changeSizeLevel(1))
+        self.liveSizeSwitch.clicked.connect(lambda checked=False: self.sizeApplyTimer.start(0) if checked else None)
         self.onSizeChanged(self.sizeLevel)
         self.refreshSchemes()
 
@@ -1253,17 +1290,29 @@ class SchemePage(QWidget):
         self.sizeLevel = max(1, min(15, int(value)))
         pixels = self.backend.size_level_to_pixels(self.sizeLevel)
         self.sizeText.setText(f"{self.sizeLevel} / {pixels}px")
+        if hasattr(self, "sizeProgress"):
+            self.sizeProgress.setValue(self.sizeLevel)
+        if hasattr(self, "sizeMinusButton"):
+            self.sizeMinusButton.setEnabled(self.sizeLevel > 1)
+        if hasattr(self, "sizePlusButton"):
+            self.sizePlusButton.setEnabled(self.sizeLevel < 15)
         if getattr(self, "liveSizeSwitch", None) and self.liveSizeSwitch.isChecked():
             self.sizeApplyTimer.start(120)
         self.updateLargePreview(self.current_preview)
 
+    def changeSizeLevel(self, delta: int):
+        self.onSizeChanged(self.sizeLevel + delta)
+
     def applyCurrentCursorSize(self) -> None:
         pixels = self.backend.size_level_to_pixels(self.sizeLevel)
-        try:
-            self.backend.set_system_cursor_size(pixels)
-        except Exception as exc:
-            self.backend.log_error("Fluent 实时调整鼠标大小失败", exc)
-            InfoBar.error(title="鼠标大小", content=str(exc), orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=4000, parent=self.window())
+
+        def work():
+            try:
+                self.backend.set_system_cursor_size(pixels)
+            except Exception as exc:
+                self.backend.log_error("Fluent 实时调整鼠标大小失败", exc)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def pickFileForRole(self, reg_name: str):
         file_name, _ = QFileDialog.getOpenFileName(
@@ -1518,11 +1567,19 @@ class SchemePage(QWidget):
         pixels = self.backend.size_level_to_pixels(self.sizeLevel)
 
         def work():
-            package_dir = self.backend.WORK_ROOT / "fluent_current_theme"
-            files = self.prepareAssets(package_dir)
-            target_dir = self.installAssetsToScheme(theme, files, package_dir / "assets")
-            self.backend.apply_refreshed_cursor_scheme(theme, {reg: str(target_dir / name) for reg, name in files.items()}, pixels)
-            self.writeManifest(theme, files, target_dir)
+            direct_files = {
+                reg_name: str(path)
+                for reg_name, path in self.selected.items()
+                if path.exists() and path.suffix.lower() in {".cur", ".ani"}
+            }
+            if len(direct_files) == len(self.selected):
+                self.backend.apply_refreshed_cursor_scheme(theme, direct_files, pixels)
+            else:
+                package_dir = self.backend.WORK_ROOT / "fluent_current_theme"
+                files = self.prepareAssets(package_dir)
+                target_dir = self.installAssetsToScheme(theme, files, package_dir / "assets")
+                self.backend.apply_refreshed_cursor_scheme(theme, {reg: str(target_dir / name) for reg, name in files.items()}, pixels)
+                self.writeManifest(theme, files, target_dir)
             return f"{theme}（{pixels}px）"
 
         self.runTask("正在应用鼠标方案", work, lambda name: self.showInfo("应用完成", f"已应用：{name}"))
