@@ -4,7 +4,11 @@ const prevBtn = document.getElementById("prevBtn");
 const nextBtn = document.getElementById("nextBtn");
 const langButtons = Array.from(document.querySelectorAll(".lang-btn"));
 const navLinks = Array.from(document.querySelectorAll(".nav a"));
-const pageSections = Array.from(document.querySelectorAll(".hero, main > .section"));
+const pageSections = [
+  document.querySelector(".hero"),
+  document.querySelector("#features"),
+  document.querySelector("#workflow")
+].filter(Boolean);
 
 let activeIndex = 0;
 let timerId = null;

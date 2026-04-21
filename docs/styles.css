@@ -196,7 +196,6 @@ img {
   max-width: 1240px;
   margin: 0 auto;
   padding: 64px 24px;
-  min-height: calc(100vh - 96px);
   scroll-margin-top: 96px;
 }
 
@@ -507,6 +506,7 @@ img {
   background: linear-gradient(180deg, rgba(18, 55, 56, 0.98) 0%, rgba(24, 72, 72, 0.98) 100%);
   color: #f0fffd;
   box-shadow: 0 28px 60px rgba(22, 58, 59, 0.18);
+  padding-bottom: 28px;
 }
 
 .dark-panel .section-heading h2,
@@ -543,6 +543,10 @@ img {
 
 .reference-list {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.references-section {
+  padding-top: 26px;
 }
 
 .reference-item {
@@ -595,7 +599,6 @@ img {
   .hero,
   .section {
     padding: 52px 18px;
-    min-height: auto;
   }
 
   .topbar {
@@ -665,5 +668,9 @@ img {
   .primary-btn,
   .secondary-btn {
     width: 100%;
+  }
+
+  .references-section {
+    padding-top: 52px;
   }
 }
