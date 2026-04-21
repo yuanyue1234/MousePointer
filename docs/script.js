@@ -6,7 +6,6 @@ const langButtons = Array.from(document.querySelectorAll(".lang-btn"));
 const navLinks = Array.from(document.querySelectorAll(".nav a"));
 const pageSections = [
   document.querySelector(".hero"),
-  document.querySelector("#features"),
   document.querySelector("#workflow")
 ].filter(Boolean);
 

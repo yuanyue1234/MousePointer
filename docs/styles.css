@@ -201,11 +201,14 @@ img {
 
 .hero {
   padding-top: 34px;
+  min-height: calc(100vh - 96px);
 }
 
 .showcase-stack {
   display: grid;
-  gap: 22px;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
 }
 
 .hero-copy,
@@ -311,10 +314,11 @@ img {
 
 .app-icon-panel {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 1fr;
+  justify-items: center;
   align-items: center;
-  gap: 26px;
-  padding: 34px;
+  gap: 18px;
+  padding: 26px;
   background: linear-gradient(180deg, rgba(248, 255, 254, 0.92) 0%, rgba(232, 247, 245, 0.94) 100%);
 }
 
@@ -348,15 +352,15 @@ img {
 
 .app-icon-panel h2 {
   margin: 0;
-  font-size: clamp(28px, 3vw, 36px);
+  font-size: clamp(24px, 2.4vw, 32px);
   line-height: 1.2;
   font-weight: 600;
 }
 
 .app-icon-panel p:last-of-type {
-  margin: 14px 0 0;
+  margin: 10px 0 0;
   color: var(--muted);
-  line-height: 1.8;
+  line-height: 1.7;
 }
 
 .hero-actions {
@@ -369,13 +373,13 @@ img {
 .carousel {
   overflow: hidden;
   width: 100%;
-  padding: 24px;
+  padding: 20px;
   background: linear-gradient(180deg, rgba(248, 255, 254, 0.82) 0%, rgba(232, 247, 245, 0.9) 100%);
 }
 
 .carousel-track {
   position: relative;
-  min-height: 540px;
+  min-height: 420px;
 }
 
 .slide {
@@ -395,7 +399,7 @@ img {
 
 .slide img {
   width: 100%;
-  height: 500px;
+  height: 380px;
   object-fit: contain;
   object-position: center;
   border-radius: 18px;
@@ -472,21 +476,36 @@ img {
   gap: 18px;
 }
 
+.feature-section {
+  grid-column: 1 / -1;
+  padding: 4px 0 0;
+}
+
+.feature-section .section-heading {
+  margin-bottom: 18px;
+}
+
+.feature-section .section-heading h2 {
+  font-size: clamp(24px, 2.6vw, 34px);
+  max-width: none;
+}
+
 .feature-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .feature-card,
 .step-card,
 .reference-item {
-  padding: 24px;
+  padding: 18px;
   background: rgba(255, 255, 255, 0.74);
 }
 
 .feature-card h3,
 .step-card h3 {
   margin: 0 0 12px;
-  font-size: 24px;
+  font-size: 21px;
   line-height: 1.25;
   font-weight: 500;
 }
@@ -496,8 +515,8 @@ img {
 .reference-item span {
   margin: 0;
   color: var(--muted);
-  font-size: 15px;
-  line-height: 1.8;
+  font-size: 14px;
+  line-height: 1.65;
   word-break: break-word;
 }
 
@@ -578,6 +597,10 @@ img {
     justify-content: center;
   }
 
+  .showcase-stack {
+    grid-template-columns: 1fr;
+  }
+
   .feature-grid,
   .step-list,
   .reference-list {
@@ -585,7 +608,6 @@ img {
   }
 
   .app-icon-panel {
-    grid-template-columns: 1fr;
     justify-items: center;
     text-align: center;
   }
@@ -599,6 +621,10 @@ img {
   .hero,
   .section {
     padding: 52px 18px;
+  }
+
+  .hero {
+    min-height: auto;
   }
 
   .topbar {
@@ -640,7 +666,7 @@ img {
 
   .slide img {
     height: auto;
-    max-height: 420px;
+    max-height: 360px;
   }
 
   .feature-grid,
