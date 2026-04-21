@@ -9,6 +9,9 @@ const pageSections = [
   document.querySelector("#features"),
   document.querySelector("#workflow")
 ].filter(Boolean);
+const wechatButton = document.getElementById("wechatButton");
+const wechatPanel = document.getElementById("wechatPanel");
+const referencesSection = document.getElementById("references");
 
 let activeIndex = 0;
 let timerId = null;
@@ -18,10 +21,11 @@ let sectionScrollLocked = false;
 const translations = {
   zh: {
     brand: "鼠标指针配置管理器",
-    heroBar: "产品展示",
     navFeatures: "功能特性",
     navWorkflow: "快速上手",
     download: "下载软件",
+    wechatButton: "微信公众号",
+    reservedSlot: "预留按钮位",
     iconLabel: "软件图标",
     iconTitle: "鼠标指针配置管理器",
     iconText: "让新手小白也能用，让鼠标指针制作者能方便编辑和生成。",
@@ -77,10 +81,11 @@ const translations = {
   },
   en: {
     brand: "Mouse Pointer Manager",
-    heroBar: "Showcase",
     navFeatures: "Features",
     navWorkflow: "Quick Start",
     download: "Download",
+    wechatButton: "WeChat",
+    reservedSlot: "Reserved Slot",
     iconLabel: "App Icon",
     iconTitle: "Mouse Pointer Manager",
     iconText: "Built for beginners while still making editing and packaging easy for cursor creators.",
@@ -193,7 +198,10 @@ function updateActiveNav() {
     const target = document.querySelector(link.getAttribute("href"));
     if (!target) return;
     const top = target.offsetTop - 140;
-    const bottom = top + target.offsetHeight;
+    const bottom =
+      target.id === "workflow" && referencesSection
+        ? referencesSection.offsetTop + referencesSection.offsetHeight
+        : top + target.offsetHeight;
     if (scrollY >= top && scrollY < bottom) {
       matchedId = target.id;
     }
@@ -263,6 +271,12 @@ if (nextBtn) {
 langButtons.forEach((button) => {
   button.addEventListener("click", () => applyLanguage(button.dataset.lang));
 });
+
+if (wechatButton && wechatPanel) {
+  wechatButton.addEventListener("click", () => {
+    wechatPanel.hidden = !wechatPanel.hidden;
+  });
+}
 
 navLinks.forEach((link) => {
   link.addEventListener("click", () => {
