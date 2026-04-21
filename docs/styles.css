@@ -291,6 +291,7 @@ img {
 .carousel-wrap {
   position: relative;
   height: 100%;
+  min-height: 480px;
 }
 
 .app-icon-panel {
@@ -301,6 +302,7 @@ img {
   gap: 18px;
   padding: 22px;
   height: 100%;
+  min-height: 480px;
   background: linear-gradient(180deg, rgba(248, 255, 254, 0.92) 0%, rgba(232, 247, 245, 0.94) 100%);
 }
 
@@ -532,10 +534,11 @@ img {
 .wechat-panel {
   position: absolute;
   left: 0;
+  width: 200px;
   bottom: calc(100% + 12px);
   z-index: 8;
   padding: 18px;
-  width: fit-content;
+  /*width: fit-content;*/
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.82);
   box-shadow: var(--shadow), var(--ring);
@@ -689,7 +692,31 @@ img {
 
   .slide img {
     height: auto;
-    max-height: 360px;
+    max-height: none;
+  }
+
+  .carousel-wrap,
+  .app-icon-panel {
+    min-height: auto;
+  }
+
+  .carousel {
+    overflow: visible;
+  }
+
+  .carousel-track {
+    min-height: auto;
+  }
+
+  .slide {
+    position: relative;
+    inset: auto;
+    display: none;
+    transform: none;
+  }
+
+  .slide.active {
+    display: block;
   }
 
   .feature-grid,
