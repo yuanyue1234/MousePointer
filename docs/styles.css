@@ -476,6 +476,7 @@ img {
   color: var(--muted);
   font-size: 15px;
   line-height: 1.8;
+  word-break: break-word;
 }
 
 .dark-panel {
