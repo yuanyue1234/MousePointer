@@ -18,9 +18,7 @@ const translations = {
   zh: {
     brand: "鼠标指针配置管理器",
     navFeatures: "功能特性",
-    navWorkflow: "上手",
-    navGallery: "截图",
-    navReferences: "参考",
+    navWorkflow: "快速上手",
     download: "下载软件",
     iconLabel: "软件图标",
     iconTitle: "鼠标指针配置管理器",
@@ -78,9 +76,7 @@ const translations = {
   en: {
     brand: "Mouse Pointer Manager",
     navFeatures: "Features",
-    navWorkflow: "Guide",
-    navGallery: "Gallery",
-    navReferences: "References",
+    navWorkflow: "Quick Start",
     download: "Download",
     iconLabel: "App Icon",
     iconTitle: "Mouse Pointer Manager",
