@@ -201,7 +201,26 @@ img {
 
 .hero {
   padding-top: 34px;
-  min-height: calc(100vh - 96px);
+}
+
+.hero-showcase {
+  display: grid;
+  gap: 18px;
+}
+
+.page-bar {
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--shadow), var(--ring);
+  color: var(--accent-deep);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .showcase-stack {
@@ -286,31 +305,7 @@ img {
 
 .carousel-wrap {
   position: relative;
-  padding-top: 30px;
   height: 100%;
-}
-
-.floating-card {
-  position: absolute;
-  top: 0;
-  left: 26px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: var(--shadow), var(--ring);
-  color: var(--muted);
-  font-size: 14px;
-}
-
-.status-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #5bd0ba 0%, #2fa293 100%);
 }
 
 .app-icon-panel {
@@ -483,17 +478,7 @@ img {
 }
 
 .feature-section {
-  grid-column: 1 / -1;
-  padding: 4px 0 0;
-}
-
-.feature-section .section-heading {
-  margin-bottom: 18px;
-}
-
-.feature-section .section-heading h2 {
-  font-size: clamp(24px, 2.6vw, 34px);
-  max-width: none;
+  min-height: calc(100vh - 96px);
 }
 
 .feature-grid {
@@ -654,16 +639,6 @@ img {
   .step-card,
   .reference-item {
     padding: 20px;
-  }
-
-  .carousel-wrap {
-    padding-top: 0;
-  }
-
-  .floating-card {
-    position: static;
-    margin-bottom: 16px;
-    max-width: 100%;
   }
 
   .carousel-track {

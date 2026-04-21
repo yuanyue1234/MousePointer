@@ -6,6 +6,7 @@ const langButtons = Array.from(document.querySelectorAll(".lang-btn"));
 const navLinks = Array.from(document.querySelectorAll(".nav a"));
 const pageSections = [
   document.querySelector(".hero"),
+  document.querySelector("#features"),
   document.querySelector("#workflow")
 ].filter(Boolean);
 
@@ -17,6 +18,7 @@ let sectionScrollLocked = false;
 const translations = {
   zh: {
     brand: "鼠标指针配置管理器",
+    heroBar: "产品展示",
     navFeatures: "功能特性",
     navWorkflow: "快速上手",
     download: "下载软件",
@@ -75,6 +77,7 @@ const translations = {
   },
   en: {
     brand: "Mouse Pointer Manager",
+    heroBar: "Showcase",
     navFeatures: "Features",
     navWorkflow: "Quick Start",
     download: "Download",
