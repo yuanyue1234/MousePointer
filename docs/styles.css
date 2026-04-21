@@ -23,6 +23,7 @@ body {
   margin: 0;
   font-family: "Inter", "Segoe UI", sans-serif;
   color: var(--text);
+  scroll-snap-type: y mandatory;
   background:
     radial-gradient(circle at top left, rgba(137, 225, 213, 0.32), transparent 28%),
     radial-gradient(circle at top right, rgba(190, 240, 231, 0.45), transparent 24%),
@@ -104,9 +105,30 @@ img {
   color: var(--muted);
 }
 
+.nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(131, 190, 182, 0.14);
+}
+
 .nav a:hover,
 .ghost-link:hover {
   color: var(--text);
+}
+
+.nav a:hover {
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.nav a.active {
+  color: #faffff;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
+  box-shadow: 0 10px 24px rgba(50, 151, 144, 0.18);
 }
 
 .lang-bar {
@@ -175,6 +197,9 @@ img {
   max-width: 1240px;
   margin: 0 auto;
   padding: 64px 24px;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  scroll-margin-top: 96px;
 }
 
 .hero {
@@ -576,6 +601,16 @@ img {
 
   .topbar {
     padding: 16px 18px;
+  }
+
+  .nav {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .nav a {
+    flex: 1 1 calc(50% - 8px);
+    min-width: 120px;
   }
 
   .hero-copy,

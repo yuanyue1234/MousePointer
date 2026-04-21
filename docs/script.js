@@ -3,6 +3,7 @@ const dotsRoot = document.getElementById("carouselDots");
 const prevBtn = document.getElementById("prevBtn");
 const nextBtn = document.getElementById("nextBtn");
 const langButtons = Array.from(document.querySelectorAll(".lang-btn"));
+const navLinks = Array.from(document.querySelectorAll(".nav a"));
 
 let activeIndex = 0;
 let timerId = null;
@@ -11,6 +12,7 @@ let currentLang = "zh";
 const translations = {
   zh: {
     brand: "鼠标指针配置管理器",
+    navFeatures: "功能特性",
     navWorkflow: "上手",
     navGallery: "截图",
     navReferences: "参考",
@@ -70,6 +72,7 @@ const translations = {
   },
   en: {
     brand: "Mouse Pointer Manager",
+    navFeatures: "Features",
     navWorkflow: "Guide",
     navGallery: "Gallery",
     navReferences: "References",
@@ -178,6 +181,26 @@ function applyLanguage(lang) {
   });
 }
 
+function updateActiveNav() {
+  const scrollY = window.scrollY;
+  let matchedId = "";
+
+  navLinks.forEach((link) => {
+    const target = document.querySelector(link.getAttribute("href"));
+    if (!target) return;
+    const top = target.offsetTop - 140;
+    const bottom = top + target.offsetHeight;
+    if (scrollY >= top && scrollY < bottom) {
+      matchedId = target.id;
+    }
+  });
+
+  navLinks.forEach((link) => {
+    const href = link.getAttribute("href");
+    link.classList.toggle("active", href === `#${matchedId}`);
+  });
+}
+
 if (prevBtn) {
   prevBtn.addEventListener("click", () => setActive(activeIndex - 1, true));
 }
@@ -194,3 +217,5 @@ renderDots();
 setActive(0);
 startAutoPlay();
 applyLanguage(currentLang);
+updateActiveNav();
+window.addEventListener("scroll", updateActiveNav, { passive: true });
