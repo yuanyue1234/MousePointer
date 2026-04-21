@@ -506,7 +506,7 @@ img {
   flex-wrap: wrap;
   gap: 12px;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   margin-top: 18px;
 }
 
@@ -517,6 +517,7 @@ img {
 
 .bar-action {
   min-height: 44px;
+  text-align: center;
   padding: 0 18px;
   border: 0;
   border-radius: 8px;

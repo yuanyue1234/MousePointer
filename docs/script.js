@@ -191,21 +191,12 @@ function applyLanguage(lang) {
 }
 
 function updateActiveNav() {
-  const scrollY = window.scrollY;
   let matchedId = "";
 
-  navLinks.forEach((link) => {
-    const target = document.querySelector(link.getAttribute("href"));
-    if (!target) return;
-    const top = target.offsetTop - 140;
-    const bottom =
-      target.id === "workflow" && referencesSection
-        ? referencesSection.offsetTop + referencesSection.offsetHeight
-        : top + target.offsetHeight;
-    if (scrollY >= top && scrollY < bottom) {
-      matchedId = target.id;
-    }
-  });
+  if (pageSections.length) {
+    const currentSection = pageSections[getCurrentSectionIndex()];
+    matchedId = currentSection ? currentSection.id : "";
+  }
 
   navLinks.forEach((link) => {
     const href = link.getAttribute("href");
