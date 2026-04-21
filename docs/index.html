@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>鼠标指针配置管理器</title>
+  <meta name="description" content="鼠标指针配置管理器官网，支持方案导入、实时预览、应用与安装包生成。">
+  <link rel="icon" type="image/png" href="../icon.png">
+  <link rel="shortcut icon" href="../icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="topbar">
+      <a class="brand" href="#hero">
+        <img src="../icon.png" alt="鼠标指针配置管理器图标">
+        <span>鼠标指针配置管理器</span>
+      </a>
+      <nav class="nav">
+        <a href="#features">功能</a>
+        <a href="#gallery">截图</a>
+        <a href="#workflow">上手</a>
+        <a href="#references">参考</a>
+      </nav>
+      <div class="topbar-actions">
+        <a class="ghost-link" href="https://github.com/yuanyue1234/MousePointer" target="_blank" rel="noreferrer">GitHub</a>
+        <a class="nav-cta" href="https://github.com/yuanyue1234/MousePointer/releases/download/v2.0.0/MousePointer_Portable.exe">下载软件</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" id="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Windows 鼠标指针方案图形化工具</p>
+          <h1>让方案导入、预览、应用和打包都变得更直观。</h1>
+          <p class="hero-text">
+            为新手用户准备的轻量化桌面工具，也为鼠标指针制作者保留足够清晰的编辑与调试体验。
+            你可以直接导入资源包、拖入文件、实时预览动态指针，再一键生成安装程序。
+          </p>
+          <div class="hero-actions">
+            <a class="primary-btn" href="https://github.com/yuanyue1234/MousePointer/releases/download/v2.0.0/MousePointer_Portable.exe">立即下载</a>
+            <a class="secondary-btn" href="#gallery">查看截图</a>
+          </div>
+          <ul class="hero-points">
+            <li>支持 `.cur`、`.ani`、图片、压缩包、文件夹与 `exe` 导入</li>
+            <li>支持动态预览、GIF 截图导出与后台常驻</li>
+            <li>支持新建、重命名、导入、应用与安装包生成</li>
+          </ul>
+        </div>
+
+        <div class="hero-showcase">
+          <div class="floating-card status-card">
+            <span class="status-dot"></span>
+            <span>实时预览 · 方案管理 · 资源导入</span>
+          </div>
+
+          <div class="showcase-stack">
+            <section class="app-icon-panel" aria-label="软件图标展示">
+              <div class="icon-orb">
+                <img src="../icon.png" alt="鼠标指针配置管理器软件图标">
+              </div>
+              <div class="icon-copy">
+                <p class="icon-label">软件图标</p>
+                <h2>鼠标指针配置管理器</h2>
+                <p>图标与程序本体保持一致，下载页、网页展示和程序入口统一识别。</p>
+              </div>
+            </section>
+
+            <div class="carousel" id="gallery">
+              <div class="carousel-track">
+                <figure class="slide active">
+                  <img src="./screenshots/screenshot-1.png" alt="鼠标方案管理页面">
+                  <figcaption>方案编辑与预览联动</figcaption>
+                </figure>
+                <figure class="slide">
+                  <img src="./screenshots/screenshot-2.png" alt="资源库页面">
+                  <figcaption>资源库与导入流程</figcaption>
+                </figure>
+                <figure class="slide">
+                  <img src="./screenshots/screenshot-3.png" alt="设置页面">
+                  <figcaption>设置、下载与系统集成</figcaption>
+                </figure>
+              </div>
+              <div class="carousel-controls">
+                <button class="carousel-btn" id="prevBtn" type="button" aria-label="上一张">‹</button>
+                <div class="carousel-dots" id="carouselDots"></div>
+                <button class="carousel-btn" id="nextBtn" type="button" aria-label="下一张">›</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section feature-section" id="features">
+        <div class="section-heading">
+          <p class="eyebrow">功能特性</p>
+          <h2>围绕编辑效率与可视化体验设计。</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <h3>方案管理</h3>
+            <p>新建、重命名、删除、导入和自动保存方案，避免重复整理资源。</p>
+          </article>
+          <article class="feature-card">
+            <h3>多格式导入</h3>
+            <p>支持 `.cur`、`.ani`、图片、`.zip`、`.rar`、`.7z`、`.exe` 和文件夹。</p>
+          </article>
+          <article class="feature-card">
+            <h3>动态预览</h3>
+            <p>静态与动态鼠标指针都能直接查看，便于在应用前确认细节。</p>
+          </article>
+          <article class="feature-card">
+            <h3>大小辅助</h3>
+            <p>用 `- / +` 与分段进度条查看方案适配范围，减少误触和试错。</p>
+          </article>
+          <article class="feature-card">
+            <h3>截图导出</h3>
+            <p>可导出方案预览图，动态指针保存为 GIF，便于分享和留档。</p>
+          </article>
+          <article class="feature-card">
+            <h3>后台常驻</h3>
+            <p>支持自启动后台、托盘保留、隐藏任务栏与启动修复。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section dark-panel" id="workflow">
+        <div class="section-heading light">
+          <p class="eyebrow">快速上手</p>
+          <h2>从下载到应用，只需要四步。</h2>
+        </div>
+        <div class="step-list">
+          <article class="step-card">
+            <span class="step-index">01</span>
+            <h3>下载安装</h3>
+            <p>从 GitHub Releases 下载绿色版程序，开箱可用。</p>
+          </article>
+          <article class="step-card">
+            <span class="step-index">02</span>
+            <h3>拖入资源</h3>
+            <p>把指针文件、资源包或文件夹直接拖进应用，程序自动解析。</p>
+          </article>
+          <article class="step-card">
+            <span class="step-index">03</span>
+            <h3>预览与调整</h3>
+            <p>在方案页分配各个状态，右侧实时查看显示效果。</p>
+          </article>
+          <article class="step-card">
+            <span class="step-index">04</span>
+            <h3>应用或打包</h3>
+            <p>一键写入系统鼠标方案，或直接生成安装程序交付使用。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section references-section" id="references">
+        <div class="section-heading">
+          <p class="eyebrow">参考</p>
+          <h2>实现与灵感来源。</h2>
+        </div>
+        <div class="reference-list">
+          <a class="reference-item" href="https://github.com/yuanyue1234/MousePointer" target="_blank" rel="noreferrer">
+            <span>GitHub 项目仓库</span>
+            <strong>查看项目</strong>
+          </a>
+          <a class="reference-item" href="https://inputtip.abgox.com/zh-CN/" target="_blank" rel="noreferrer">
+            <span>InputTip 中英文切换思路</span>
+            <strong>查看参考</strong>
+          </a>
+          <a class="reference-item" href="https://inputtip.abgox.com/zh-CN/download/extra" target="_blank" rel="noreferrer">
+            <span>InputTip 扩展鼠标指针资源</span>
+            <strong>查看资源</strong>
+          </a>
+          <a class="reference-item" href="https://github.com/zhiyiYo/PyQt-Fluent-Widgets" target="_blank" rel="noreferrer">
+            <span>PyQt-Fluent-Widgets 界面风格参考</span>
+            <strong>查看框架</strong>
+          </a>
+          <a class="reference-item" href="https://mp.weixin.qq.com/s/DyO-dBMKf7RrMetCqji4jg" target="_blank" rel="noreferrer">
+            <span>像素指针指南文章</span>
+            <strong>查看文章</strong>
+          </a>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./script.js"></script>
+</body>
+</html>
