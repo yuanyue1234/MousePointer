@@ -23,7 +23,6 @@ body {
   margin: 0;
   font-family: "Inter", "Segoe UI", sans-serif;
   color: var(--text);
-  scroll-snap-type: y mandatory;
   background:
     radial-gradient(circle at top left, rgba(137, 225, 213, 0.32), transparent 28%),
     radial-gradient(circle at top right, rgba(190, 240, 231, 0.45), transparent 24%),
@@ -197,8 +196,7 @@ img {
   max-width: 1240px;
   margin: 0 auto;
   padding: 64px 24px;
-  scroll-snap-align: start;
-  scroll-snap-stop: always;
+  min-height: calc(100vh - 96px);
   scroll-margin-top: 96px;
 }
 
@@ -597,6 +595,7 @@ img {
   .hero,
   .section {
     padding: 52px 18px;
+    min-height: auto;
   }
 
   .topbar {

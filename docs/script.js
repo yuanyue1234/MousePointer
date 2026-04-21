@@ -4,10 +4,12 @@ const prevBtn = document.getElementById("prevBtn");
 const nextBtn = document.getElementById("nextBtn");
 const langButtons = Array.from(document.querySelectorAll(".lang-btn"));
 const navLinks = Array.from(document.querySelectorAll(".nav a"));
+const pageSections = Array.from(document.querySelectorAll(".hero, main > .section"));
 
 let activeIndex = 0;
 let timerId = null;
 let currentLang = "zh";
+let sectionScrollLocked = false;
 
 const translations = {
   zh: {
@@ -201,6 +203,53 @@ function updateActiveNav() {
   });
 }
 
+function getCurrentSectionIndex() {
+  const anchorY = window.scrollY + window.innerHeight * 0.35;
+  let bestIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  pageSections.forEach((section, index) => {
+    const sectionCenter = section.offsetTop + section.offsetHeight / 2;
+    const distance = Math.abs(sectionCenter - anchorY);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
+function scrollToSection(index) {
+  if (!pageSections.length) return;
+  const safeIndex = Math.max(0, Math.min(index, pageSections.length - 1));
+  const top = Math.max(0, pageSections[safeIndex].offsetTop - 86);
+  window.scrollTo({ top, behavior: "smooth" });
+  sectionScrollLocked = true;
+  window.setTimeout(() => {
+    sectionScrollLocked = false;
+    updateActiveNav();
+  }, 720);
+}
+
+function handleSectionWheel(event) {
+  if (window.innerWidth <= 760) return;
+  if (sectionScrollLocked) {
+    event.preventDefault();
+    return;
+  }
+  if (Math.abs(event.deltaY) < 12) return;
+
+  const currentSectionIndex = getCurrentSectionIndex();
+  const direction = event.deltaY > 0 ? 1 : -1;
+  const nextIndex = Math.max(0, Math.min(currentSectionIndex + direction, pageSections.length - 1));
+
+  if (nextIndex === currentSectionIndex) return;
+
+  event.preventDefault();
+  scrollToSection(nextIndex);
+}
+
 if (prevBtn) {
   prevBtn.addEventListener("click", () => setActive(activeIndex - 1, true));
 }
@@ -213,9 +262,22 @@ langButtons.forEach((button) => {
   button.addEventListener("click", () => applyLanguage(button.dataset.lang));
 });
 
+navLinks.forEach((link) => {
+  link.addEventListener("click", () => {
+    const target = document.querySelector(link.getAttribute("href"));
+    if (!target) return;
+    sectionScrollLocked = true;
+    window.setTimeout(() => {
+      sectionScrollLocked = false;
+      updateActiveNav();
+    }, 720);
+  });
+});
+
 renderDots();
 setActive(0);
 startAutoPlay();
 applyLanguage(currentLang);
 updateActiveNav();
 window.addEventListener("scroll", updateActiveNav, { passive: true });
+window.addEventListener("wheel", handleSectionWheel, { passive: false });
