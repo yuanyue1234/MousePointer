@@ -134,10 +134,10 @@ img { display: block; max-width: 100%; }
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.02fr) minmax(0, 0.98fr);
-  align-items: center;
-  gap: 42px;
-  min-height: calc(100vh - 92px);
+  grid-template-columns: 1fr;
+  align-items: start;
+  gap: 28px;
+  min-height: auto;
   padding-top: 40px;
 }
 
@@ -208,7 +208,7 @@ img { display: block; max-width: 100%; }
 
 .hero-showcase {
   position: relative;
-  min-height: 640px;
+  min-height: 0;
 }
 
 .floating-card {
@@ -477,7 +477,6 @@ img { display: block; max-width: 100%; }
 .reference-item:hover strong { transform: translateX(2px); }
 
 @media (max-width: 1080px) {
-  .hero { grid-template-columns: 1fr; min-height: auto; }
   .hero-showcase { min-height: 0; }
   .feature-grid, .step-list, .reference-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .app-icon-panel { grid-template-columns: 1fr; justify-items: center; text-align: center; }
