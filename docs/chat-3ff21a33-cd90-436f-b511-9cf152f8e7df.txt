@@ -1,0 +1,1494 @@
+Chat 'ChatTitle(text="查看当前代码" with Codex, isCustom=true)' (3ff21a33-cd90-436f-b511-9cf152f8e7df)
+Context:
+
+Messages: 18
+================================================================================================
+
+==== RestoredMessage #1 ====
+User: 
+查看当前代码
+
+kotlin.Unit
+
+==== RestoredMessage #2 ====
+Assistant: 
+
+
+kotlin.Unit
+
+==== RestoredMessage #3 ====
+User: 
+根据文档，修订当前库；
+Attachments:
+Attachment Name: bug-fix-plan.md
+Attachments Kind: Visible
+Attachments Source: Other / RestoredChatAttachment
+Attachments Text:
+````markdown
+# 鼠标指针配置管理器 Bug 修复执行方案
+
+本文档用于把当前 bug 合辑整理成可执行的开发任务。原则是：一次只修一个明确问题，每完成一步就提交一次；先补保护和验证，再改交互和打包，避免旧问题未确认就引入新 bug。
+
+## 当前问题总结
+
+这些问题可以归成 7 类：
+
+1. 导入与匹配不稳定：`rar` 支持不完整；部分 `.ani` 无缩略图；手写、精确选择、位置选择、个人选择偶尔匹配错；资源包拖拽入口和普通文件拖拽入口行为不统一。
+2. 鼠标方案编辑交互弱：替换鼠标指针盒子不能直接拖文件；方案 list 图标缺少悬停反馈、删除/移回入口和动静标识；用户不容易发现图标可点、可聚焦。
+3. 方案切换状态不清晰：切换后当前方案没有实时刷新；下次切换不显示或不包含计时切换；计时切换 UI 不够直观，顺序/随机逻辑和用户预期不一致。
+4. 计时切换需要重做：时间组件宽度应自适应；“每 X 秒/分钟”组件应紧凑；需要 4x4 宫格、多选、全选、拖拽排序；顺序模式按多选排序切换，随机模式在多选范围内随机。
+5. 打包和发布链路不稳定：已打包软件内找不到包含 PyInstaller 的 Python；生成安装包偶尔显示黑框；Release 更新后 README 和网页下载链接没有同步；x64/arm64 架构策略未定。
+6. 启动和后台驻留需要确认：打开程序等待时间过长；自启动是否真的启动缺少可靠检查；关闭后托盘图标或后台状态是否保留需要真实验证。
+7. 在线资源库信息过期：资源库地址需要改为 `http://8.135.33.2:5002/`，并在入口处添加图标。
+
+## 开发总原则
+
+- 先创建分支：`git switch -c codex/bugfix-stability-plan`。
+- 每一步只解决一个主题，提交前看 `git diff`，不要顺手重构无关代码。
+- 每步提交格式建议：`fix: ...`、`feat: ...`、`docs: ...`、`test: ...`。
+- 不要把 UI 重做、导入兼容、打包运行时一次塞进同一个提交。
+- 修改前保留一组真实素材：`.cur`、普通 `.ani`、无法预览的纯 `.ani`、`.zip`、`.rar`、`.7z`、一个包含多份 `.inf` 的压缩包、一个手写/精确/位置/个人选择命名不标准的主题包。
+- 任何涉及系统鼠标、注册表、自启动、托盘的修改，都要在 Win10 和 Win11 真机验证。
+
+## 代码热点
+
+- 角色定义：`main.py:78` 的 `CursorRole` 和 `main.py:86` 的 `CURSOR_ROLES`。
+- 文件名匹配：`main.py:941` 的 `map_files_to_roles`。
+- INF 匹配：`main.py:980` 的 `parse_inf_mapping`。
+- 压缩包解压：`main.py:1046` 的 `extract_import_package`。
+- 预览渲染：`main.py:875` 的 `cursor_preview_image_sized`、`main.py:898` 的 `render_cursor_with_windows`、`main.py:2652` 的 `ani_frame_paths`。
+- 主方案页 UI：`main.py:3535` 的 `_v3_show_scheme_page`、`main.py:3614` 的 `_v3_add_row`、`main.py:3670` 的 `_v3_update_preview`。
+- 资源库 UI：`main.py:4211` 的 `_show_resource_page`、`main.py:4356` 的 `_render_resource_previews`、`main.py:4478` 的 `_drop_import_resource`。
+- 切换后台：`main.py:2198` 的 `run_pystray_tray`、`main.py:2304` 的 `run_background`、`main.py:2376` 的 `pick_scheduled_scheme`、`main.py:2482` 的 `next_switch_text`。
+- 安装包生成：`main.py:832` 的 `find_python_with_pyinstaller`、`main.py:3871` 的 `_v4_build_installer`、`main.py:3930` 的 `_v4_build_pyinstaller_exe`。
+- 自启动和托盘：`main.py:1156` 的 `run_auto_start_exists`、`main.py:1171` 的 `auto_start_enabled`、`main.py:4050` 的 `_on_close`、`main.py:4064` 的 `_ensure_tray_icon`。
+- Release 和文档：`.github/workflows/release.yml`、`README.md`、`README.en.md`、`docs/index.html`、`docs/script.js`、`TIPS.md`。
+
+## 分步修复路线
+
+### 1. 建立回归保护和真实素材清单
+
+目标：先让程序员知道每步改完怎么验证，避免越修越乱。
+
+要做：
+
+- 新增或更新发布测试清单，把本次所有问题转成可勾选项。
+- 新建 `docs/test-assets.md`，记录每类测试素材的来源、文件名、覆盖问题、预期结果。
+- 给导入、角色匹配、切换、打包、自启动各列一条最小手测路径。
+
+验收：
+
+- 程序员能按清单复现每个问题。
+- 没有真实素材的问题标记为“需要补素材”，不要假装已修复。
+
+提交：
+
+```text
+docs: add bug regression checklist
+```
+
+注意：
+
+- 这一步不改代码。
+- 当前仓库 `README.md`、`README.en.md`、`介绍.md`、网页和 Release 链接存在同步风险，后面统一处理。
+
+### 2. 修复鼠标角色匹配错误
+
+目标：手写、精确选择、位置选择、个人选择不再被错误当成替代/普通鼠标指针。
+
+要做：
+
+- 扩展 `map_files_to_roles` 的规则，补齐 `Pin`、`Person`，并重新检查 `NWPen`、`Crosshair`、`Hand` 的关键词。
+- 修正 `parse_inf_mapping` 的 `alias_to_reg`。当前 `hand` 映射到 `NWPen` 风险很高，应该区分 `pen/nwpen` 和 `hand/link`。
+- `number_roles` 目前只覆盖 15 个角色，需要覆盖完整 17 个 `CURSOR_ROLES`，包含 `Pin` 和 `Person`。
+- 对同一个文件不能被多个角色占用的逻辑要保留，但要先按 INF 精确映射，再按关键词，最后按编号兜底。
+
+验收：
+
+- 包含 `pen`、`cross`、`pin`、`person`、`hand/link` 的主题包导入后，角色落位正确。
+- 没有 `Pin`、`Person` 的老主题包仍可导入，不报错。
+- 导入后应用系统鼠标方案正常。
+
+提交：
+
+```text
+fix: improve cursor role matching
+```
+
+注意：
+
+- 这一步只改匹配，不改 UI。
+- 不要为了匹配文件名加入过宽关键词，例如单独用 `p`、`select` 之类很容易误伤。
+
+### 3. 修复 RAR 导入兼容
+
+目标：`.rar` 添加后不再直接显示错误；失败时提示原因可理解。
+
+要做：
+
+- 明确采用一种 RAR 解压策略：优先推荐捆绑 `7z.exe/7z.dll` 到 `runtime/7zip`，其次再使用 `rarfile`。
+- `extract_import_package` 中 `.rar` 分支不要吞掉异常后直接走不确定的 `tar -xf`。应记录具体失败原因，并按顺序尝试可用后端。
+- 打包 spec 要把 `runtime/7zip` 包进绿色版和完整版。
+- 错误提示要区分“文件损坏”“不支持加密 RAR”“缺少解压运行时”。
+
+验收：
+
+- 普通 RAR 可导入。
+- 加密 RAR 不闪退，提示“暂不支持加密压缩包”。
+- 没有安装 WinRAR 的干净系统也可导入普通 RAR。
+
+提交：
+
+```text
+fix: support rar import with bundled extractor
+```
+
+注意：
+
+- `rarfile` 本身通常依赖外部解压程序，不能只因为 `requirements.txt` 里有 `rarfile` 就认为绿色版已经支持 RAR。
+- 先确认 7-Zip 许可和分发方式，再放进 release。
+
+### 4. 修复 `.ani` 缩略图和预览兜底
+
+目标：纯 `.ani` 即使不能生成动画预览，也要有稳定缩略图或占位图，不影响应用。
+
+要做：
+
+- 梳理 `ani_frame_paths`、`render_cursor_with_windows` 和 `cursor_preview_image_sized` 的失败路径。
+- 对无法拆帧的 `.ani` 使用 Windows `LoadImageW + DrawIconEx` 取首帧。
+- 如果 Windows API 也失败，显示统一占位图：文件类型、文件名、`动` 标识，而不是空白。
+- 资源库预览、方案行预览、右侧实时预览共用同一套兜底函数。
+
+验收：
+
+- 普通 `.ani` 能动。
+- 无法拆帧的 `.ani` 至少显示首帧或占位图。
+- 点击应用后仍可正常写入系统鼠标。
+
+提交：
+
+```text
+fix: add ani preview fallback
+```
+
+注意：
+
+- 不要因为预览失败就阻止应用，预览能力和系统应用能力要分开。
+- 预览失败要写入错误记录，但 UI 不应频繁弹窗打断用户。
+
+### 5. 增加素材动静标识
+
+目标：替代鼠标指针盒子中的素材左上角显示圆形文字图标：`.ani` 显示“动”，`.cur` 显示“静”，其他格式暂不匹配。
+
+要做：
+
+- 在方案行、资源宫格和替换素材区域统一使用文件类型分类函数。
+- 只对 `.ani`、`.cur` 显示标识。
+- 标识不要改变原预览图尺寸，使用覆盖层或独立小 Label 固定在左上角。
+
+验收：
+
+- `.ani` 显示“动”，`.cur` 显示“静”。
+- 图片格式、未知格式不显示动静标识。
+- 缩放窗口时标识不遮住删除按钮和文字。
+
+提交：
+
+```text
+feat: show cursor type badges
+```
+
+注意：
+
+- 这一步只做标识，不顺带修改拖拽或删除逻辑。
+
+### 6. 替换鼠标指针盒子支持直接拖入文件
+
+目标：用户能把 `.cur`、`.ani`、图片、压缩包直接拖到替换区域；行为和点击导入一致。
+
+要做：
+
+- 明确两个拖拽入口：单个角色盒子拖入文件是“替换该角色”；空白替换盒子或资源导入区拖入压缩包是“导入新方案”。
+- 当前 `_v3_add_row` 已给行内控件注册 DND；需要检查“替换鼠标指针盒子”实际对应哪个 Widget，并补齐 `drop_target_register`。
+- 拖入多个文件时按顺序处理，单个角色只取第一个有效文件；资源导入区可批量处理多个压缩包。
+- 拖入错误类型时只在状态栏提示，不要崩溃。
+
+验收：
+
+- 拖 `.cur/.ani` 到指定角色，路径和预览立即更新。
+- 拖图片到指定角色，可以生成预览，应用时可转换为 `.cur`。
+- 拖压缩包到资源区，导入为新方案。
+
+提交：
+
+```text
+feat: support drag and drop for replacement box
+```
+
+注意：
+
+- DND 要兼容中文路径和带空格路径。
+- 拖入压缩包到角色行时不要错误当作单个鼠标文件。
+
+### 7. 方案 list 图标悬停、移回和轻微晃动
+
+目标：鼠标滑到方案 list 对应图标时，图标显示虚线焦点框，右上角出现小 X；点击 X 后对应鼠标方案移动回替换鼠标指针盒子；悬停时图标轻微晃动。
+
+要做：
+
+- 先定义“移动回替换鼠标指针盒子”的数据含义：建议把已选角色从 `self.selected` 移除，并把该素材放回可选素材池或替换盒子候选列表。
+- 在图标组件上增加 hover 状态：虚线边框、小 X、鼠标指针样式。
+- 小 X 只在 hover 时显示，点击后调用单一方法，例如 `unassign_role_to_pool(role.reg_name)`。
+- 晃动动画要轻，建议 2 到 3 像素横向偏移，150 到 250ms 内停止；不要持续循环占用 CPU。
+
+验收：
+
+- 悬停显示虚线框和小 X。
+- 点击小 X 只移除当前角色，不影响其他角色。
+- 鼠标离开后样式恢复。
+- 快速滑过大量图标不会造成 UI 卡顿。
+
+提交：
+
+```text
+feat: add hover actions for scheme icons
+```
+
+注意：
+
+- Tk/ttk 对虚线边框和覆盖按钮不如 Qt 灵活，必要时用 `Canvas` 包一层图标单元。
+- 不要把动画绑定到资源库所有动态图帧计时器上，避免和 `.ani` 预览互相影响。
+
+### 8. 在线资源库地址和图标
+
+目标：在线资源库入口改为 `http://8.135.33.2:5002/`，并添加图标。
+
+要做：
+
+- 更新 `RESOURCE_URL`。
+- 资源库按钮使用现有图标系统，或在 `assets` 中添加一个资源库图标。
+- 同步更新 README、英文 README、介绍页、网页下载/资源入口说明。
+
+验收：
+
+- 点击“打开资源库网页”打开新地址。
+- Edge app 模式和默认浏览器兜底都可用。
+- 文档和网页没有旧资源库地址。
+
+提交：
+
+```text
+feat: update online resource library entry
+```
+
+注意：
+
+- HTTP 地址可能被安全软件或浏览器策略拦截，失败时要提示用户复制链接到浏览器。
+
+### 9. 重做计时切换 UI 和数据模型
+
+目标：计时切换具备紧凑时间组件、4x4 方案宫格、多选、全选、拖动排序、顺序/随机模式。
+
+要做：
+
+- 数据模型从单个 `scheme` 扩展为 `selected_schemes: list[str]`、`order: "顺序" | "随机"`、`interval_seconds`、`sequential_index`。
+- UI 表达为：`每 [数字输入] [秒/分钟下拉]`，组件宽度按内容自适应，不铺满整行。
+- 方案选择改成 4x4 宫格，每格显示“正常选择”图标和方案名。
+- 添加“全选”预选项，点击方案格切换选中状态。
+- 选中列表左侧提供拖动排序手柄，顺序模式按排序切换，随机模式只在选中集合内随机。
+
+验收：
+
+- 只选 3 个方案时，顺序切换只在这 3 个中循环。
+- 拖动排序后，下一轮顺序按新排序执行。
+- 随机模式不会选到未勾选方案。
+- 重启程序后计时配置完整恢复。
+
+提交：
+
+```text
+feat: rebuild timer switch selection
+```
+
+注意：
+
+- 兼容旧配置：如果旧配置只有 `scheme: "顺序"` 或 `scheme: "__random__"`，首次读取时迁移为全选。
+- 这一步会影响 `pick_scheduled_scheme`、`run_background`、`run_pystray_tray` 和 UI 保存逻辑，必须重点回归后台切换。
+
+### 10. 修复当前方案和下次切换实时显示
+
+目标：方案切换后 UI、托盘菜单、状态栏能实时显示当前方案；下次切换包含时间、星期和计时切换。
+
+要做：
+
+- 所有应用入口统一走一个 `apply_scheme_and_update_state(theme)` 函数，内部调用 `apply_library_scheme` 后更新 `current_scheme`。
+- `next_switch_text` 增加计时切换计算，显示剩余时间或下一次触发时间。
+- 后台和托盘中的 `last_timer_at`、`timer_index` 要持久化或写入状态文件，否则重启后“下一次切换”无法准确显示。
+- UI 保存切换设置后立即刷新当前方案、下次切换文案和托盘菜单。
+
+验收：
+
+- 手动应用、资源库应用、时间切换、星期切换、计时切换都会更新“当前配置”。
+- 托盘右键菜单能显示当前配置和下次切换。
+- 计时切换启用后能看到下一次切换，不再为空。
+
+提交：
+
+```text
+fix: refresh scheme switch status in real time
+```
+
+注意：
+
+- 不要只更新 UI 文案；必须确保设置文件里的 `current_scheme` 和实际系统应用成功保持一致。
+- 如果应用失败，不要提前写入当前方案。
+
+### 11. 安装包生成内置依赖并消除黑框
+
+目标：打包后的软件可以生成安装包，不再提示找不到包含 PyInstaller 的 Python；生成过程不显示黑框。
+
+要做：
+
+- 决定运行时方案：推荐在绿色版中捆绑专用 `runtime/python` 和 PyInstaller，`find_python_with_pyinstaller` 优先查 `resource_path("runtime/python/python.exe")`。
+- spec 文件把 `runtime` 目录纳入 `datas`，并确保 release 资产使用完整版 spec。
+- 所有 `subprocess.run/Popen` 打包相关调用都带 `CREATE_NO_WINDOW`、`stdout/stderr` 捕获或重定向。
+- 如果运行时不存在，错误提示改成“当前版本未包含安装包生成运行时，请下载完整版”，不要让用户去装 `requirements.txt`。
+
+验收：
+
+- 在未安装 Python 的干净 Windows 上，绿色版可以生成安装包，或清晰提示需要完整版。
+- 生成安装包期间无黑色控制台窗口。
+- 打包失败时能打开 `pyinstaller_error.log` 查看原因。
+
+提交：
+
+```text
+fix: bundle installer build runtime
+```
+
+注意：
+
+- 这一步可能显著增大 exe 体积，需要在 Release 说明里讲清楚。
+- PyInstaller 在冻结程序内再次调用 PyInstaller 是高风险点，必须在干净系统测试，不要只在开发机验证。
+
+### 12. 明确 x64 和 arm64 发布策略
+
+目标：不要盲目增加架构，先减少发布复杂度。
+
+建议：
+
+- 先只发布 Windows x64，这是大多数用户需要的稳定版本。
+- arm64 可以作为后续独立目标，只有在有真实 Windows ARM 用户、可用 ARM64 构建机或虚拟机、并能完成手测时再加。
+- PyInstaller 通常不能在 x64 机器上直接可靠交叉编译 arm64 Windows exe，最好在对应架构机器上构建。
+
+验收：
+
+- README 和 Release 说明明确当前支持架构。
+- 下载按钮不会让用户误以为有 arm64 版本。
+
+提交：
+
+```text
+docs: document release architecture support
+```
+
+注意：
+
+- 架构不是越多越好。没有测试能力的架构会扩大 bug 面。
+
+### 13. Release 后同步 README 和网页下载链接
+
+目标：更新 Release 后，README 和网页自动或半自动同步到对应 exe。
+
+要做：
+
+- 统一下载资产名：`MousePointer_Portable.exe` 和需要时的 `MousePointer_Installer.exe`。
+- README 下载链接改成 GitHub latest release 链接，减少硬编码版本号。
+- `docs/index.html` 和 `docs/script.js` 的下载按钮同步使用同一来源。
+- 在 `.github/workflows/release.yml` 中增加发布说明，列明资产和哈希。
+
+验收：
+
+- 打 tag 发布后，README、网页下载按钮都能下载对应 exe。
+- 页面不再指向旧版本 `v2.0.0`。
+
+提交：
+
+```text
+fix: sync release download links
+```
+
+注意：
+
+- GitHub Release 中文资产名此前有规范化问题，建议继续用英文资产名。
+
+### 14. 优化启动速度
+
+目标：打开程序等待时间明显降低。
+
+要做：
+
+- 启动时先显示主窗口，再异步做资源扫描、默认方案导入、预览缓存生成。
+- `ensure_default_schemes` 不要每次启动都同步扫描/解压所有内置包。
+- 资源库预览只在进入资源库页时生成，且限制首屏数量；滚动到可见区域再加载后续预览。
+- 大型图片和 `.ani` 帧预览加缓存，避免重复渲染。
+
+验收：
+
+- 冷启动到窗口可见时间有明确记录。
+- 进入资源库页时可以显示加载状态，不阻塞整个程序。
+- 首次启动和二次启动都可接受。
+
+提交：
+
+```text
+perf: reduce startup blocking work
+```
+
+注意：
+
+- 不要把耗时工作丢到后台后忘记错误处理。后台导入失败仍要写错误记录并给状态提示。
+
+### 15. 检查自启动和退出后托盘保留
+
+目标：确认自启动真的启动，退出后托盘或后台状态符合设置。
+
+要做：
+
+- 诊断信息中显示 Run 项、启动文件夹快捷方式、任务计划命令、托盘 PID、后台 PID、实际进程路径。
+- “立即测试后台启动”根据当前“隐藏任务栏图标”设置启动 `--tray` 或 `--background`，而不是固定后台。
+- 关闭窗口时，若选择保留托盘，则托盘图标必须出现；若隐藏任务栏图标，则不显示托盘但后台进程必须存在。
+- 清理 stale pid，避免旧 pid 文件导致误判。
+
+验收：
+
+- Win10/Win11 重启后，自启动状态和设置页显示一致。
+- 关闭窗口后托盘图标保留；右键退出后进程结束。
+- 隐藏任务栏图标开启后，托盘不显示但后台切换仍工作。
+
+提交：
+
+```text
+fix: verify autostart tray and background modes
+```
+
+注意：
+
+- 这一步必须真机重启测试，单靠代码阅读不够。
+- Windows 安全中心或杀毒软件可能拦截启动项，诊断信息要能帮助定位。
+
+## 建议的最终验收顺序
+
+1. 导入测试：`.cur`、`.ani`、无法预览 `.ani`、`.zip`、`.rar`、`.7z`、`.exe`、文件夹、多 INF 压缩包。
+2. 匹配测试：正常选择、手写、精确选择、位置选择、个人选择、链接选择全部落位正确。
+3. 编辑交互测试：拖拽替换、悬停虚线框、小 X 移回、轻微晃动、动静标识。
+4. 切换测试：时间切换、星期切换、计时顺序、计时随机、当前方案、下次切换、托盘菜单。
+5. 打包测试：开发机、干净 Win10、干净 Win11；无 Python 环境下生成安装包。
+6. 发布测试：Release 资产、README 下载、网页下载、自动更新、哈希一致。
+7. 后台测试：关闭窗口保留托盘、右键退出、开机自启动、隐藏任务栏后台。
+
+## 不建议做的事
+
+- 不要一次把所有 UI 改成新框架。当前 `main.py` 已经有多轮 monkey patch，继续大改会扩大风险。
+- 不要把预览失败当成应用失败。`.ani` 预览和 Windows 鼠标应用是两条链路。
+- 不要只在开发机测试安装包生成。开发机有 `.venv`，无法暴露“打包后找不到 PyInstaller”的真实问题。
+- 不要新增 arm64 Release，除非有真实 arm64 构建和测试环境。
+- 不要让后台轮询频率无限变快。输入法切换可以快，普通计时和星期切换不需要高频占用 CPU。
+
+## 推荐优先级
+
+第一优先级：角色匹配、RAR 导入、`.ani` 预览兜底、安装包生成运行时、自启动和托盘状态。这些最影响“能不能用”。
+
+第二优先级：计时切换重做、当前方案/下次切换实时刷新。这些影响核心体验，但改动面更大，需要在基础稳定后做。
+
+第三优先级：悬停小 X、晃动、动静标识、资源库图标和网页同步。这些能明显提升体验，但不应压过稳定性修复。
+
+
+````
+
+
+kotlin.Unit
+
+==== RestoredMessage #4 ====
+Assistant: 
+
+
+kotlin.Unit
+
+==== RestoredMessage #5 ====
+User: 
+还要改吗
+
+kotlin.Unit
+
+==== RestoredMessage #6 ====
+Assistant: 
+
+
+kotlin.Unit
+
+==== RestoredMessage #7 ====
+User: 
+继续按照文档方案走下去，需要测试的地方再编译好让我测试
+
+kotlin.Unit
+
+==== RestoredMessage #8 ====
+Assistant: 
+
+
+kotlin.Unit
+
+==== RestoredMessage #9 ====
+User: 
+根据意见反思和修改
+Attachments:
+Attachment Name: first-batch-review-notes.md
+Attachments Kind: Visible
+Attachments Source: Other / RestoredChatAttachment
+Attachments Text:
+````markdown
+# 第一批修复验收说明
+
+本轮修改方向是正确的，语法检查已通过，资源库地址、`.ani` 预览兜底、RAR 多后端导入路径都已经进入正确方向。当前还需要补齐 3 个明确点，补完后再进入下一轮验收会更稳。
+
+## 必须修复 1：角色匹配继续收紧
+
+当前 `map_files_to_roles()` 的匹配规则还需要再调整：
+
+- `link.cur` 需要稳定匹配到 `Hand`，不能匹配到 `NWPen`。
+- `hand.cur` 需要匹配到 `Hand`。
+- `pointer_hand.cur` 需要匹配到 `Hand`，不能被 `pointer` 提前匹配到 `Arrow`。
+- 中文文件名如 `手写.cur`、`精确选择.cur`、`位置选择.cur`、`个人选择.cur` 需要命中对应角色。
+
+请把匹配逻辑改成“精确别名优先、短词避免子串误伤、中文关键词补齐”的方式。`hand/link` 归到 `Hand`，`pen/nwpen/手写` 归到 `NWPen`，`cross/精确选择` 归到 `Crosshair`，`pin/位置选择` 归到 `Pin`，`person/个人选择` 归到 `Person`。
+
+建议至少用下面的脚本验证：
+
+```powershell
+@'
+from pathlib import Path
+import main
+
+cases = [
+    "hand.cur",
+    "link.cur",
+    "pointer_hand.cur",
+    "pen.cur",
+    "手写.cur",
+    "cross.cur",
+    "精确选择.cur",
+    "pin.cur",
+    "位置选择.cur",
+    "person.cur",
+    "个人选择.cur",
+]
+
+for name in cases:
+    print(name, "=>", {k: v.name for k, v in main.map_files_to_roles([Path(name)]).items()})
+'@ | .\.venv\Scripts\python.exe -
+```
+
+## 必须修复 2：内置 PyInstaller 运行时需要真正接入
+
+当前 spec 已准备把 `runtime` 带入包体，但 `find_python_with_pyinstaller()` 仍然只查 `.venv` 和系统 PATH。这样在干净机器上仍可能报“找不到包含 PyInstaller 的 Python”。
+
+请让 `find_python_with_pyinstaller()` 优先查找：
+
+```text
+resource_path("runtime/python/Scripts/python.exe")
+resource_path("runtime/python/python.exe")
+```
+
+同时，检测 `import PyInstaller` 的子进程也需要使用 `CREATE_NO_WINDOW`，避免生成安装包或检测运行时时弹黑框。
+
+## 必须修复 3：切换状态文件不要半接入
+
+当前新增了 `switch_state.json` 相关函数，但调度循环没有写入它，`next_switch_text()` 却开始读取它。这会造成“下次切换”显示不准确。
+
+这一轮建议二选一：
+
+- 方案 A：完整接入，在时间、星期、计时切换成功应用后写入状态。
+- 方案 B：先移除本轮新增的 `switch_state.json` 逻辑，等计时切换重做时再统一实现。
+
+为了保持这批修复低耦合，建议先采用方案 B。
+
+## 可以保留的改动
+
+以下改动可以保留，并在修复上述问题后继续验收：
+
+- 在线资源库地址改为 `http://8.135.33.2:5002/`。
+- `.ani` 预览失败时显示占位图。
+- Fluent UI 统一走后端预览链路。
+- RAR 导入改为 7-Zip、WinRAR、rarfile 多后端尝试。
+- `发布测试清单.md` 和 `docs/test-assets.md` 的回归记录。
+
+## 重新验收要求
+
+修复后请重新运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile main.py fluent_ui.py
+```
+
+同时附上角色匹配脚本输出。角色匹配和内置 PyInstaller 查找路径通过后，这一批修复可以进入真实素材回归。
+
+
+````
+
+
+kotlin.Unit
+
+==== RestoredMessage #10 ====
+Assistant: 
+
+
+kotlin.Unit
+
+==== RestoredMessage #11 ====
+User: 
+上一次的验收结果出来了，查看这个修订
+Attachments:
+Attachment Name: second-batch-review-notes.md
+Attachments Kind: Visible
+Attachments Source: Other / RestoredChatAttachment
+Attachments Text:
+````markdown
+# 第二批修复验收说明
+
+本轮已经把“当前配置 / 下次切换”、拖入替换资源、动静标识、计时切换状态等能力推进到了可测试阶段，方向是对的。当前测试中出现了一个阻塞错误，并且动静标识的展示范围需要按产品预期收紧。下面是下一步给程序员的明确修改意见。
+
+## 必须修复 1：先修复 `SchemePage` 崩溃
+
+当前报错：
+
+```text
+'SchemePage' object has no attribute 'scheme_page'
+```
+
+问题位置在 `fluent_ui.py` 的 `SchemePage.loadScheme()` 附近。`SchemePage` 自己就是方案页对象，内部不应该调用 `self.scheme_page.updateRuntimeInfo()`。
+
+请改成直接调用：
+
+```python
+self.updateRuntimeInfo()
+```
+
+并检查同类问题：只有资源库页、切换页、设置页这类“持有方案页引用”的页面才应该使用 `self.scheme_page`；`SchemePage` 类内部统一使用 `self`。
+
+验收要求：
+
+- 打开程序不再出现 `SchemePage object has no attribute scheme_page`。
+- 在方案下拉框切换方案时不报错。
+- 载入方案后右侧“当前配置 / 下次切换”区域正常显示。
+- 手动应用方案后，状态栏和右侧运行状态都能刷新。
+
+## 必须修复 2：动/静标识只按指定位置显示
+
+当前实现把 `动 / 静` 放进了通用 `CursorPreview`，这会导致资源库里每一个图标都显示标识。这个不是目标效果。
+
+目标效果如下：
+
+- 鼠标方案界面：每个鼠标指针图标左上角可以显示 `动 / 静`。
+- 替换鼠标指针资源池：每个资源图标左上角可以显示 `动 / 静`。
+- 资源库界面：不要在每个鼠标图标上显示 `动 / 静`。
+- 资源库界面：只在方案名称旁显示一次汇总标识。
+
+资源库方案名称旁的显示规则：
+
+- 如果该方案包含 `.ani`，显示 `动`。
+- 如果该方案包含 `.cur`，显示 `静`。
+- 如果两种都有，显示 `动` 和 `静` 两个小标识。
+- 如果需要更清楚，可以显示数量，例如 `动 3`、`静 14`。
+- 图片、未知格式、缺失文件暂不参与统计。
+
+推荐实现方式：
+
+- 不要让 `CursorPreview` 默认总是画 badge。
+- 给 `CursorPreview` 增加参数，例如 `showBadge: bool = True`。
+- 鼠标方案页和替换资源池调用 `setPath(..., showBadge=True)`。
+- 资源库预览图调用 `setPath(..., showBadge=False)`。
+- 在资源库卡片标题行单独计算并显示汇总 badge。
+
+资源库汇总可以做一个小函数：
+
+```python
+def cursor_kind_summary(scheme_dir: Path, files: dict[str, str]) -> tuple[int, int]:
+    ani_count = 0
+    cur_count = 0
+    for file_name in files.values():
+        suffix = (scheme_dir / file_name).suffix.lower()
+        if suffix == ".ani":
+            ani_count += 1
+        elif suffix == ".cur":
+            cur_count += 1
+    return ani_count, cur_count
+```
+
+验收要求：
+
+- 鼠标方案页 `.ani` 图标左上角显示 `动`。
+- 鼠标方案页 `.cur` 图标左上角显示 `静`。
+- 替换鼠标指针资源池中的 `.ani / .cur` 显示对应标识。
+- 资源库每个方案卡片的预览小图不再显示 `动 / 静`。
+- 资源库只在方案名称旁显示一次汇总标识。
+
+## 必须修复 3：拖入替换资源只接收资源文件
+
+替换鼠标指针资源池现在支持拖入文件，这是正确方向。这里需要明确边界，避免后续和资源库导入逻辑混在一起。
+
+替换资源池只接收：
+
+```text
+.cur
+.ani
+.png
+.jpg
+.jpeg
+.bmp
+.gif
+.webp
+.ico
+```
+
+如果拖入 `.zip / .rar / .7z / .exe / 文件夹`，不要加入替换资源池，应该提示用户去资源库导入区操作。
+
+验收要求：
+
+- 拖入 `.cur` 后资源池新增该资源。
+- 拖入 `.ani` 后资源池新增该资源。
+- 拖入图片后资源池新增该资源。
+- 拖入压缩包不会进入替换资源池，界面给出清晰提示。
+
+## 继续观察：当前配置和下次切换
+
+本轮新增“当前配置 / 下次切换”是对的，但要在修复崩溃后重新测试。
+
+重新验收时请覆盖：
+
+- 手动应用方案后，“当前配置”刷新为实际方案名。
+- 保存时间切换设置后，“下次切换”刷新。
+- 保存计时切换设置后，“下次切换”显示计时结果。
+- 保存星期切换设置后，“下次切换”显示最近一次星期切换。
+- 自动切换真正触发后，系统鼠标、方案页下拉框、右侧“当前配置”三者一致。
+
+注意：如果 `switch_state.json` 已经正式接入，就必须保证每次自动切换成功后都写入状态。不要只在 UI 保存时写，也不要在应用失败时写。
+
+## 可以保留的改动
+
+以下改动可以保留，修完上面问题后继续测试：
+
+- 右侧新增“当前配置 / 下次切换”状态显示。
+- 自动切换后同步方案页 UI。
+- 计时切换状态文件用于计算下次切换。
+- 替换资源区支持拖入单个资源文件。
+- `.ani / .cur` 标识能力本身保留，但展示位置按本说明收紧。
+- 绿色版 spec 使用 `Tree` 或等效方式带入 `runtime`。
+
+## 本轮不建议继续扩大的范围
+
+下面这些仍按原计划放到后续批次，不要混进这次返工：
+
+- 计时切换 UI 重做。
+- 方案列表 hover、小 X、移回素材池。
+- 托盘和自启动真机验证。
+- 补齐 `runtime/7zip` 实体并做 RAR 真机回归。
+- README 和网页下载链接同步。
+
+## 重新验收命令
+
+修复后请先运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile main.py fluent_ui.py
+```
+
+然后用当前打包产物重新测试：
+
+```text
+dist/鼠标指针配置生成器_绿色程序.exe
+```
+
+这轮验收通过标准很明确：程序不再崩溃；动/静标识只出现在方案页图标、替换资源池图标、资源库方案名旁；资源库预览小图不再逐个显示动静标识。
+
+
+````
+
+
+kotlin.Unit
+
+==== RestoredMessage #12 ====
+Assistant: 
+
+
+kotlin.Unit
+
+==== RestoredMessage #13 ====
+User: 
+查看第二次修订
+Attachments:
+Attachment Name: second-batch-review-notes.md
+Attachments Kind: Visible
+Attachments Source: Other / RestoredChatAttachment
+Attachments Text:
+````markdown
+# 第二批修复验收说明
+
+本轮已经把“当前配置 / 下次切换”、拖入替换资源、动静标识、计时切换状态等能力推进到了可测试阶段，方向是对的。当前测试中出现了一个阻塞错误，并且动静标识的展示范围需要按产品预期收紧。下面是下一步给程序员的明确修改意见。
+
+## 第一批返工复验补充
+
+`first-batch-review-notes.md` 中的 3 个必修项目前基本已经收口：
+
+- 角色匹配已按“精确 token 优先，长词拼接补充命中”调整，`hand/link/pointer_hand`、`pen/手写`、`cross/精确选择`、`pin/位置选择`、`person/个人选择` 的方向正确。
+- `find_python_with_pyinstaller()` 已优先查找 `runtime/python/Scripts/python.exe` 和 `runtime/python/python.exe`，并且检测 `import PyInstaller` 时使用 `CREATE_NO_WINDOW`。
+- `switch_state.json` 的半接入逻辑已经移除，当前 `main.py` 和 `fluent_ui.py` 没有残留引用。
+
+还需要继续保留两个验收边界：
+
+- 源码模式下 `find_python_with_pyinstaller()` 返回 `.venv\Scripts\python.exe` 是预期行为，不算问题；真正要验证的是打包后的 EXE 是否能在无系统 Python 或不依赖 `.venv` 的环境中使用 `runtime/python/Scripts/python.exe` 生成安装包。
+- 角色匹配脚本要继续用 `\u` 形式覆盖中文文件名，避免 PowerShell 控制台编码把中文输入变成 `??` 后造成误判。
+
+建议在下一轮补充这条打包后验证：
+
+```text
+从 dist/鼠标指针配置生成器_绿色程序.exe 启动程序，执行“生成安装包”，确认不会报找不到 PyInstaller，也不会弹黑色控制台窗口。
+```
+
+## 必须修复 1：先修复 `SchemePage` 崩溃
+
+当前报错：
+
+```text
+'SchemePage' object has no attribute 'scheme_page'
+```
+
+问题位置在 `fluent_ui.py` 的 `SchemePage.loadScheme()` 附近。`SchemePage` 自己就是方案页对象，内部不应该调用 `self.scheme_page.updateRuntimeInfo()`。
+
+请改成直接调用：
+
+```python
+self.updateRuntimeInfo()
+```
+
+并检查同类问题：只有资源库页、切换页、设置页这类“持有方案页引用”的页面才应该使用 `self.scheme_page`；`SchemePage` 类内部统一使用 `self`。
+
+验收要求：
+
+- 打开程序不再出现 `SchemePage object has no attribute scheme_page`。
+- 在方案下拉框切换方案时不报错。
+- 载入方案后右侧“当前配置 / 下次切换”区域正常显示。
+- 手动应用方案后，状态栏和右侧运行状态都能刷新。
+
+## 必须修复 2：动/静标识只按指定位置显示
+
+当前实现把 `动 / 静` 放进了通用 `CursorPreview`，这会导致资源库里每一个图标都显示标识。这个不是目标效果。
+
+目标效果如下：
+
+- 鼠标方案界面：每个鼠标指针图标左上角可以显示 `动 / 静`。
+- 替换鼠标指针资源池：每个资源图标左上角可以显示 `动 / 静`。
+- 资源库界面：不要在每个鼠标图标上显示 `动 / 静`。
+- 资源库界面：只在方案名称旁显示一次汇总标识。
+
+资源库方案名称旁的显示规则：
+
+- 如果该方案包含 `.ani`，显示 `动`。
+- 如果该方案包含 `.cur`，显示 `静`。
+- 如果两种都有，显示 `动` 和 `静` 两个小标识。
+- 如果需要更清楚，可以显示数量，例如 `动 3`、`静 14`。
+- 图片、未知格式、缺失文件暂不参与统计。
+
+推荐实现方式：
+
+- 不要让 `CursorPreview` 默认总是画 badge。
+- 给 `CursorPreview` 增加参数，例如 `showBadge: bool = True`。
+- 鼠标方案页和替换资源池调用 `setPath(..., showBadge=True)`。
+- 资源库预览图调用 `setPath(..., showBadge=False)`。
+- 在资源库卡片标题行单独计算并显示汇总 badge。
+
+资源库汇总可以做一个小函数：
+
+```python
+def cursor_kind_summary(scheme_dir: Path, files: dict[str, str]) -> tuple[int, int]:
+    ani_count = 0
+    cur_count = 0
+    for file_name in files.values():
+        suffix = (scheme_dir / file_name).suffix.lower()
+        if suffix == ".ani":
+            ani_count += 1
+        elif suffix == ".cur":
+            cur_count += 1
+    return ani_count, cur_count
+```
+
+验收要求：
+
+- 鼠标方案页 `.ani` 图标左上角显示 `动`。
+- 鼠标方案页 `.cur` 图标左上角显示 `静`。
+- 替换鼠标指针资源池中的 `.ani / .cur` 显示对应标识。
+- 资源库每个方案卡片的预览小图不再显示 `动 / 静`。
+- 资源库只在方案名称旁显示一次汇总标识。
+
+## 必须修复 3：拖入替换资源只接收资源文件
+
+替换鼠标指针资源池现在支持拖入文件，这是正确方向。这里需要明确边界，避免后续和资源库导入逻辑混在一起。
+
+替换资源池只接收：
+
+```text
+.cur
+.ani
+.png
+.jpg
+.jpeg
+.bmp
+.gif
+.webp
+.ico
+```
+
+如果拖入 `.zip / .rar / .7z / .exe / 文件夹`，不要加入替换资源池，应该提示用户去资源库导入区操作。
+
+验收要求：
+
+- 拖入 `.cur` 后资源池新增该资源。
+- 拖入 `.ani` 后资源池新增该资源。
+- 拖入图片后资源池新增该资源。
+- 拖入压缩包不会进入替换资源池，界面给出清晰提示。
+
+## 继续观察：当前配置和下次切换
+
+本轮新增“当前配置 / 下次切换”是对的，但要在修复崩溃后重新测试。
+
+重新验收时请覆盖：
+
+- 手动应用方案后，“当前配置”刷新为实际方案名。
+- 保存时间切换设置后，“下次切换”刷新。
+- 保存计时切换设置后，“下次切换”显示计时结果。
+- 保存星期切换设置后，“下次切换”显示最近一次星期切换。
+- 自动切换真正触发后，系统鼠标、方案页下拉框、右侧“当前配置”三者一致。
+
+注意：如果 `switch_state.json` 已经正式接入，就必须保证每次自动切换成功后都写入状态。不要只在 UI 保存时写，也不要在应用失败时写。
+
+## 可以保留的改动
+
+以下改动可以保留，修完上面问题后继续测试：
+
+- 右侧新增“当前配置 / 下次切换”状态显示。
+- 自动切换后同步方案页 UI。
+- 计时切换状态文件用于计算下次切换。
+- 替换资源区支持拖入单个资源文件。
+- `.ani / .cur` 标识能力本身保留，但展示位置按本说明收紧。
+- 绿色版 spec 使用 `Tree` 或等效方式带入 `runtime`。
+
+## 本轮不建议继续扩大的范围
+
+下面这些仍按原计划放到后续批次，不要混进这次返工：
+
+- 计时切换 UI 重做。
+- 方案列表 hover、小 X、移回素材池。
+- 托盘和自启动真机验证。
+- 补齐 `runtime/7zip` 实体并做 RAR 真机回归。
+- README 和网页下载链接同步。
+
+## 重新验收命令
+
+修复后请先运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile main.py fluent_ui.py
+```
+
+继续保留第一批角色匹配回归：
+
+```powershell
+@'
+from pathlib import Path
+import main
+
+cases = [
+    "hand.cur",
+    "link.cur",
+    "pointer_hand.cur",
+    "pen.cur",
+    "\u624b\u5199.cur",
+    "cross.cur",
+    "\u7cbe\u786e\u9009\u62e9.cur",
+    "pin.cur",
+    "\u4f4d\u7f6e\u9009\u62e9.cur",
+    "person.cur",
+    "\u4e2a\u4eba\u9009\u62e9.cur",
+]
+
+for name in cases:
+    print(name.encode("unicode_escape").decode(), "=>", {k: v.name.encode("unicode_escape").decode() for k, v in main.map_files_to_roles([Path(name)]).items()})
+'@ | .\.venv\Scripts\python.exe -
+```
+
+然后用当前打包产物重新测试：
+
+```text
+dist/鼠标指针配置生成器_绿色程序.exe
+```
+
+这轮验收通过标准很明确：程序不再崩溃；动/静标识只出现在方案页图标、替换资源池图标、资源库方案名旁；资源库预览小图不再逐个显示动静标识。
+
+````
+
+
+kotlin.Unit
+
+==== RestoredMessage #14 ====
+Assistant: 
+
+
+kotlin.Unit
+
+==== RestoredMessage #15 ====
+User: 
+查看第二次修订
+Attachments:
+Attachment Name: second-batch-review-notes.md
+Attachments Kind: Visible
+Attachments Source: Other / RestoredChatAttachment
+Attachments Text:
+````markdown
+# 第二批修复验收说明
+
+本轮已经把“当前配置 / 下次切换”、拖入替换资源、动静标识、计时切换状态等能力推进到了可测试阶段，方向是对的。当前测试中出现了一个阻塞错误，并且动静标识的展示范围需要按产品预期收紧。下面是下一步给程序员的明确修改意见。
+
+## 第一批返工复验补充
+
+`first-batch-review-notes.md` 中的 3 个必修项目前基本已经收口：
+
+- 角色匹配已按“精确 token 优先，长词拼接补充命中”调整，`hand/link/pointer_hand`、`pen/手写`、`cross/精确选择`、`pin/位置选择`、`person/个人选择` 的方向正确。
+- `find_python_with_pyinstaller()` 已优先查找 `runtime/python/Scripts/python.exe` 和 `runtime/python/python.exe`，并且检测 `import PyInstaller` 时使用 `CREATE_NO_WINDOW`。
+- `switch_state.json` 的半接入逻辑已经移除，当前 `main.py` 和 `fluent_ui.py` 没有残留引用。
+
+还需要继续保留两个验收边界：
+
+- 源码模式下 `find_python_with_pyinstaller()` 返回 `.venv\Scripts\python.exe` 是预期行为，不算问题；真正要验证的是打包后的 EXE 是否能在无系统 Python 或不依赖 `.venv` 的环境中使用 `runtime/python/Scripts/python.exe` 生成安装包。
+- 角色匹配脚本要继续用 `\u` 形式覆盖中文文件名，避免 PowerShell 控制台编码把中文输入变成 `??` 后造成误判。
+
+建议在下一轮补充这条打包后验证：
+
+```text
+从 dist/鼠标指针配置生成器_绿色程序.exe 启动程序，执行“生成安装包”，确认不会报找不到 PyInstaller，也不会弹黑色控制台窗口。
+```
+
+## 必须修复 1：先修复 `SchemePage` 崩溃
+
+当前报错：
+
+```text
+'SchemePage' object has no attribute 'scheme_page'
+```
+
+问题位置在 `fluent_ui.py` 的 `SchemePage.loadScheme()` 附近。`SchemePage` 自己就是方案页对象，内部不应该调用 `self.scheme_page.updateRuntimeInfo()`。
+
+请改成直接调用：
+
+```python
+self.updateRuntimeInfo()
+```
+
+并检查同类问题：只有资源库页、切换页、设置页这类“持有方案页引用”的页面才应该使用 `self.scheme_page`；`SchemePage` 类内部统一使用 `self`。
+
+验收要求：
+
+- 打开程序不再出现 `SchemePage object has no attribute scheme_page`。
+- 在方案下拉框切换方案时不报错。
+- 载入方案后右侧“当前配置 / 下次切换”区域正常显示。
+- 手动应用方案后，状态栏和右侧运行状态都能刷新。
+
+## 必须修复 2：动/静标识只按指定位置显示
+
+当前实现把 `动 / 静` 放进了通用 `CursorPreview`，这会导致资源库里每一个图标都显示标识。这个不是目标效果。
+
+目标效果如下：
+
+- 鼠标方案界面：每个鼠标指针图标左上角可以显示 `动 / 静`。
+- 替换鼠标指针资源池：每个资源图标左上角可以显示 `动 / 静`。
+- 资源库界面：不要在每个鼠标图标上显示 `动 / 静`。
+- 资源库界面：只在方案名称旁显示一次汇总标识。
+
+资源库方案名称旁的显示规则：
+
+- 如果该方案包含 `.ani`，显示 `动`。
+- 如果该方案包含 `.cur`，显示 `静`。
+- 如果两种都有，显示 `动` 和 `静` 两个小标识。
+- 如果需要更清楚，可以显示数量，例如 `动 3`、`静 14`。
+- 图片、未知格式、缺失文件暂不参与统计。
+
+推荐实现方式：
+
+- 不要让 `CursorPreview` 默认总是画 badge。
+- 给 `CursorPreview` 增加参数，例如 `showBadge: bool = True`。
+- 鼠标方案页和替换资源池调用 `setPath(..., showBadge=True)`。
+- 资源库预览图调用 `setPath(..., showBadge=False)`。
+- 在资源库卡片标题行单独计算并显示汇总 badge。
+
+资源库汇总可以做一个小函数：
+
+```python
+def cursor_kind_summary(scheme_dir: Path, files: dict[str, str]) -> tuple[int, int]:
+    ani_count = 0
+    cur_count = 0
+    for file_name in files.values():
+        suffix = (scheme_dir / file_name).suffix.lower()
+        if suffix == ".ani":
+            ani_count += 1
+        elif suffix == ".cur":
+            cur_count += 1
+    return ani_count, cur_count
+```
+
+验收要求：
+
+- 鼠标方案页 `.ani` 图标左上角显示 `动`。
+- 鼠标方案页 `.cur` 图标左上角显示 `静`。
+- 替换鼠标指针资源池中的 `.ani / .cur` 显示对应标识。
+- 资源库每个方案卡片的预览小图不再显示 `动 / 静`。
+- 资源库只在方案名称旁显示一次汇总标识。
+
+## 必须修复 3：拖入替换资源只接收资源文件
+
+替换鼠标指针资源池现在支持拖入文件，这是正确方向。这里需要明确边界，避免后续和资源库导入逻辑混在一起。
+
+替换资源池只接收：
+
+```text
+.cur
+.ani
+.png
+.jpg
+.jpeg
+.bmp
+.gif
+.webp
+.ico
+```
+
+如果拖入 `.zip / .rar / .7z / .exe / 文件夹`，不要加入替换资源池，应该提示用户去资源库导入区操作。
+
+验收要求：
+
+- 拖入 `.cur` 后资源池新增该资源。
+- 拖入 `.ani` 后资源池新增该资源。
+- 拖入图片后资源池新增该资源。
+- 拖入压缩包不会进入替换资源池，界面给出清晰提示。
+
+## 继续观察：当前配置和下次切换
+
+本轮新增“当前配置 / 下次切换”是对的，但要在修复崩溃后重新测试。
+
+重新验收时请覆盖：
+
+- 手动应用方案后，“当前配置”刷新为实际方案名。
+- 保存时间切换设置后，“下次切换”刷新。
+- 保存计时切换设置后，“下次切换”显示计时结果。
+- 保存星期切换设置后，“下次切换”显示最近一次星期切换。
+- 自动切换真正触发后，系统鼠标、方案页下拉框、右侧“当前配置”三者一致。
+
+注意：如果 `switch_state.json` 已经正式接入，就必须保证每次自动切换成功后都写入状态。不要只在 UI 保存时写，也不要在应用失败时写。
+
+## 可以保留的改动
+
+以下改动可以保留，修完上面问题后继续测试：
+
+- 右侧新增“当前配置 / 下次切换”状态显示。
+- 自动切换后同步方案页 UI。
+- 计时切换状态文件用于计算下次切换。
+- 替换资源区支持拖入单个资源文件。
+- `.ani / .cur` 标识能力本身保留，但展示位置按本说明收紧。
+- 绿色版 spec 使用 `Tree` 或等效方式带入 `runtime`。
+
+## 本轮不建议继续扩大的范围
+
+下面这些仍按原计划放到后续批次，不要混进这次返工：
+
+- 计时切换 UI 重做。
+- 方案列表 hover、小 X、移回素材池。
+- 托盘和自启动真机验证。
+- 补齐 `runtime/7zip` 实体并做 RAR 真机回归。
+- README 和网页下载链接同步。
+
+## 重新验收命令
+
+修复后请先运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile main.py fluent_ui.py
+```
+
+继续保留第一批角色匹配回归：
+
+```powershell
+@'
+from pathlib import Path
+import main
+
+cases = [
+    "hand.cur",
+    "link.cur",
+    "pointer_hand.cur",
+    "pen.cur",
+    "\u624b\u5199.cur",
+    "cross.cur",
+    "\u7cbe\u786e\u9009\u62e9.cur",
+    "pin.cur",
+    "\u4f4d\u7f6e\u9009\u62e9.cur",
+    "person.cur",
+    "\u4e2a\u4eba\u9009\u62e9.cur",
+]
+
+for name in cases:
+    print(name.encode("unicode_escape").decode(), "=>", {k: v.name.encode("unicode_escape").decode() for k, v in main.map_files_to_roles([Path(name)]).items()})
+'@ | .\.venv\Scripts\python.exe -
+```
+
+然后用当前打包产物重新测试：
+
+```text
+dist/鼠标指针配置生成器_绿色程序.exe
+```
+
+这轮验收通过标准很明确：程序不再崩溃；动/静标识只出现在方案页图标、替换资源池图标、资源库方案名旁；资源库预览小图不再逐个显示动静标识。
+
+````
+
+
+kotlin.Unit
+
+==== RestoredMessage #16 ====
+Assistant: 
+
+
+kotlin.Unit
+
+==== UserMessageImpl #17 ====
+User: 
+查看第二次修订
+Attachments:
+Attachment Name: second-batch-review-notes.md
+Attachments Kind: Visible
+Attachments Source: User / FileChatAttachment
+Attachments Text:
+````markdown
+# 第二批修复验收说明
+
+本轮已经把“当前配置 / 下次切换”、拖入替换资源、动静标识、计时切换状态等能力推进到了可测试阶段，方向是对的。当前测试中出现了一个阻塞错误，并且动静标识的展示范围需要按产品预期收紧。下面是下一步给程序员的明确修改意见。
+
+## 第一批返工复验补充
+
+`first-batch-review-notes.md` 中的 3 个必修项目前基本已经收口：
+
+- 角色匹配已按“精确 token 优先，长词拼接补充命中”调整，`hand/link/pointer_hand`、`pen/手写`、`cross/精确选择`、`pin/位置选择`、`person/个人选择` 的方向正确。
+- `find_python_with_pyinstaller()` 已优先查找 `runtime/python/Scripts/python.exe` 和 `runtime/python/python.exe`，并且检测 `import PyInstaller` 时使用 `CREATE_NO_WINDOW`。
+- `switch_state.json` 的半接入逻辑已经移除，当前 `main.py` 和 `fluent_ui.py` 没有残留引用。
+
+还需要继续保留两个验收边界：
+
+- 源码模式下 `find_python_with_pyinstaller()` 返回 `.venv\Scripts\python.exe` 是预期行为，不算问题；真正要验证的是打包后的 EXE 是否能在无系统 Python 或不依赖 `.venv` 的环境中使用 `runtime/python/Scripts/python.exe` 生成安装包。
+- 角色匹配脚本要继续用 `\u` 形式覆盖中文文件名，避免 PowerShell 控制台编码把中文输入变成 `??` 后造成误判。
+
+建议在下一轮补充这条打包后验证：
+
+```text
+从 dist/鼠标指针配置生成器_绿色程序.exe 启动程序，执行“生成安装包”，确认不会报找不到 PyInstaller，也不会弹黑色控制台窗口。
+```
+
+## 必须修复 1：先修复 `SchemePage` 崩溃
+
+当前报错：
+
+```text
+'SchemePage' object has no attribute 'scheme_page'
+```
+
+问题位置在 `fluent_ui.py` 的 `SchemePage.loadScheme()` 附近。`SchemePage` 自己就是方案页对象，内部不应该调用 `self.scheme_page.updateRuntimeInfo()`。
+
+请改成直接调用：
+
+```python
+self.updateRuntimeInfo()
+```
+
+并检查同类问题：只有资源库页、切换页、设置页这类“持有方案页引用”的页面才应该使用 `self.scheme_page`；`SchemePage` 类内部统一使用 `self`。
+
+验收要求：
+
+- 打开程序不再出现 `SchemePage object has no attribute scheme_page`。
+- 在方案下拉框切换方案时不报错。
+- 载入方案后右侧“当前配置 / 下次切换”区域正常显示。
+- 手动应用方案后，状态栏和右侧运行状态都能刷新。
+
+## 必须修复 2：动/静标识只按指定位置显示
+
+当前实现把 `动 / 静` 放进了通用 `CursorPreview`，这会导致资源库里每一个图标都显示标识。这个不是目标效果。
+
+目标效果如下：
+
+- 鼠标方案界面：每个鼠标指针图标左上角可以显示 `动 / 静`。
+- 替换鼠标指针资源池：每个资源图标左上角可以显示 `动 / 静`。
+- 资源库界面：不要在每个鼠标图标上显示 `动 / 静`。
+- 资源库界面：只在方案名称旁显示一次汇总标识。
+
+资源库方案名称旁的显示规则：
+
+- 如果该方案包含 `.ani`，显示 `动`。
+- 如果该方案包含 `.cur`，显示 `静`。
+- 如果两种都有，显示 `动` 和 `静` 两个小标识。
+- 如果需要更清楚，可以显示数量，例如 `动 3`、`静 14`。
+- 图片、未知格式、缺失文件暂不参与统计。
+
+推荐实现方式：
+
+- 不要让 `CursorPreview` 默认总是画 badge。
+- 给 `CursorPreview` 增加参数，例如 `showBadge: bool = True`。
+- 鼠标方案页和替换资源池调用 `setPath(..., showBadge=True)`。
+- 资源库预览图调用 `setPath(..., showBadge=False)`。
+- 在资源库卡片标题行单独计算并显示汇总 badge。
+
+资源库汇总可以做一个小函数：
+
+```python
+def cursor_kind_summary(scheme_dir: Path, files: dict[str, str]) -> tuple[int, int]:
+    ani_count = 0
+    cur_count = 0
+    for file_name in files.values():
+        suffix = (scheme_dir / file_name).suffix.lower()
+        if suffix == ".ani":
+            ani_count += 1
+        elif suffix == ".cur":
+            cur_count += 1
+    return ani_count, cur_count
+```
+
+验收要求：
+
+- 鼠标方案页 `.ani` 图标左上角显示 `动`。
+- 鼠标方案页 `.cur` 图标左上角显示 `静`。
+- 替换鼠标指针资源池中的 `.ani / .cur` 显示对应标识。
+- 资源库每个方案卡片的预览小图不再显示 `动 / 静`。
+- 资源库只在方案名称旁显示一次汇总标识。
+
+## 必须修复 3：拖入替换资源只接收资源文件
+
+替换鼠标指针资源池现在支持拖入文件，这是正确方向。这里需要明确边界，避免后续和资源库导入逻辑混在一起。
+
+替换资源池只接收：
+
+```text
+.cur
+.ani
+.png
+.jpg
+.jpeg
+.bmp
+.gif
+.webp
+.ico
+```
+
+如果拖入 `.zip / .rar / .7z / .exe / 文件夹`，不要加入替换资源池，应该提示用户去资源库导入区操作。
+
+验收要求：
+
+- 拖入 `.cur` 后资源池新增该资源。
+- 拖入 `.ani` 后资源池新增该资源。
+- 拖入图片后资源池新增该资源。
+- 拖入压缩包不会进入替换资源池，界面给出清晰提示。
+
+## 继续观察：当前配置和下次切换
+
+本轮新增“当前配置 / 下次切换”是对的，但要在修复崩溃后重新测试。
+
+重新验收时请覆盖：
+
+- 手动应用方案后，“当前配置”刷新为实际方案名。
+- 保存时间切换设置后，“下次切换”刷新。
+- 保存计时切换设置后，“下次切换”显示计时结果。
+- 保存星期切换设置后，“下次切换”显示最近一次星期切换。
+- 自动切换真正触发后，系统鼠标、方案页下拉框、右侧“当前配置”三者一致。
+
+注意：如果 `switch_state.json` 已经正式接入，就必须保证每次自动切换成功后都写入状态。不要只在 UI 保存时写，也不要在应用失败时写。
+
+## 可以保留的改动
+
+以下改动可以保留，修完上面问题后继续测试：
+
+- 右侧新增“当前配置 / 下次切换”状态显示。
+- 自动切换后同步方案页 UI。
+- 计时切换状态文件用于计算下次切换。
+- 替换资源区支持拖入单个资源文件。
+- `.ani / .cur` 标识能力本身保留，但展示位置按本说明收紧。
+- 绿色版 spec 使用 `Tree` 或等效方式带入 `runtime`。
+
+## 本轮不建议继续扩大的范围
+
+下面这些仍按原计划放到后续批次，不要混进这次返工：
+
+- 计时切换 UI 重做。
+- 方案列表 hover、小 X、移回素材池。
+- 托盘和自启动真机验证。
+- 补齐 `runtime/7zip` 实体并做 RAR 真机回归。
+- README 和网页下载链接同步。
+
+## 重新验收命令
+
+修复后请先运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile main.py fluent_ui.py
+```
+
+继续保留第一批角色匹配回归：
+
+```powershell
+@'
+from pathlib import Path
+import main
+
+cases = [
+    "hand.cur",
+    "link.cur",
+    "pointer_hand.cur",
+    "pen.cur",
+    "\u624b\u5199.cur",
+    "cross.cur",
+    "\u7cbe\u786e\u9009\u62e9.cur",
+    "pin.cur",
+    "\u4f4d\u7f6e\u9009\u62e9.cur",
+    "person.cur",
+    "\u4e2a\u4eba\u9009\u62e9.cur",
+]
+
+for name in cases:
+    print(name.encode("unicode_escape").decode(), "=>", {k: v.name.encode("unicode_escape").decode() for k, v in main.map_files_to_roles([Path(name)]).items()})
+'@ | .\.venv\Scripts\python.exe -
+```
+
+然后用当前打包产物重新测试：
+
+```text
+dist/鼠标指针配置生成器_绿色程序.exe
+```
+
+这轮验收通过标准很明确：程序不再崩溃；动/静标识只出现在方案页图标、替换资源池图标、资源库方案名旁；资源库预览小图不再逐个显示动静标识。
+
+````
+
+
+kotlin.Unit
+
+==== AgentMessage #18 ====
+Assistant: 
+
+
+Tool use list:
+
+
+kotlin.Unit
+

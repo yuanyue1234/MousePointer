@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import random
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 try:
     import pystray
@@ -56,7 +56,7 @@ ERROR_LOG_KEEP_DAYS = 30
 DEFAULT_CURSOR_SIZE = 64
 DEFAULT_PREVIEW_SIZE_LEVEL = 3
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RESOURCE_URL = "https://zhutix.com/tag/cursors/"
+RESOURCE_URL = "http://8.135.33.2:5002/"
 APP_NAME = "鼠标指针配置管理器"
 SOFTWARE_MISSION = "让新手小白也能用，让鼠标指针制作者能方便编辑和生成。"
 AUTO_START_VALUE = APP_NAME
@@ -560,6 +560,44 @@ def centered_rgba(image: Image.Image, size: int) -> Image.Image:
     return canvas
 
 
+def _cursor_name_parts(path: Path) -> tuple[set[str], str]:
+    stem = path.stem.lower()
+    tokens = {token for token in re.split(r"[^a-z0-9\u4e00-\u9fff]+", stem) if token}
+    compact = "".join(tokens)
+    return tokens, compact
+
+
+def _cursor_name_matches(path: Path, keywords: list[str]) -> bool:
+    tokens, compact = _cursor_name_parts(path)
+    for keyword in keywords:
+        normalized = "".join(re.split(r"[^a-z0-9\u4e00-\u9fff]+", keyword.lower()))
+        if not normalized:
+            continue
+        if normalized in tokens or normalized == compact:
+            return True
+        if len(normalized) >= 4 and normalized in compact:
+            return True
+    return False
+
+
+def preview_placeholder_image(path: Path, box: tuple[int, int], animated: bool = False) -> Image.Image:
+    width, height = box
+    image = Image.new("RGBA", box, (248, 250, 252, 255))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((6, 6, width - 6, height - 6), radius=12, outline=(203, 213, 225, 255), width=2, fill=(255, 255, 255, 255))
+    draw.rounded_rectangle((14, 14, min(width - 14, 88), 42), radius=10, fill=(37, 99, 235, 230) if animated else (71, 85, 105, 230))
+    font = ImageFont.load_default()
+    badge = "ANI" if animated else (path.suffix.lstrip(".").upper() or "FILE")
+    draw.text((24, 23), badge, fill=(255, 255, 255, 255), font=font, anchor="lm")
+    name = path.stem.strip() or path.name
+    if len(name) > 20:
+        name = f"{name[:17]}..."
+    draw.text((width // 2, max(56, height // 2)), name, fill=(15, 23, 42, 255), font=font, anchor="mm")
+    tip = "animated cursor preview unavailable" if animated else "preview unavailable"
+    draw.text((width // 2, min(height - 22, max(76, height // 2 + 20))), tip, fill=(100, 116, 139, 255), font=font, anchor="mm")
+    return image
+
+
 def hotspot_for(role: CursorRole, size: int) -> tuple[int, int]:
     x = int(round(role.hotspot_ratio[0] * (size - 1)))
     y = int(round(role.hotspot_ratio[1] * (size - 1)))
@@ -830,9 +868,12 @@ if __name__ == "__main__":
 
 
 def find_python_with_pyinstaller() -> str:
+    creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     if not IS_FROZEN:
         return sys.executable
     candidates = [
+        resource_path("runtime/python/Scripts/python.exe"),
+        resource_path("runtime/python/python.exe"),
         APP_DIR.parent / ".venv" / "Scripts" / "python.exe",
         APP_DIR / ".venv" / "Scripts" / "python.exe",
         shutil.which("python"),
@@ -844,7 +885,13 @@ def find_python_with_pyinstaller() -> str:
         path = Path(candidate)
         if not path.exists():
             continue
-        result = subprocess.run([str(path), "-c", "import PyInstaller"], text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            [str(path), "-c", "import PyInstaller"],
+            text=True,
+            capture_output=True,
+            check=False,
+            creationflags=creationflags,
+        )
         if result.returncode == 0:
             return str(path)
     raise RuntimeError("找不到包含 PyInstaller 的 Python。请先运行 requirements.txt 安装依赖。")
@@ -864,6 +911,44 @@ def find_winrar() -> Path | None:
     return None
 
 
+def find_bundled_7zip() -> Path | None:
+    for relative in ("runtime/7zip/7z.exe", "runtime/7zip/7za.exe"):
+        candidate = resource_path(relative)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def run_archive_tool(command: list[str]) -> subprocess.CompletedProcess:
+    creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    return subprocess.run(command, text=True, capture_output=True, check=False, creationflags=creationflags)
+
+
+def extract_rar_with_7zip(source: Path, target: Path, executable: Path) -> None:
+    result = run_archive_tool([str(executable), "x", "-y", f"-o{target}", str(source)])
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or f"7-Zip exit code {result.returncode}"
+        raise RuntimeError(detail)
+
+
+def extract_rar_with_winrar(source: Path, target: Path, executable: Path) -> None:
+    result = run_archive_tool([str(executable), "x", "-ibck", "-inul", "-y", str(source), f"{target}\\"])
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or f"WinRAR exit code {result.returncode}"
+        raise RuntimeError(detail)
+
+
+def classify_rar_error(messages: list[str]) -> str:
+    joined = " | ".join(message for message in messages if message).lower()
+    if any(flag in joined for flag in ("password", "encrypted", "crypt", "加密", "密码")):
+        return "暂不支持导入加密的 RAR 压缩包。"
+    if any(flag in joined for flag in ("not found", "cannot execute", "no such file", "unrar", "7-zip", "winrar")):
+        return "无法导入 RAR：缺少可用的解压运行时，请安装 WinRAR/7-Zip 或在打包时附带 runtime/7zip。"
+    if joined:
+        return f"无法导入 RAR：{messages[0]}"
+    return "无法导入 RAR：没有可用的解压方式。"
+
+
 def parse_drop_paths(data: str, tk_root: Tk) -> list[Path]:
     return [Path(item) for item in tk_root.tk.splitlist(data)]
 
@@ -881,7 +966,10 @@ def cursor_preview_image_sized(path: Path, box: tuple[int, int] = (180, 140), cu
             bg = Image.new("RGBA", box, (248, 250, 252, 255))
             bg.alpha_composite(rendered, ((box[0] - rendered.width) // 2, (box[1] - rendered.height) // 2))
             return bg
-    image = centered_rgba(image_from_path(path), cursor_size or max(16, min(box) - margin * 2))
+    try:
+        image = centered_rgba(image_from_path(path), cursor_size or max(16, min(box) - margin * 2))
+    except Exception:
+        return preview_placeholder_image(path, box, animated=path.suffix.lower() == ".ani")
     bg = Image.new("RGBA", box, (248, 250, 252, 255))
     bg.alpha_composite(image, ((box[0] - image.width) // 2, (box[1] - image.height) // 2))
     return bg
@@ -940,40 +1028,38 @@ def render_cursor_with_windows(path: Path, size: int) -> Image.Image | None:
 
 def map_files_to_roles(files: list[Path]) -> dict[str, Path]:
     mapping: dict[str, Path] = {}
-    names = [(p, p.name.lower()) for p in files if p.suffix.lower() in {".cur", ".ani"}]
+    candidates = [p for p in files if p.suffix.lower() in {".cur", ".ani"}]
     rules = [
-        ("Arrow", ["normal", "arrow", "select", "选中", "选择", "鼠鼠0"]),
-        ("Help", ["help", "question", "问号", "疑问"]),
-        ("AppStarting", ["working", "app", "后台", "等不及"]),
-        ("Wait", ["busy", "wait", "等待"]),
-        ("Crosshair", ["cross", "十字"]),
-        ("IBeam", ["beam", "text", "打字"]),
-        ("NWPen", ["pen", "铅笔"]),
-        ("No", ["no", "unavailable", "禁止"]),
-        ("SizeNS", ["sizens", "vert", "上下"]),
-        ("SizeWE", ["sizewe", "horiz", "左右"]),
-        ("SizeNWSE", ["nwse", "斜1"]),
-        ("SizeNESW", ["nesw", "斜2"]),
-        ("SizeAll", ["all", "move", "移动"]),
-        ("UpArrow", ["up", "向上", "alternate"]),
-        ("Hand", ["hand", "link", "手指"]),
+        ("Hand", ["hand", "link", "pointer_hand", "pointerhand", "pointing_hand", "pointinghand", "手指", "链接", "链接选择"]),
+        ("NWPen", ["pen", "nwpen", "handwriting", "ink", "hand_write", "手写"]),
+        ("Crosshair", ["cross", "crosshair", "precision", "precise", "precision_select", "precisionselect", "十字", "精确选择"]),
+        ("Pin", ["pin", "location", "locate", "position", "geo", "地图", "位置", "位置选择"]),
+        ("Person", ["person", "people", "user", "contact", "individual", "个人", "个人选择"]),
+        ("Arrow", ["arrow", "normal", "default", "left_ptr", "leftptr", "pointer_default", "正常选择"]),
+        ("Help", ["help", "question", "help_select", "helpsel", "帮助选择"]),
+        ("AppStarting", ["appstarting", "app_starting", "working", "starting", "后台运行"]),
+        ("Wait", ["busy", "wait", "waiting", "忙", "等待"]),
+        ("IBeam", ["beam", "ibeam", "text", "text_select", "textselect", "文本", "文本选择"]),
+        ("No", ["no", "unavailable", "forbidden", "blocked", "禁用", "不可用"]),
+        ("SizeNS", ["sizens", "size_ns", "vert", "vertical", "上下"]),
+        ("SizeWE", ["sizewe", "size_we", "horiz", "horizontal", "左右"]),
+        ("SizeNWSE", ["nwse", "size_nwse"]),
+        ("SizeNESW", ["nesw", "size_nesw"]),
+        ("SizeAll", ["all", "move", "sizeall", "move_cursor", "移动"]),
+        ("UpArrow", ["up", "uparrow", "alternate", "up_arrow", "向上"]),
     ]
     for reg, keys in rules:
-        for path, name in names:
+        for path in candidates:
             if path in mapping.values():
                 continue
-            if any(key in name for key in keys):
+            if _cursor_name_matches(path, keys):
                 mapping[reg] = path
                 break
-    numbered = {p.stem: p for p, name in names if p.stem.isdigit()}
-    number_roles = [
-        "Arrow", "Help", "AppStarting", "Wait", "Crosshair", "IBeam", "NWPen", "No",
-        "SizeNS", "SizeWE", "SizeNWSE", "SizeNESW", "SizeAll", "UpArrow", "Hand",
-    ]
-    for index, reg in enumerate(number_roles, start=1):
+    numbered = {p.stem: p for p in candidates if p.stem.isdigit()}
+    for index, role in enumerate(CURSOR_ROLES, start=1):
         key = f"{index:02d}"
-        if reg not in mapping and key in numbered:
-            mapping[reg] = numbered[key]
+        if role.reg_name not in mapping and key in numbered:
+            mapping[role.reg_name] = numbered[key]
     return mapping
 
 
@@ -994,18 +1080,31 @@ def parse_inf_mapping(root: Path) -> dict[str, Path]:
     mapping: dict[str, Path] = {}
     by_name = {p.name.lower(): p for p in files}
     alias_to_reg = {
-        "pointer": "Arrow",
         "arrow": "Arrow",
+        "normal": "Arrow",
+        "default": "Arrow",
+        "left_ptr": "Arrow",
         "help": "Help",
+        "helpsel": "Help",
         "work": "AppStarting",
         "appstarting": "AppStarting",
+        "app_starting": "AppStarting",
         "busy": "Wait",
         "wait": "Wait",
         "cross": "Crosshair",
+        "crosshair": "Crosshair",
+        "precision": "Crosshair",
         "text": "IBeam",
         "ibeam": "IBeam",
-        "hand": "NWPen",
+        "beam": "IBeam",
+        "hand": "Hand",
+        "link": "Hand",
+        "pointerhand": "Hand",
+        "pointer_hand": "Hand",
         "pen": "NWPen",
+        "nwpen": "NWPen",
+        "handwriting": "NWPen",
+        "ink": "NWPen",
         "unavailable": "No",
         "unavailiable": "No",
         "no": "No",
@@ -1019,7 +1118,11 @@ def parse_inf_mapping(root: Path) -> dict[str, Path]:
         "move": "SizeAll",
         "alternate": "UpArrow",
         "up": "UpArrow",
-        "link": "Hand",
+        "pin": "Pin",
+        "location": "Pin",
+        "position": "Pin",
+        "person": "Person",
+        "user": "Person",
     }
     for alias, reg in alias_to_reg.items():
         match = re.search(rf"^\s*{re.escape(alias)}\s*=\s*\"?([^\"\r\n]+)\"?", text, re.I | re.M)
@@ -1060,13 +1163,29 @@ def extract_import_package(source: Path) -> Path:
             archive.extractall(target)
         return target
     if source.suffix.lower() == ".rar":
+        errors: list[str] = []
+        bundled_7zip = find_bundled_7zip()
+        if bundled_7zip:
+            try:
+                extract_rar_with_7zip(source, target, bundled_7zip)
+                return target
+            except Exception as exc:
+                errors.append(f"7-Zip: {exc}")
+        winrar = find_winrar()
+        if winrar:
+            try:
+                extract_rar_with_winrar(source, target, winrar)
+                return target
+            except Exception as exc:
+                errors.append(f"WinRAR: {exc}")
         try:
             import rarfile
             with rarfile.RarFile(source) as archive:
                 archive.extractall(target)
             return target
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"rarfile: {exc}")
+        raise RuntimeError(classify_rar_error(errors))
     if source.suffix.lower() == ".exe":
         if extract_pyinstaller_assets(source, target):
             return target
