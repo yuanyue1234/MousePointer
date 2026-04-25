@@ -679,6 +679,92 @@ class HotspotDialog(QDialog):
         self.valueText.setText(f"焦点：X {x:.2f} / Y {y:.2f}")
 
 
+class CursorPreviewWindow(QDialog):
+    def __init__(self, backend, path: Path, parent=None):
+        super().__init__(parent)
+        self.backend = backend
+        self.path = path
+        self.frames: list[QPixmap] = []
+        self.frameIndex = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.nextFrame)
+        self.setWindowTitle(f"{backend.APP_NAME} - 光标预览")
+        self.setMinimumSize(520, 420)
+        app_command = [str(Path(sys.executable).resolve())] if backend.IS_FROZEN else [str(Path(sys.executable).resolve()), str(backend.APP_DIR / "main.py")]
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title = StrongBodyLabel(path.name if path.name else "未选择文件")
+        subtitle = CaptionLabel(str(path) if path else "")
+        subtitle.setWordWrap(True)
+        subtitle.setTextColor("#64748b", "#94a3b8")
+        self.kind = CaptionLabel("")
+        self.kind.setTextColor("#2563eb", "#60a5fa")
+        self.preview = QLabel()
+        self.preview.setFixedHeight(220)
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setStyleSheet("background: #f8fbff; border: 1px solid #dbeafe; border-radius: 12px;")
+        self.message = CaptionLabel("")
+        self.message.setWordWrap(True)
+        self.message.setTextColor("#475569", "#cbd5e1")
+
+        actions = QHBoxLayout()
+        open_main = PrimaryPushButton("打开完整软件")
+        open_main.clicked.connect(lambda: backend.start_detached_process(app_command))
+        copy_path = PushButton("复制路径")
+        copy_path.clicked.connect(lambda: QApplication.clipboard().setText(str(path)))
+        close_button = PushButton("关闭")
+        close_button.clicked.connect(self.close)
+        actions.addWidget(open_main)
+        actions.addWidget(copy_path)
+        actions.addStretch(1)
+        actions.addWidget(close_button)
+
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addWidget(self.kind)
+        layout.addWidget(self.preview)
+        layout.addWidget(self.message)
+        layout.addLayout(actions)
+        self.loadPreview()
+
+    def loadPreview(self) -> None:
+        path = self.path
+        if not path or not path.exists():
+            self.kind.setText("文件不存在")
+            self.message.setText("指定的鼠标文件不存在，无法预览。")
+            return
+        badge = cursor_kind_badge(path)
+        self.kind.setText(f"类型：{path.suffix.lower()}  {'动' if badge == '动' else '静' if badge == '静' else ''}".strip())
+        try:
+            if path.suffix.lower() == ".ani":
+                frame_paths = self.backend.ani_frame_paths(path)[:36]
+                if frame_paths:
+                    self.frames = [pixmap_from_image(self.backend.cursor_preview_image_sized(frame, (200, 200), 128), 200) for frame in frame_paths]
+                else:
+                    self.frames = [pixmap_from_image(self.backend.cursor_preview_image_sized(path, (200, 200), 128), 200)]
+            else:
+                self.frames = [pixmap_from_image(self.backend.cursor_preview_image_sized(path, (200, 200), 128), 200)]
+            if not self.frames:
+                raise RuntimeError("没有生成可用预览。")
+            self.preview.setPixmap(self.frames[0])
+            if len(self.frames) > 1:
+                self.timer.start(90)
+            self.message.setText("双击文件时可直接进入这个轻量预览窗口，不会打开完整主界面。")
+        except Exception as exc:
+            self.backend.log_error("光标轻量预览失败", exc)
+            self.preview.setText("预览失败")
+            self.message.setText(f"无法预览该文件：{exc}")
+
+    def nextFrame(self) -> None:
+        if not self.frames:
+            return
+        self.preview.setPixmap(self.frames[self.frameIndex % len(self.frames)])
+        self.frameIndex += 1
+
+
 class CursorRow(QWidget):
     hovered = Signal(str)
     picked = Signal(str)
@@ -2920,6 +3006,16 @@ class SettingsPage(QWidget):
         hide_tip.setWordWrap(True)
         hide_tip.setTextColor("#64748b", "#94a3b8")
 
+        assoc_row = QHBoxLayout()
+        assoc_row.addWidget(StrongBodyLabel("关联 .cur / .ani 打开方式"))
+        self.fileAssociation = SwitchButton()
+        self.fileAssociation.setChecked(self.backend.file_association_enabled())
+        assoc_row.addWidget(self.fileAssociation)
+        assoc_row.addStretch(1)
+        assoc_tip = CaptionLabel("开启后双击 .cur / .ani 会进入轻量预览窗口，而不是完整主界面。")
+        assoc_tip.setWordWrap(True)
+        assoc_tip.setTextColor("#64748b", "#94a3b8")
+
         english_row = QHBoxLayout()
         english_row.addWidget(StrongBodyLabel("语言：英文"))
         self.englishSwitch = SwitchButton()
@@ -2930,6 +3026,8 @@ class SettingsPage(QWidget):
         switch_layout.addWidget(self.autostartStatus)
         switch_layout.addLayout(hide_row)
         switch_layout.addWidget(hide_tip)
+        switch_layout.addLayout(assoc_row)
+        switch_layout.addWidget(assoc_tip)
         switch_layout.addLayout(english_row)
 
         save = PrimaryPushButton("保存设置")
@@ -3011,8 +3109,10 @@ class SettingsPage(QWidget):
             data["storage_root"] = str(Path(self.storage.text()).resolve())
             data["hide_taskbar_icon"] = "1" if self.hideTaskbarIcon.isChecked() else "0"
             data["english_enabled"] = "true" if self.englishSwitch.isChecked() else "false"
+            data[self.backend.CURSOR_FILE_ASSOCIATION_KEY] = "1" if self.fileAssociation.isChecked() else "0"
             data.pop("close_tip_enabled", None)
             self.backend.save_settings(data)
+            self.backend.apply_cursor_file_association_setting(self.fileAssociation.isChecked())
             self.backend.set_auto_start(self.autostart.isChecked())
             if hasattr(self.window(), "applyLanguage"):
                 self.window().applyLanguage()
@@ -3543,8 +3643,20 @@ def run_tray_app(backend) -> None:
     app.exec()
 
 
+def run_cursor_preview_app(backend, path: Path) -> None:
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    app = QApplication.instance() or QApplication(sys.argv)
+    backend.startup_timing_mark("startup.preview_qt_ready")
+    window = CursorPreviewWindow(backend, path)
+    window.show()
+    backend.startup_timing_mark("startup.preview_first_window_visible")
+    backend.startup_timing_flush()
+    app.exec()
+
+
 def run_app(backend, start_hidden: bool = False) -> None:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    backend.startup_timing_mark("startup.qt_ready")
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     lock = backend.acquire_gui_lock()
@@ -3552,6 +3664,7 @@ def run_app(backend, start_hidden: bool = False) -> None:
         backend.notify_existing_gui("show")
         return
     window = MousePointerFluentWindow(backend, start_hidden=start_hidden)
+    backend.startup_timing_mark("startup.build_ui")
     bridge = GuiCommandBridge()
     window.commandBridge = bridge
     bridge.showRequested.connect(window.openFromTray)
@@ -3573,5 +3686,7 @@ def run_app(backend, start_hidden: bool = False) -> None:
     else:
         window.centerOnScreen()
         window.show()
+        backend.startup_timing_mark("startup.first_window_visible")
+        backend.startup_timing_flush()
         QTimer.singleShot(600, window.askDesktopShortcutOnFirstLaunch)
     app.exec()

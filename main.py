@@ -72,6 +72,10 @@ PORTABLE_EXE_NAME = "鼠标指针配置生成器_绿色程序.exe"
 INSTALLER_EXE_NAME = "鼠标指针配置生成器_安装程序.exe"
 PORTABLE_RELEASE_ASSET_NAME = "MousePointer_Portable.exe"
 INSTALLER_RELEASE_ASSET_NAME = "MousePointer_Installer.exe"
+CURSOR_FILE_ASSOCIATION_KEY = "cursor_file_association_enabled"
+CUR_FILE_PROG_ID = "MousePointer.CursorFile"
+ANI_FILE_PROG_ID = "MousePointer.AnimatedCursorFile"
+_STARTUP_TIMING: dict[str, float] = {}
 
 
 @dataclass(frozen=True)
@@ -161,6 +165,30 @@ def log_error(title: str, exc: BaseException | str) -> None:
         detail = str(exc)
     with ERROR_LOG.open("a", encoding="utf-8") as handle:
         handle.write(f"\n## {datetime.now():%Y-%m-%d %H:%M:%S} {title}\n\n```text\n{detail}\n```\n")
+
+
+def startup_timing_reset() -> None:
+    _STARTUP_TIMING.clear()
+    _STARTUP_TIMING["_start"] = time.perf_counter()
+
+
+def startup_timing_mark(name: str) -> None:
+    if "_start" not in _STARTUP_TIMING:
+        startup_timing_reset()
+    _STARTUP_TIMING[name] = time.perf_counter() - _STARTUP_TIMING["_start"]
+
+
+def startup_timing_flush() -> None:
+    if "_start" not in _STARTUP_TIMING:
+        return
+    startup_timing_mark("startup.total")
+    ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+    rotate_error_log()
+    with ERROR_LOG.open("a", encoding="utf-8") as handle:
+        handle.write(f"\n## {datetime.now():%Y-%m-%d %H:%M:%S} startup.diagnostics\n\n```text\n")
+        for key, value in sorted(((k, v) for k, v in _STARTUP_TIMING.items() if k != "_start"), key=lambda item: item[1]):
+            handle.write(f"{key}={value:.3f}s\n")
+        handle.write("```\n")
 
 
 def resource_path(relative: str) -> Path:
@@ -285,6 +313,10 @@ def setting_enabled(key: str, default: bool = False) -> bool:
     return value in {"1", "true", "yes", "on", "是", "开启"}
 
 
+def file_association_enabled() -> bool:
+    return setting_enabled(CURSOR_FILE_ASSOCIATION_KEY, default=True)
+
+
 def english_ui_enabled() -> bool:
     return setting_enabled("english_enabled", False)
 
@@ -366,6 +398,107 @@ def configured_output_root() -> Path:
 
 def configured_github_url() -> str:
     return load_settings().get("github_url", DEFAULT_GITHUB_URL).strip()
+
+
+def preview_cursor_command(exe_path: Path | None = None) -> str:
+    target = exe_path or Path(sys.executable if IS_FROZEN else Path(__file__).resolve())
+    return subprocess.list2cmdline([str(target), "--preview-cursor", "%1"])
+
+
+def _classes_key(path: str, access: int = winreg.KEY_READ):
+    return winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, f"Software\\Classes\\{path}", 0, access)
+
+
+def read_hkcu_class_value(path: str, value_name: str = "") -> str:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, f"Software\\Classes\\{path}", 0, winreg.KEY_READ) as key:
+            value, _kind = winreg.QueryValueEx(key, value_name)
+            return str(value)
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return ""
+
+
+def write_hkcu_class_value(path: str, value: str, value_name: str = "") -> None:
+    with _classes_key(path, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, value)
+
+
+def delete_hkcu_class_tree(path: str) -> None:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, f"Software\\Classes\\{path}", 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
+            while True:
+                try:
+                    child = winreg.EnumKey(key, 0)
+                except OSError:
+                    break
+                delete_hkcu_class_tree(f"{path}\\{child}")
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, f"Software\\Classes\\{path}")
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _restore_extension_association(ext: str, prog_id: str, backup_key: str) -> None:
+    current = read_hkcu_class_value(ext)
+    saved = load_settings().get(backup_key, "")
+    if current == prog_id:
+        if saved:
+            write_hkcu_class_value(ext, saved)
+        else:
+            delete_hkcu_class_tree(ext)
+
+
+def register_cursor_file_associations(exe_path: Path | None = None) -> None:
+    command = preview_cursor_command(exe_path)
+    data = load_settings()
+    for ext, prog_id, label, backup_key in (
+        (".cur", CUR_FILE_PROG_ID, "Mouse Pointer Cursor File", "file_assoc_backup_cur"),
+        (".ani", ANI_FILE_PROG_ID, "Mouse Pointer Animated Cursor File", "file_assoc_backup_ani"),
+    ):
+        current = read_hkcu_class_value(ext)
+        if current != prog_id and backup_key not in data:
+            data[backup_key] = current
+        write_hkcu_class_value(ext, prog_id)
+        write_hkcu_class_value(prog_id, label)
+        write_hkcu_class_value(f"{prog_id}\\DefaultIcon", f"{Path(exe_path or sys.executable).resolve()},0")
+        write_hkcu_class_value(f"{prog_id}\\shell\\open\\command", command)
+    data[CURSOR_FILE_ASSOCIATION_KEY] = "1"
+    save_settings(data)
+    try:
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+    except Exception:
+        pass
+
+
+def unregister_cursor_file_associations() -> None:
+    _restore_extension_association(".cur", CUR_FILE_PROG_ID, "file_assoc_backup_cur")
+    _restore_extension_association(".ani", ANI_FILE_PROG_ID, "file_assoc_backup_ani")
+    delete_hkcu_class_tree(CUR_FILE_PROG_ID)
+    delete_hkcu_class_tree(ANI_FILE_PROG_ID)
+    data = load_settings()
+    data[CURSOR_FILE_ASSOCIATION_KEY] = "0"
+    data.pop("file_assoc_backup_cur", None)
+    data.pop("file_assoc_backup_ani", None)
+    save_settings(data)
+    try:
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+    except Exception:
+        pass
+
+
+def apply_cursor_file_association_setting(enabled: bool, exe_path: Path | None = None) -> None:
+    if enabled:
+        register_cursor_file_associations(exe_path)
+    else:
+        unregister_cursor_file_associations()
 
 
 def scheme_order_value(path: Path) -> float:
@@ -2270,6 +2403,26 @@ class CursorThemeBuilder:
 
 
 def main() -> None:
+    startup_timing_reset()
+    startup_timing_mark("startup.args")
+    if "--preview-cursor" in sys.argv:
+        try:
+            index = sys.argv.index("--preview-cursor")
+            target = Path(sys.argv[index + 1]).expanduser()
+        except Exception:
+            target = Path("")
+        try:
+            import fluent_ui
+            startup_timing_mark("startup.preview_imports")
+            fluent_ui.run_cursor_preview_app(sys.modules[__name__], target)
+            return
+        except Exception as exc:
+            log_error("启动光标预览失败", exc)
+            try:
+                ctypes.windll.user32.MessageBoxW(0, str(exc), APP_NAME, 0x10)
+            except Exception:
+                pass
+            raise SystemExit(1)
     if "--background" in sys.argv:
         run_background()
         return
@@ -2297,12 +2450,17 @@ def main() -> None:
         uninstall_application()
         return
     try:
+        if file_association_enabled():
+            apply_cursor_file_association_setting(True)
+        startup_timing_mark("startup.settings")
         if notify_existing_gui("show"):
             return
+        startup_timing_mark("startup.single_instance")
         terminate_background_process()
         terminate_tray_process()
+        startup_timing_mark("startup.stop_background")
         import fluent_ui
-
+        startup_timing_mark("startup.imports")
         fluent_ui.run_app(sys.modules[__name__])
         return
     except Exception as exc:
@@ -2721,6 +2879,11 @@ def install_application() -> None:
         create_open_folder_shortcut(configured_storage_root())
     except Exception as exc:
         log_error("创建鼠标文件夹快捷方式失败", exc)
+    if file_association_enabled():
+        try:
+            register_cursor_file_associations(main_exe)
+        except Exception as exc:
+            log_error("写入文件关联失败", exc)
     native_message("安装完成", f"{APP_NAME} 已安装到：\n{INSTALL_ROOT}\n\n桌面和开始菜单快捷方式已创建。")
 
 
@@ -2762,6 +2925,7 @@ def schedule_install_dir_cleanup() -> None:
 def uninstall_application() -> None:
     choice = ask_uninstall_choice()
     try:
+        unregister_cursor_file_associations()
         set_auto_start(False)
         terminate_background_process()
         remove_app_shortcuts()
