@@ -65,11 +65,14 @@
 
 - GitHub Releases：
   [下载最新版本](https://github.com/yuanyue1234/MousePointer/releases/download/v2.0.0/MousePointer_Portable.exe)
+- 在线资源库：
+  [打开鼠标指针资源库](http://8.135.33.2:5002/)
 
 ### Step 2：导入方案
 
 - 支持拖入 `.cur`、`.ani`、图片、压缩包、`exe` 或文件夹。
 - 资源包内如果存在 `.inf`，程序会自动识别并建立方案。
+- 也可以在应用的资源库页面打开在线资源库下载资源包。
 
 ### Step 3：编辑与应用
 

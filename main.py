@@ -4348,7 +4348,7 @@ def _show_resource_page(self) -> None:
     ttk.Label(card, text="下载后的 zip、rar、7z 或自解压 exe 放到鼠标文件存放位置，点击刷新会自动解压并添加方案。", style="Muted.TLabel", wraplength=720).pack(anchor="w", pady=(6, 16))
     buttons = ttk.Frame(card, style="Card.TFrame")
     buttons.pack(fill="x", pady=(0, 12))
-    ttk.Button(buttons, text="打开资源库网页", image=self._ui_icon("folder"), compound=LEFT, style="Blue.TButton", command=self.open_resource_browser).pack(side=LEFT, padx=(0, 8))
+    ttk.Button(buttons, text="打开资源库网页", image=self._ui_icon("upload"), compound=LEFT, style="Blue.TButton", command=self.open_resource_browser).pack(side=LEFT, padx=(0, 8))
     ttk.Button(buttons, text="打开鼠标文件存放位置", style="Yellow.TButton", command=lambda: os.startfile(RESOURCE_LIBRARY)).pack(side=LEFT, padx=(0, 8))
     ttk.Button(buttons, text="刷新", image=self._ui_icon("apply"), compound=LEFT, style="Primary.TButton", command=self.refresh_resource_library).pack(side=LEFT)
     drop = ttk.Label(card, text="也可以把 zip / rar / 7z / exe 拖到这里导入为新方案", style="Muted.TLabel", anchor="center")

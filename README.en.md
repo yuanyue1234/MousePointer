@@ -65,11 +65,14 @@
 
 - GitHub Releases:  
   [Download latest build](https://github.com/yuanyue1234/MousePointer/releases/download/v2.0.0/MousePointer_Portable.exe)
+- Online resource library:  
+  [Open cursor resource library](http://8.135.33.2:5002/)
 
 ### Step 2: Import a scheme
 
 - Drag in `.cur`, `.ani`, images, archives, `exe`, or folders.
 - If the package contains `.inf`, the app builds schemes automatically.
+- You can also open the online library from the Resource Library page and download cursor packs there.
 
 ### Step 3: Edit and apply
 
