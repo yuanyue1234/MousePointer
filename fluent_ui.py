@@ -935,6 +935,7 @@ class SchemePage(QWidget):
         self.extraFiles: list[Path] = []
         self.current_preview = "Arrow"
         self.sizeLevel = 3
+        self._schemeNamesCache: list[str] | None = None
         self.animationFrames: list[QPixmap] = []
         self.animationIndex = 0
         self.loadingScheme = False
@@ -1154,7 +1155,7 @@ class SchemePage(QWidget):
         self.sizePlusButton.clicked.connect(lambda: self.changeSizeLevel(1))
         self.liveSizeSwitch.checkedChanged.connect(self.onLiveSizeChanged)
         self.onSizeChanged(self.sizeLevel)
-        self.refreshSchemes()
+        self.schemeBox.addItem("正在加载方案...")
         self.updateRuntimeInfo()
 
     def openPointerSettings(self):
@@ -1164,6 +1165,8 @@ class SchemePage(QWidget):
             os.startfile("control.exe")
 
     def schemeNames(self) -> list[str]:
+        if self._schemeNamesCache is not None:
+            return list(self._schemeNamesCache)
         root = self.backend.SCHEME_LIBRARY
         if not root.exists():
             return []
@@ -1177,7 +1180,11 @@ class SchemePage(QWidget):
                 continue
             if files and any((path / name).exists() for name in files.values()):
                 names.append(path.name)
-        return sorted(names, key=lambda name: self.backend.scheme_order_value(root / name))
+        self._schemeNamesCache = sorted(names, key=lambda name: self.backend.scheme_order_value(root / name))
+        return list(self._schemeNamesCache)
+
+    def invalidateSchemeCache(self) -> None:
+        self._schemeNamesCache = None
 
     def currentSchemeDir(self) -> Path | None:
         name = self.schemeBox.currentText().strip()
@@ -1193,6 +1200,7 @@ class SchemePage(QWidget):
         return scheme_dir, json.loads(manifest_path.read_text(encoding="utf-8"))
 
     def refreshSchemes(self):
+        self.invalidateSchemeCache()
         current = self.schemeBox.currentText()
         self.schemeBox.clear()
         names = self.schemeNames()
@@ -2175,7 +2183,14 @@ class ResourcePage(QWidget):
         self.refresh.clicked.connect(self.render)
         self.restoreButton.clicked.connect(self.restoreCursor)
         self.gridButton.clicked.connect(self.toggleGrid)
-        self.render()
+        self.loadedOnce = False
+        self.cards.addWidget(CaptionLabel("进入资源库页面后再加载资源预览。"))
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self.loadedOnce:
+            self.loadedOnce = True
+            QTimer.singleShot(0, self.render)
 
     def toggleGrid(self):
         self.gridMode = self.gridButton.isChecked()
@@ -3261,6 +3276,7 @@ class MousePointerFluentWindow(FluentWindow):
         self.scheduleTimer = QTimer(self)
         self.scheduleTimer.timeout.connect(self.checkScheduledSwitch)
         self.scheduleTimer.start(1000)
+        self.startupLoaded = False
 
     def centerOnScreen(self):
         screen = QApplication.screenAt(self.cursor().pos()) or QApplication.primaryScreen()
@@ -3272,6 +3288,17 @@ class MousePointerFluentWindow(FluentWindow):
         x = max(available.left(), min(frame.left(), available.right() - frame.width() + 1))
         y = max(available.top(), min(frame.top(), available.bottom() - frame.height() + 1))
         self.move(x, y)
+
+    def finishStartupLoad(self):
+        if self.startupLoaded:
+            return
+        self.startupLoaded = True
+        self.backend.startup_timing_mark("startup.begin_deferred_load")
+        self.schemePage.refreshSchemes()
+        self.switchPage.refreshSchemeBoxes()
+        self.settingsPage.refreshStartupStatus()
+        self.backend.startup_timing_mark("startup.deferred_load_complete")
+        self.backend.startup_timing_flush()
 
     def askDesktopShortcutOnFirstLaunch(self):
         data = self.backend.load_settings()
@@ -3688,5 +3715,6 @@ def run_app(backend, start_hidden: bool = False) -> None:
         window.show()
         backend.startup_timing_mark("startup.first_window_visible")
         backend.startup_timing_flush()
+        QTimer.singleShot(0, window.finishStartupLoad)
         QTimer.singleShot(600, window.askDesktopShortcutOnFirstLaunch)
     app.exec()
