@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QMenu,
     QMessageBox,
+    QPushButton,
     QSpinBox,
     QSizePolicy,
     QSystemTrayIcon,
@@ -683,6 +684,7 @@ class CursorRow(QWidget):
     picked = Signal(str)
     dropped = Signal(str, object)
     previewClicked = Signal(str)
+    removeRequested = Signal(str)
 
     def __init__(self, backend, role, index: int = 0, parent=None):
         super().__init__(parent)
@@ -699,9 +701,30 @@ class CursorRow(QWidget):
         layout.setHorizontalSpacing(12)
         layout.setColumnStretch(1, 1)
 
+        self.previewFrame = QWidget()
+        self.previewFrame.setObjectName("previewFrame")
+        self.previewFrame.setFixedSize(72, 72)
+        self.previewFrame.setCursor(Qt.PointingHandCursor)
+        self.previewFrame.setStyleSheet("#previewFrame { border: 1px solid transparent; border-radius: 10px; background: #ffffff; }")
+        preview_layout = QGridLayout(self.previewFrame)
+        preview_layout.setContentsMargins(3, 3, 3, 3)
+        preview_layout.setSpacing(0)
         self.preview = CursorPreview(66)
-        self.preview.setStyleSheet("border: 1px dashed #93c5fd; border-radius: 8px; background: #ffffff;")
+        self.preview.setStyleSheet("border-radius: 8px; background: #ffffff;")
         self.preview.mousePressEvent = lambda _event: self.previewClicked.emit(self.role.reg_name)
+        self.previewFrame.mousePressEvent = lambda _event: self.previewClicked.emit(self.role.reg_name)
+        self.removeButton = QPushButton("×")
+        self.removeButton.setFixedSize(22, 22)
+        self.removeButton.setCursor(Qt.PointingHandCursor)
+        self.removeButton.setToolTip("移回替换资源池")
+        self.removeButton.setStyleSheet(
+            "QPushButton { background: #ef4444; color: white; border: 2px solid white; border-radius: 11px; "
+            "font-weight: 700; } QPushButton:hover { background: #dc2626; }"
+        )
+        self.removeButton.hide()
+        self.removeButton.clicked.connect(lambda _checked=False: self.removeRequested.emit(self.role.reg_name))
+        preview_layout.addWidget(self.preview, 0, 0)
+        preview_layout.addWidget(self.removeButton, 0, 0, Qt.AlignTop | Qt.AlignRight)
         self.name = StrongBodyLabel(role.label)
         self.tip = CaptionLabel(role.tip)
         self.tip.setTextColor("#64748b", "#94a3b8")
@@ -717,12 +740,35 @@ class CursorRow(QWidget):
         text_layout.addWidget(self.name)
         text_layout.addWidget(self.tip)
 
-        layout.addWidget(self.preview, 0, 0, 2, 1)
+        layout.addWidget(self.previewFrame, 0, 0, 2, 1)
         layout.addWidget(text_box, 0, 1, 2, 1)
 
     def enterEvent(self, event) -> None:
         self.hovered.emit(self.role.reg_name)
+        self.setPreviewHover(True)
+        self.wobblePreview()
         super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.setPreviewHover(False)
+        super().leaveEvent(event)
+
+    def setPreviewHover(self, active: bool) -> None:
+        if active and self.path:
+            self.removeButton.show()
+        else:
+            self.removeButton.hide()
+        border = "#2563eb" if active else "transparent"
+        background = "#f8fbff" if active else "#ffffff"
+        self.previewFrame.setStyleSheet(
+            f"#previewFrame {{ border: 1px dashed {border}; border-radius: 10px; background: {background}; }}"
+        )
+
+    def wobblePreview(self) -> None:
+        start = self.previewFrame.pos()
+        self.previewFrame.move(start.x() + 2, start.y())
+        QTimer.singleShot(70, lambda: self.previewFrame.move(start.x() - 2, start.y()))
+        QTimer.singleShot(140, lambda: self.previewFrame.move(start))
 
     def setPath(self, path: Path | None) -> None:
         self.path = path
@@ -877,6 +923,7 @@ class SchemePage(QWidget):
             row.picked.connect(self.pickFileForRole)
             row.dropped.connect(self.applyFileToRole)
             row.previewClicked.connect(self.editHotspotForRole)
+            row.removeRequested.connect(self.unassignRoleToPool)
             self.rows[role.reg_name] = row
             index = len(self.rows) - 1
             self.rowLayout.addWidget(row, index // 2, index % 2)
@@ -1273,15 +1320,13 @@ class SchemePage(QWidget):
             self.schemeBox.blockSignals(blocked)
 
     def autoSaveCurrentScheme(self) -> None:
-        if self.loadingScheme or not self.selected:
+        if self.loadingScheme:
             return
         theme = self.backend.sanitize_name(self.schemeBox.currentText() or "新方案")
         try:
             package_dir = self.backend.WORK_ROOT / "fluent_autosave"
             extra_stage = self.backend.WORK_ROOT / "fluent_autosave_extra_stage"
             files = self.prepareAssets(package_dir)
-            if not files:
-                return
             staged_extras = self.stageExtraFiles(extra_stage)
             scheme_dir = self.backend.SCHEME_LIBRARY / theme
             if scheme_dir.exists():
@@ -1329,6 +1374,20 @@ class SchemePage(QWidget):
         self.updateExtraBox()
         self.updateLargePreview(reg_name)
         self.status.setText(f"已替换：{self.backend.ROLE_BY_REG[reg_name].label}")
+        self.autoSaveCurrentScheme()
+
+    def unassignRoleToPool(self, reg_name: str) -> None:
+        role = self.backend.ROLE_BY_REG.get(reg_name)
+        path = self.selected.pop(reg_name, None)
+        if path and path.exists():
+            self.appendExtraResource(path)
+        if reg_name in self.rows:
+            self.rows[reg_name].setPath(None)
+        self.hotspots.pop(reg_name, None)
+        self.updateExtraBox()
+        self.updateLargePreview(reg_name)
+        label = role.label if role else reg_name
+        self.status.setText(f"已移回替换资源池：{label}")
         self.autoSaveCurrentScheme()
 
     def removeExtraFromMemory(self, path: Path) -> None:
