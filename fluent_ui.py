@@ -395,6 +395,7 @@ def role_icon_path(backend, role) -> Path:
 
 
 EXTRA_RESOURCE_EXTS = {".cur", ".ani", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}
+ARCHIVE_RESOURCE_EXTS = {".zip", ".rar", ".7z", ".exe"}
 
 
 def pixmap_from_image(image: Image.Image, target_size: int | None = None) -> QPixmap:
@@ -405,16 +406,52 @@ def pixmap_from_image(image: Image.Image, target_size: int | None = None) -> QPi
     return pixmap
 
 
+def cursor_kind_badge(path: Path | None) -> str:
+    if not path:
+        return ""
+    suffix = path.suffix.lower()
+    if suffix == ".ani":
+        return "\u52a8"
+    if suffix == ".cur":
+        return "\u9759"
+    return ""
+
+
+def cursor_kind_summary(scheme_dir: Path, files: dict[str, str]) -> tuple[int, int]:
+    ani_count = 0
+    cur_count = 0
+    for file_name in files.values():
+        suffix = (scheme_dir / file_name).suffix.lower()
+        if suffix == ".ani":
+            ani_count += 1
+        elif suffix == ".cur":
+            cur_count += 1
+    return ani_count, cur_count
+
+
+def cursor_kind_summary_text(scheme_dir: Path, files: dict[str, str]) -> str:
+    ani_count, cur_count = cursor_kind_summary(scheme_dir, files)
+    parts = []
+    if ani_count:
+        parts.append(f"\u52a8 {ani_count}")
+    if cur_count:
+        parts.append(f"\u9759 {cur_count}")
+    return "  ".join(parts)
+
+
 class CursorPreview(QLabel):
     def __init__(self, size: int = 46, parent=None):
         super().__init__(parent)
+        self.badgeText = ""
         self.setFixedSize(size, size)
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("border-radius: 8px; background: #f8fbff;")
 
-    def setPath(self, backend, path: Path | None, size: int = 42, role=None) -> None:
+    def setPath(self, backend, path: Path | None, size: int = 42, role=None, showBadge: bool = True) -> None:
+        self.badgeText = cursor_kind_badge(path) if showBadge else ""
         if not path or not path.exists():
             self.setRoleIcon(backend, role, size)
+            self.update()
             return
         try:
             image = backend.cursor_preview_image_sized(path, (size * 3, size * 3), min(size * 2, 128)).convert("RGBA")
@@ -422,9 +459,11 @@ class CursorPreview(QLabel):
             self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         except Exception:
             self.setText("...")
+        self.update()
 
     def setRoleIcon(self, backend, role, size: int = 42) -> None:
         if not role:
+            self.badgeText = ""
             self.clear()
             return
         try:
@@ -435,12 +474,50 @@ class CursorPreview(QLabel):
             else:
                 icon = role_icon_path(backend, role)
                 if not icon.exists():
+                    self.badgeText = ""
                     self.clear()
                     return
                 pixmap = QPixmap(str(icon))
             self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         except Exception:
+            self.badgeText = ""
             self.clear()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self.badgeText:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        badge_rect = QRect(4, 4, 18, 18)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#2563eb" if self.badgeText == "动" else "#475569"))
+        painter.drawEllipse(badge_rect)
+        painter.setPen(QColor("white"))
+        font = painter.font()
+        font.setPointSize(8)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(badge_rect, Qt.AlignCenter, self.badgeText)
+
+
+class ReplacementDropArea(QWidget):
+    dropped = Signal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        urls = [url for url in event.mimeData().urls() if url.isLocalFile()]
+        if not urls:
+            return
+        self.dropped.emit([Path(url.toLocalFile()) for url in urls])
+        event.acceptProposedAction()
 
 
 class PreviewPane(QWidget):
@@ -808,11 +885,12 @@ class SchemePage(QWidget):
         self.scroll.setWidget(self.rowWidget)
         left_layout.addWidget(self.scroll, 1)
 
-        self.extraBox = QWidget()
+        self.extraBox = ReplacementDropArea()
         self.extraBox.setObjectName("extraBox")
         self.extraBox.setMinimumHeight(184)
         self.extraBox.setMaximumHeight(220)
         self.extraBox.setStyleSheet("#extraBox { background: rgba(255, 255, 255, 0.82); border: none; border-radius: 8px; }")
+        self.extraBox.dropped.connect(self.handleExtraDropped)
         extra_layout = QVBoxLayout(self.extraBox)
         extra_layout.setContentsMargins(12, 10, 12, 10)
         extra_layout.setSpacing(8)
@@ -915,6 +993,14 @@ class SchemePage(QWidget):
         self.status.setWordWrap(True)
         self.status.setTextColor("#64748b", "#94a3b8")
         right_layout.addWidget(self.status)
+        self.currentSchemeStatus = CaptionLabel("")
+        self.currentSchemeStatus.setTextColor("#64748b", "#94a3b8")
+        self.currentSchemeStatus.setWordWrap(True)
+        self.nextSwitchStatus = CaptionLabel("")
+        self.nextSwitchStatus.setTextColor("#64748b", "#94a3b8")
+        self.nextSwitchStatus.setWordWrap(True)
+        right_layout.addWidget(self.currentSchemeStatus)
+        right_layout.addWidget(self.nextSwitchStatus)
 
         root.addWidget(left, 1)
         root.addWidget(right, 0)
@@ -936,6 +1022,7 @@ class SchemePage(QWidget):
         self.liveSizeSwitch.checkedChanged.connect(self.onLiveSizeChanged)
         self.onSizeChanged(self.sizeLevel)
         self.refreshSchemes()
+        self.updateRuntimeInfo()
 
     def openPointerSettings(self):
         try:
@@ -985,6 +1072,7 @@ class SchemePage(QWidget):
             self.loadScheme(names[0])
         else:
             self.clearSelection()
+        self.updateRuntimeInfo()
 
     def clearSelection(self):
         self.selected.clear()
@@ -994,6 +1082,7 @@ class SchemePage(QWidget):
             row.setPath(None)
         self.updateLargePreview("Arrow")
         self.updateExtraBox()
+        self.updateRuntimeInfo()
 
     def loadScheme(self, name: str):
         if not name:
@@ -1017,10 +1106,12 @@ class SchemePage(QWidget):
             self.updateLargePreview(self.current_preview)
             self.updateExtraBox()
             self.status.setText(f"已载入：{name}")
+            self.updateRuntimeInfo()
         except Exception as exc:
             self.showError("载入失败", exc)
         finally:
             self.loadingScheme = False
+        self.updateRuntimeInfo()
 
     def clearGrid(self, layout: QGridLayout) -> None:
         while layout.count():
@@ -1049,6 +1140,42 @@ class SchemePage(QWidget):
             item.deleteRequested.connect(self.removeExtraResource)
             self.extraGrid.addWidget(item, row, col)
         self.extraGrid.setRowStretch(max(2, (len(self.extraFiles) + 5) // 6), 1)
+
+    def handleExtraDropped(self, paths: list[Path]) -> None:
+        added = False
+        blocked = False
+        for path in paths:
+            if path.is_dir() or path.suffix.lower() in ARCHIVE_RESOURCE_EXTS:
+                blocked = True
+                continue
+            if path.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+                blocked = True
+                continue
+            self.appendExtraResource(path)
+            added = True
+        self.updateExtraBox()
+        if added:
+            if blocked:
+                self.status.setText("已添加可用替换资源；压缩包、安装器、文件夹或不支持格式已跳过，请到资源库导入。")
+            else:
+                self.status.setText("已添加替换资源")
+            self.autoSaveCurrentScheme()
+        elif paths or blocked:
+            self.status.setText("替换资源池仅接受 .cur / .ani / 图片文件；压缩包、安装器或文件夹请到资源库导入。")
+
+    def updateRuntimeInfo(self) -> None:
+        current = self.backend.configured_current_scheme()
+        next_text = self.backend.next_switch_text(*self.backend.load_schedule_state()) or "未设置"
+        english = ui_english_enabled(self.backend)
+        current_prefix = "Current: " if english else "当前配置："
+        next_prefix = "Next: " if english else "下次切换："
+        if english and next_text == "未设置":
+            next_text = "Not set"
+        self.currentSchemeStatus.setText(f"{current_prefix}{current}")
+        self.nextSwitchStatus.setText(f"{next_prefix}{next_text}")
+        window = self.window()
+        if hasattr(window, "refreshRuntimeStatus"):
+            window.refreshRuntimeStatus()
 
     def appendExtraResource(self, path: Path) -> None:
         if not path.exists() or path.suffix.lower() not in EXTRA_RESOURCE_EXTS:
@@ -1251,11 +1378,7 @@ class SchemePage(QWidget):
 
     def renderPreviewPixmap(self, path: Path) -> QPixmap:
         cursor_size = self.backend.size_level_to_pixels(self.sizeLevel)
-        image = None
-        if path.suffix.lower() in {".cur", ".ani"}:
-            image = self.backend.render_cursor_with_windows(path, cursor_size)
-        if image is None:
-            image = self.backend.centered_rgba(self.backend.image_from_path(path), cursor_size)
+        image = self.backend.cursor_preview_image_sized(path, (cursor_size, cursor_size), cursor_size)
         return pixmap_from_image(image)
 
     def renderRoleIconPixmap(self, role) -> QPixmap:
@@ -1836,6 +1959,7 @@ class SchemePage(QWidget):
         self.status.setText("完成")
         on_done(value)
         self.refreshSchemes()
+        self.updateRuntimeInfo()
 
     def failTask(self, message: str):
         self.applyButton.setEnabled(True)
@@ -1948,7 +2072,11 @@ class ResourcePage(QWidget):
             text = QVBoxLayout()
             text.addWidget(StrongBodyLabel(name))
             scheme_dir, files = self.backend.scheme_manifest(name)
-            text.addWidget(CaptionLabel(f"{len(files)} 个鼠标状态"))
+            summary = cursor_kind_summary_text(scheme_dir, files)
+            count_text = f"{len(files)} 个鼠标状态"
+            if summary:
+                count_text = f"{count_text}    {summary}"
+            text.addWidget(CaptionLabel(count_text))
             layout.addLayout(text, 1 if not self.gridMode else 0)
             preview_grid = QGridLayout()
             preview_grid.setHorizontalSpacing(6)
@@ -1963,7 +2091,7 @@ class ResourcePage(QWidget):
                 if not path.exists():
                     continue
                 preview = CursorPreview(46 if self.gridMode else 38)
-                preview.setPath(self.backend, path, 44 if self.gridMode else 34, role=role)
+                preview.setPath(self.backend, path, 44 if self.gridMode else 34, role=role, showBadge=False)
                 preview.setToolTip(role.label)
                 preview_grid.addWidget(preview, shown_index // columns, shown_index % columns)
                 shown_index += 1
@@ -2943,6 +3071,7 @@ class MousePointerFluentWindow(FluentWindow):
         self.schemePage.updateExtraBox()
         self.schemePage.updateLargePreview(self.schemePage.current_preview)
         self.settingsPage.refreshStartupStatus()
+        self.schemePage.updateRuntimeInfo()
         self.refreshTrayMenu()
 
     def refreshNavigationText(self, english: bool):
@@ -2966,6 +3095,17 @@ class MousePointerFluentWindow(FluentWindow):
             self.trayIcon.hide()
         else:
             self.trayIcon.show()
+
+    def refreshRuntimeStatus(self):
+        self.refreshTrayMenu()
+
+    def applyScheduledScheme(self, scheme: str, *, last_key: str | None = None, timer_applied: bool = False):
+        if not scheme:
+            return
+        self.backend.apply_library_scheme(scheme)
+        self.schemePage.schemeBox.setCurrentText(scheme)
+        self.schemePage.loadScheme(scheme)
+        self.refreshRuntimeStatus()
 
     def createTrayIcon(self):
         icon = self.windowIcon()
@@ -3076,7 +3216,7 @@ class MousePointerFluentWindow(FluentWindow):
                     if scheme and key != self.lastScheduleKey:
                         picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
                         if picked:
-                            self.backend.apply_library_scheme(picked)
+                            self.applyScheduledScheme(picked, last_key=key)
                         self.lastScheduleKey = key
                     continue
                 if item.get("mode") == "timer":
@@ -3086,14 +3226,14 @@ class MousePointerFluentWindow(FluentWindow):
                         self.timerScheduleIndex += 1
                         self.lastTimerAt = __import__("time").time()
                         if scheme:
-                            self.backend.apply_library_scheme(scheme)
+                            self.applyScheduledScheme(scheme, timer_applied=True)
                     continue
                 scheme = item.get("scheme", "")
                 key = f"{now:%Y-%m-%d}|{item.get('time')}|{scheme}"
                 if scheme and item.get("time") == now.strftime("%H:%M") and key != self.lastScheduleKey:
                     picked = self.backend.pick_scheduled_scheme(scheme, item.get("order", "顺序"), 0)
                     if picked:
-                        self.backend.apply_library_scheme(picked)
+                        self.applyScheduledScheme(picked, last_key=key)
                     self.lastScheduleKey = key
                     return
             scheme = week_items.get(str(now.weekday()))
@@ -3101,7 +3241,7 @@ class MousePointerFluentWindow(FluentWindow):
             if scheme and key != self.lastScheduleKey:
                 picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0) if scheme == self.backend.RANDOM_SCHEME_VALUE else scheme
                 if picked:
-                    self.backend.apply_library_scheme(picked)
+                    self.applyScheduledScheme(picked, last_key=key)
                 self.lastScheduleKey = key
         except Exception as exc:
             self.backend.log_error("Fluent 后台切换失败", exc)
