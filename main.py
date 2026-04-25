@@ -2367,7 +2367,7 @@ def run_pystray_tray() -> None:
             if item.get("mode") == "timer":
                 interval = max(1, int(item.get("interval_seconds") or 0))
                 if time.time() - state["last_timer_at"] >= interval:
-                    scheme = pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), state["timer_index"])
+                    scheme = pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), state["timer_index"], item.get("selected_schemes"))
                     state["timer_index"] += 1
                     state["last_timer_at"] = time.time()
                     if scheme:
@@ -2458,7 +2458,7 @@ def run_background() -> None:
                 if item.get("mode") == "timer":
                     interval = max(1, int(item.get("interval_seconds") or 0))
                     if time.time() - last_timer_at >= interval:
-                        scheme = pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), timer_index)
+                        scheme = pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), timer_index, item.get("selected_schemes"))
                         timer_index += 1
                         last_timer_at = time.time()
                         if scheme:
@@ -2492,14 +2492,18 @@ def available_scheme_names() -> list[str]:
     return sorted(names, key=lambda name: scheme_order_value(SCHEME_LIBRARY / name))
 
 
-def pick_scheduled_scheme(value: str, order: str = "顺序", index: int = 0) -> str:
-    names = available_scheme_names()
+def pick_scheduled_scheme(value: str, order: str = "顺序", index: int = 0, selected_schemes: list[str] | None = None) -> str:
+    all_names = available_scheme_names()
+    selected = [name for name in (selected_schemes or []) if name in all_names]
+    names = selected or all_names
     if not names:
         return ""
-    if value == RANDOM_SCHEME_VALUE:
+    if value == RANDOM_SCHEME_VALUE or order == "随机":
         return random.choice(names)
     # 顺序：按 scheme_library 中的排序依次切换
     if value == "顺序":
+        if selected:
+            return names[index % len(names)]
         try:
             current = SCHEDULE_FILE.exists() and json.loads(SCHEDULE_FILE.read_text(encoding="utf-8"))
         except Exception:
@@ -2602,6 +2606,16 @@ def next_switch_text(schedule_items: list[dict[str, str]], week_items: dict[str,
     now = datetime.now()
     candidates = []
     for item in schedule_items:
+        if item.get("mode") == "timer":
+            interval = int(item.get("interval_seconds") or 0)
+            if interval > 0:
+                selected = item.get("selected_schemes")
+                if isinstance(selected, list) and selected:
+                    scheme = f"{item.get('order', '顺序')} {len(selected)} 个方案"
+                else:
+                    scheme = item.get("scheme", "")
+                candidates.append((now + timedelta(seconds=interval), scheme))
+            continue
         at = item.get("time", "")
         scheme = item.get("scheme", "")
         if re.fullmatch(r"\d{2}:\d{2}", at) and scheme:

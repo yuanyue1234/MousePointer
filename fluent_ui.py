@@ -2439,27 +2439,42 @@ class SwitchPage(QWidget):
         layout.addWidget(self.timeCard)
 
         self.timerCard = CardWidget()
-        timer_layout = QHBoxLayout(self.timerCard)
+        timer_layout = QVBoxLayout(self.timerCard)
         timer_layout.setContentsMargins(16, 14, 16, 14)
-        timer_layout.addWidget(StrongBodyLabel("计时切换"))
+        timer_layout.setSpacing(10)
+        timer_header = QHBoxLayout()
+        timer_header.addWidget(StrongBodyLabel("计时切换"))
         self.timerSwitch = SwitchButton()
         self.modeSwitches["timer"] = self.timerSwitch
-        timer_layout.addWidget(self.timerSwitch)
-        timer_layout.addWidget(BodyLabel("每"))
+        timer_header.addWidget(self.timerSwitch)
+        timer_header.addWidget(BodyLabel("每"))
         self.timerInterval = QSpinBox()
         self.timerInterval.setRange(1, 86400)
         self.timerInterval.setValue(5)
+        self.timerInterval.setFixedWidth(88)
         self.timerUnit = ComboBox()
+        self.timerUnit.setFixedWidth(82)
         self.timerUnit.addItems(["秒", "分钟"])
-        self.timerScheme = ComboBox()
-        self.timerScheme.setMinimumWidth(160)
-        self.timerScheme.addItem("")
-        self.timerScheme.addItem("随机", self.backend.RANDOM_SCHEME_VALUE)
-        self.timerScheme.addItem("顺序", "顺序")
-        timer_layout.addWidget(self.timerInterval)
-        timer_layout.addWidget(self.timerUnit)
-        timer_layout.addWidget(self.timerScheme)
-        timer_layout.addStretch(1)
+        self.timerOrder = ComboBox()
+        self.timerOrder.setFixedWidth(88)
+        self.timerOrder.addItems(["顺序", "随机"])
+        self.timerAllButton = ToggleButton("全选")
+        self.timerSchemeButtons: dict[str, ToggleButton] = {}
+        self.timerSchemeGrid = QGridLayout()
+        self.timerSchemeGrid.setHorizontalSpacing(8)
+        self.timerSchemeGrid.setVerticalSpacing(8)
+        timer_header.addWidget(self.timerInterval)
+        timer_header.addWidget(self.timerUnit)
+        timer_header.addWidget(BodyLabel("模式"))
+        timer_header.addWidget(self.timerOrder)
+        timer_header.addWidget(self.timerAllButton)
+        timer_header.addStretch(1)
+        timer_layout.addLayout(timer_header)
+        timer_tip = CaptionLabel("选择参与计时切换的方案；顺序模式按当前宫格顺序循环，随机模式只在勾选范围内抽取。")
+        timer_tip.setWordWrap(True)
+        timer_tip.setTextColor("#64748b", "#94a3b8")
+        timer_layout.addWidget(timer_tip)
+        timer_layout.addLayout(self.timerSchemeGrid)
         layout.addWidget(self.timerCard)
 
         self.weekCard = CardWidget()
@@ -2506,12 +2521,13 @@ class SwitchPage(QWidget):
 
         for mode, switch in self.modeSwitches.items():
             switch.checkedChanged.connect(lambda checked, m=mode: self.onModeChanged(m, checked))
-        for widget in [self.lightTime, self.darkTime, self.lightScheme, self.darkScheme, self.timerUnit, self.timerScheme, *self.weekCombos.values(), *self.inputCombos.values()]:
+        for widget in [self.lightTime, self.darkTime, self.lightScheme, self.darkScheme, self.timerUnit, self.timerOrder, *self.weekCombos.values(), *self.inputCombos.values()]:
             try:
                 widget.currentTextChanged.connect(self.scheduleSave)
             except Exception:
                 pass
         self.timerInterval.valueChanged.connect(self.scheduleSave)
+        self.timerAllButton.clicked.connect(self.onTimerAllChanged)
         self.load()
 
     def showEvent(self, event) -> None:
@@ -2539,11 +2555,12 @@ class SwitchPage(QWidget):
         return [self.lightScheme, self.darkScheme, *self.weekCombos.values(), *self.inputCombos.values()]
 
     def refreshSchemeBoxes(self) -> None:
-        if not hasattr(self, "timerScheme"):
+        if not hasattr(self, "timerSchemeGrid"):
             return
         old_loading = self.loading
         self.loading = True
         names = self.scheme_page.schemeNames()
+        selected = self.timerSelectedSchemes()
         input_boxes = {id(box) for box in self.inputCombos.values()}
         for box in self.allSchemeBoxes():
             value = self.currentSchemeValue(box)
@@ -2554,33 +2571,78 @@ class SwitchPage(QWidget):
             for name in names:
                 box.addItem(name)
             self.setSchemeValue(box, "" if id(box) in input_boxes and value == self.backend.RANDOM_SCHEME_VALUE else value)
+        self.rebuildTimerSchemeGrid(names, selected)
         self.loading = old_loading
+
+    def clearLayout(self, layout: QLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget:
+                widget.deleteLater()
+            elif child_layout:
+                self.clearLayout(child_layout)
+
+    def rebuildTimerSchemeGrid(self, names: list[str], selected: list[str] | None = None) -> None:
+        selected_set = set(names if selected is None else selected)
+        self.clearLayout(self.timerSchemeGrid)
+        self.timerSchemeButtons = {}
+        if not names:
+            empty = CaptionLabel("暂无可选方案，请先在鼠标方案页导入或保存方案。")
+            empty.setTextColor("#64748b", "#94a3b8")
+            self.timerSchemeGrid.addWidget(empty, 0, 0)
+            return
+        for index, name in enumerate(names):
+            button = ToggleButton(name)
+            button.setCheckable(True)
+            button.setChecked(name in selected_set)
+            button.setMinimumWidth(132)
+            button.clicked.connect(self.onTimerSchemeToggled)
+            self.timerSchemeButtons[name] = button
+            self.timerSchemeGrid.addWidget(button, index // 4, index % 4)
+        self.syncTimerAllButton()
+
+    def timerSelectedSchemes(self) -> list[str]:
+        return [name for name, button in self.timerSchemeButtons.items() if button.isChecked()]
+
+    def setTimerSelectedSchemes(self, names: list[str]) -> None:
+        selected = set(names)
+        for name, button in self.timerSchemeButtons.items():
+            button.setChecked(name in selected)
+        self.syncTimerAllButton()
+
+    def syncTimerAllButton(self) -> None:
+        if not hasattr(self, "timerAllButton"):
+            return
+        buttons = list(self.timerSchemeButtons.values())
+        blocked = self.timerAllButton.blockSignals(True)
+        self.timerAllButton.setChecked(bool(buttons) and all(button.isChecked() for button in buttons))
+        self.timerAllButton.blockSignals(blocked)
+
+    def onTimerAllChanged(self, checked: bool = False) -> None:
+        if self.loading:
+            return
+        for button in self.timerSchemeButtons.values():
+            button.setChecked(bool(checked))
+        self.scheduleSave()
+
+    def onTimerSchemeToggled(self, checked: bool = False) -> None:
+        if self.loading:
+            return
+        self.syncTimerAllButton()
+        self.scheduleSave()
 
     def currentSchemeValue(self, combo: ComboBox) -> str:
         data = combo.currentData()
         if data:
             text = str(data)
-            if combo is self.timerScheme and text == self.backend.RANDOM_SCHEME_VALUE:
-                return self.backend.RANDOM_SCHEME_VALUE
             return text
         text = combo.currentText().strip()
-        if combo is self.timerScheme and text == "随机":
-            return self.backend.RANDOM_SCHEME_VALUE
-        if combo is self.timerScheme and text == "顺序":
-            return "顺序"
         return text
 
     def setSchemeValue(self, combo: ComboBox, value: str):
-        if combo is self.timerScheme:
-            # 计时切换只有"随机"和"顺序"两个选项
-            if value == self.backend.RANDOM_SCHEME_VALUE:
-                combo.setCurrentText("随机")
-            elif value == "顺序":
-                combo.setCurrentText("顺序")
-            else:
-                combo.setCurrentText(value)
-        else:
-            combo.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
+        combo.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
 
     def onModeChanged(self, mode: str, checked: bool):
         if checked:
@@ -2620,7 +2682,19 @@ class SwitchPage(QWidget):
             else:
                 self.timerUnit.setCurrentText("秒")
                 self.timerInterval.setValue(seconds)
-            self.setSchemeValue(self.timerScheme, timer.get("scheme", ""))
+            order = timer.get("order") or ("随机" if timer.get("scheme") == self.backend.RANDOM_SCHEME_VALUE else "顺序")
+            self.timerOrder.setCurrentText("随机" if order == "随机" else "顺序")
+            names = self.scheme_page.schemeNames()
+            selected = timer.get("selected_schemes")
+            if not isinstance(selected, list):
+                scheme = timer.get("scheme", "")
+                if scheme in {self.backend.RANDOM_SCHEME_VALUE, "顺序"}:
+                    selected = names
+                elif scheme:
+                    selected = [scheme]
+                else:
+                    selected = names
+            self.rebuildTimerSchemeGrid(names, [name for name in selected if name in names])
             input_item = by_mode.get("input", {})
             for key, combo in self.inputCombos.items():
                 self.setSchemeValue(combo, input_item.get(f"{key}_scheme", ""))
@@ -2628,7 +2702,7 @@ class SwitchPage(QWidget):
                 self.setSchemeValue(combo, week_items.get(day, ""))
             if input_item:
                 self.inputSwitch.setChecked(True)
-            elif timer.get("scheme"):
+            elif timer.get("scheme") or timer.get("selected_schemes"):
                 self.timerSwitch.setChecked(True)
             elif week_items:
                 self.weekSwitch.setChecked(True)
@@ -2656,10 +2730,17 @@ class SwitchPage(QWidget):
                         self.backend.CursorThemeBuilder.validate_time(None, at)
                         items.append({"mode": name, "time": at, "scheme": value})
             elif mode == "timer":
-                value = self.currentSchemeValue(self.timerScheme)
-                if value:
+                selected = self.timerSelectedSchemes()
+                if selected:
                     interval = int(self.timerInterval.value()) * (60 if self.timerUnit.currentText() == "分钟" else 1)
-                    items.append({"mode": "timer", "interval_seconds": interval, "scheme": value})
+                    order = self.timerOrder.currentText().strip() or "顺序"
+                    items.append({
+                        "mode": "timer",
+                        "interval_seconds": interval,
+                        "scheme": self.backend.RANDOM_SCHEME_VALUE if order == "随机" else "顺序",
+                        "selected_schemes": selected,
+                        "order": order,
+                    })
             elif mode == "week":
                 for day, combo in self.weekCombos.items():
                     value = self.currentSchemeValue(combo)
@@ -3281,7 +3362,7 @@ class MousePointerFluentWindow(FluentWindow):
                 if item.get("mode") == "timer":
                     interval = max(1, int(item.get("interval_seconds") or 0))
                     if __import__("time").time() - self.lastTimerAt >= interval:
-                        scheme = self.backend.pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), self.timerScheduleIndex)
+                        scheme = self.backend.pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), self.timerScheduleIndex, item.get("selected_schemes"))
                         self.timerScheduleIndex += 1
                         self.lastTimerAt = __import__("time").time()
                         if scheme:
@@ -3422,7 +3503,7 @@ class LightweightTrayApp(QObject):
                 if item.get("mode") == "timer":
                     interval = max(1, int(item.get("interval_seconds") or 0))
                     if time.time() - self.lastTimerAt >= interval:
-                        scheme = self.backend.pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), self.timerScheduleIndex)
+                        scheme = self.backend.pick_scheduled_scheme(item.get("scheme", ""), item.get("order", "顺序"), self.timerScheduleIndex, item.get("selected_schemes"))
                         self.timerScheduleIndex += 1
                         self.lastTimerAt = time.time()
                         if scheme:
