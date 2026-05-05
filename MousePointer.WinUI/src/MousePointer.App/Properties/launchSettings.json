@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "MousePointer.App (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "MousePointer.App (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

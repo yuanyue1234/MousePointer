@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>SYSLIB0000;SYSLIB0001;SYSLIB0002;SYSLIB0003;SYSLIB0004;SYSLIB0005</WarningsNotAsErrors>
+  </PropertyGroup>
+</Project>
+
