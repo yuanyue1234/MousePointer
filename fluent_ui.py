@@ -19,7 +19,6 @@ from PySide6.QtGui import QColor, QDrag, QDragEnterEvent, QDropEvent, QIcon, QPa
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractButton,
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -468,6 +467,65 @@ def style_summary_chip(label: QLabel, text: str) -> None:
         "QLabel { background: #f8fafc; color: #334155; border: 1px solid #dbe4f0; "
         "border-radius: 11px; padding: 2px 8px; font-size: 11px; font-weight: 700; }"
     )
+
+
+POPUP_LAYER_QSS = """
+QMenu {
+    background-color: #ffffff;
+    border: 1px solid #dbe4f0;
+    border-radius: 8px;
+    padding: 5px;
+    color: #0f172a;
+}
+QMenu::item {
+    min-height: 26px;
+    padding: 6px 18px;
+    border-radius: 6px;
+    background-color: transparent;
+}
+QMenu::item:selected {
+    background-color: #eef6ff;
+    color: #0f172a;
+}
+QMenu::separator {
+    height: 1px;
+    background: #e2e8f0;
+    margin: 5px 8px;
+}
+QListView, QListWidget {
+    background-color: #ffffff;
+    border: 1px solid #dbe4f0;
+    border-radius: 8px;
+    padding: 4px;
+    color: #0f172a;
+    outline: 0;
+    selection-background-color: #eef6ff;
+    selection-color: #0f172a;
+}
+QListView::item, QListWidget::item {
+    min-height: 28px;
+    padding: 5px 8px;
+    border-radius: 6px;
+}
+QListView::item:selected, QListWidget::item:selected {
+    background-color: #eef6ff;
+    color: #0f172a;
+}
+"""
+
+
+def apply_popup_layer_style(app: QApplication, *, force: bool = False) -> None:
+    if app.property("mousePointerPopupLayerStyled") and not force:
+        return
+    current = app.styleSheet() or ""
+    if POPUP_LAYER_QSS.strip() not in current:
+        app.setStyleSheet(current + "\n" + POPUP_LAYER_QSS)
+    app.setProperty("mousePointerPopupLayerStyled", True)
+
+
+def style_popup_menu(menu: QMenu) -> QMenu:
+    menu.setStyleSheet(POPUP_LAYER_QSS)
+    return menu
 
 
 class CursorPreview(QLabel):
@@ -2174,9 +2232,8 @@ class ResourcePage(QWidget):
         self.scheme_page = scheme_page
         self.gridMode = False
         self.deleted: dict[str, Path] = {}
-        self.selectedNames: set[str] = set()
+        self.selectedName: str | None = None
         self.cardWidgets: dict[str, QWidget] = {}
-        self.checkBoxes: dict[str, QCheckBox] = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
@@ -2274,9 +2331,9 @@ class ResourcePage(QWidget):
         self.cards = QGridLayout(self.container) if self.gridMode else QVBoxLayout(self.container)
         self.cards.setSpacing(10)
         names = self.scheme_page.schemeNames()
-        self.selectedNames.intersection_update(names)
+        if self.selectedName not in names:
+            self.selectedName = None
         self.cardWidgets = {}
-        self.checkBoxes = {}
         if not names:
             empty = BodyLabel("暂无资源")
             if self.gridMode:
@@ -2302,12 +2359,6 @@ class ResourcePage(QWidget):
             title_row = QHBoxLayout()
             title_row.setContentsMargins(0, 0, 0, 0)
             title_row.setSpacing(8)
-            checkbox = QCheckBox()
-            checkbox.setCursor(Qt.PointingHandCursor)
-            checkbox.setChecked(name in self.selectedNames)
-            checkbox.toggled.connect(lambda checked, n=name: self.setResourceSelected(n, checked))
-            self.checkBoxes[name] = checkbox
-            title_row.addWidget(checkbox)
             title_row.addWidget(StrongBodyLabel(name))
             scheme_dir, files = self.backend.scheme_manifest(name)
             summary = cursor_kind_summary_text(scheme_dir, files)
@@ -2359,7 +2410,7 @@ class ResourcePage(QWidget):
         card = self.cardWidgets.get(name)
         if not card:
             return
-        if name in self.selectedNames:
+        if name == self.selectedName:
             card.setStyleSheet(
                 "#resourceCard { background: #eef6ff; border: 1px solid #60a5fa; "
                 "border-radius: 8px; } #resourceCard:hover { background: #e0f2fe; }"
@@ -2369,84 +2420,78 @@ class ResourcePage(QWidget):
                 "#resourceCard { background: #ffffff; border: 1px solid transparent; "
                 "border-radius: 8px; } #resourceCard:hover { background: #f4fbff; }"
             )
-        checkbox = self.checkBoxes.get(name)
-        if checkbox:
-            checkbox.blockSignals(True)
-            checkbox.setChecked(name in self.selectedNames)
-            checkbox.blockSignals(False)
 
     def setResourceSelected(self, name: str, selected: bool) -> None:
         if selected:
-            self.selectedNames.add(name)
+            previous = self.selectedName
+            self.selectedName = name
+            if previous and previous != name:
+                self.updateResourceCardStyle(previous)
         else:
-            self.selectedNames.discard(name)
+            if self.selectedName == name:
+                self.selectedName = None
         self.updateResourceCardStyle(name)
         self.updateSelectionControls()
 
     def toggleResourceSelection(self, name: str) -> None:
-        self.setResourceSelected(name, name not in self.selectedNames)
+        self.setResourceSelected(name, name != self.selectedName)
 
-    def selectedResourceNames(self) -> list[str]:
-        ordered = self.scheme_page.schemeNames()
-        return [name for name in ordered if name in self.selectedNames]
+    def selectedResourceName(self) -> str | None:
+        if self.selectedName in self.scheme_page.schemeNames():
+            return self.selectedName
+        self.selectedName = None
+        return None
 
     def updateSelectionControls(self) -> None:
-        count = len(self.selectedNames)
-        if count == 0:
+        if not self.selectedName:
             self.selectionStatus.setText("未选择方案")
         else:
-            self.selectionStatus.setText(f"已选择 {count} 个方案")
-        self.applySelectedButton.setEnabled(count == 1)
-        self.deleteSelectedButton.setEnabled(count > 0)
+            self.selectionStatus.setText(f"已选择：{self.selectedName}")
+        self.applySelectedButton.setEnabled(bool(self.selectedName))
+        self.deleteSelectedButton.setEnabled(bool(self.selectedName))
 
     def applySelectedResource(self):
-        selected = self.selectedResourceNames()
-        if len(selected) != 1:
-            self.scheme_page.showWarn("请选择一个方案", "应用资源库方案时只能选择一个方案。")
+        selected = self.selectedResourceName()
+        if not selected:
+            self.scheme_page.showWarn("请选择一个方案", "应用资源库方案前需要先选择一个方案。")
             return
-        self.applyResource(selected[0])
+        self.applyResource(selected)
 
     def deleteSelectedResources(self):
-        selected = self.selectedResourceNames()
+        selected = self.selectedResourceName()
         if not selected:
             return
         trash_root = self.backend.WORK_ROOT / "resource_trash"
         trash_root.mkdir(parents=True, exist_ok=True)
-        removed: list[str] = []
-        failed: list[str] = []
         stamp = int(time.time())
-        for index, name in enumerate(selected):
-            source = self.backend.SCHEME_LIBRARY / name
-            if not source.exists():
-                self.selectedNames.discard(name)
-                continue
-            target = trash_root / f"{name}_{stamp}_{index}"
-            suffix = 1
-            while target.exists():
-                target = trash_root / f"{name}_{stamp}_{index}_{suffix}"
-                suffix += 1
-            try:
-                source.rename(target)
-                self.deleted[name] = target
-                removed.append(name)
-            except Exception as exc:
-                failed.append(f"{name}: {exc}")
-                self.backend.log_error("删除资源库方案失败", exc)
-        self.selectedNames.difference_update(removed)
-        self.scheme_page.refreshSchemes()
-        self.render()
-        if removed:
+        source = self.backend.SCHEME_LIBRARY / selected
+        if not source.exists():
+            self.selectedName = None
+            self.render()
+            return
+        target = trash_root / f"{selected}_{stamp}"
+        suffix = 1
+        while target.exists():
+            target = trash_root / f"{selected}_{stamp}_{suffix}"
+            suffix += 1
+        try:
+            source.rename(target)
+            self.deleted[selected] = target
+            self.selectedName = None
+            self.scheme_page.refreshSchemes()
+            self.render()
             InfoBar.success(
                 title="删除完成",
-                content=f"已移动到回收区：{', '.join(removed[:3])}{' 等' if len(removed) > 3 else ''}。误删可从 build/resource_trash 恢复。",
+                content=f"已移动到回收区：{selected}。误删可从 build/resource_trash 恢复。",
                 orient=Qt.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP_RIGHT,
                 duration=5000,
                 parent=self.window(),
             )
-        if failed:
-            self.scheme_page.showWarn("删除失败", "\n".join(failed[:3]))
+        except Exception as exc:
+            self.backend.log_error("删除资源库方案失败", exc)
+            self.scheme_page.showWarn("删除失败", str(exc))
 
     def applyResource(self, name: str):
         self.scheme_page.schemeBox.setCurrentText(name)
@@ -3419,6 +3464,9 @@ class MousePointerFluentWindow(FluentWindow):
         self.setMinimumSize(1260, 740)
         setTheme(Theme.LIGHT)
         setThemeColor("#4f8cff")
+        app = QApplication.instance()
+        if app:
+            apply_popup_layer_style(app, force=True)
         try:
             self.setMicaEffectEnabled(True)
         except Exception:
@@ -3439,7 +3487,7 @@ class MousePointerFluentWindow(FluentWindow):
         self.addSubInterface(self.resourcePage, FIF.FOLDER, tr_text("资源库", english))
         self.addSubInterface(self.switchPage, FIF.DATE_TIME, tr_text("方案切换", english))
         self.addSubInterface(self.settingsPage, FIF.SETTING, tr_text("设置", english), NavigationItemPosition.BOTTOM)
-        self.navigationInterface.setAcrylicEnabled(True)
+        self.navigationInterface.setAcrylicEnabled(False)
         self.navigationInterface.setMinimumWidth(188)
         self.navigationInterface.setMaximumWidth(188)
         self.createTrayIcon()
@@ -3557,7 +3605,7 @@ class MousePointerFluentWindow(FluentWindow):
         if not self.trayIcon:
             return
         english = ui_english_enabled(self.backend)
-        menu = QMenu()
+        menu = style_popup_menu(QMenu())
         open_action = menu.addAction("打开")
         open_action.triggered.connect(self.openFromTray)
         menu.addSeparator()
@@ -3729,7 +3777,7 @@ class LightweightTrayApp(QObject):
 
     def refreshMenu(self):
         english = ui_english_enabled(self.backend)
-        menu = QMenu()
+        menu = style_popup_menu(QMenu())
         open_action = menu.addAction("打开")
         open_action.triggered.connect(self.openMainWindow)
         menu.addSeparator()
@@ -3835,6 +3883,7 @@ def run_tray_app(backend) -> None:
         return
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(sys.argv)
+    apply_popup_layer_style(app)
     app.setQuitOnLastWindowClosed(False)
     tray = LightweightTrayApp(backend, lock)
     app.aboutToQuit.connect(tray.cleanup)
@@ -3844,6 +3893,7 @@ def run_tray_app(backend) -> None:
 def run_cursor_preview_app(backend, path: Path) -> None:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(sys.argv)
+    apply_popup_layer_style(app)
     backend.startup_timing_mark("startup.preview_qt_ready")
     window = CursorPreviewWindow(backend, path)
     window.show()
@@ -3856,6 +3906,7 @@ def run_app(backend, start_hidden: bool = False) -> None:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     backend.startup_timing_mark("startup.qt_ready")
     app = QApplication.instance() or QApplication(sys.argv)
+    apply_popup_layer_style(app)
     app.setQuitOnLastWindowClosed(False)
     lock = backend.acquire_gui_lock()
     if lock is None:

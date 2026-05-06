@@ -2412,9 +2412,9 @@ def main() -> None:
         except Exception:
             target = Path("")
         try:
-            import fluent_ui
+            import cursor_preview_light
             startup_timing_mark("startup.preview_imports")
-            fluent_ui.run_cursor_preview_app(sys.modules[__name__], target)
+            cursor_preview_light.run_cursor_preview_app(sys.modules[__name__], target)
             return
         except Exception as exc:
             log_error("启动光标预览失败", exc)
