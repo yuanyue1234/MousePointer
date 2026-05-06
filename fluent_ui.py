@@ -19,6 +19,7 @@ from PySide6.QtGui import QColor, QDrag, QDragEnterEvent, QDropEvent, QIcon, QPa
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractButton,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -440,6 +441,35 @@ def cursor_kind_summary_text(scheme_dir: Path, files: dict[str, str]) -> str:
     return "  ".join(parts)
 
 
+def style_kind_chip(label: QLabel, text: str) -> None:
+    label.setText(text)
+    label.setVisible(bool(text))
+    label.setAlignment(Qt.AlignCenter)
+    label.setFixedHeight(20)
+    label.setMinimumWidth(30)
+    label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    label.setStyleSheet(
+        "QLabel { background: #eef6ff; color: #1d4ed8; border: 1px solid #bfdbfe; "
+        "border-radius: 10px; padding: 1px 7px; font-size: 11px; font-weight: 700; }"
+    )
+    if text:
+        label.setToolTip("动画指针" if text.startswith("动") else "静态指针")
+    else:
+        label.setToolTip("")
+
+
+def style_summary_chip(label: QLabel, text: str) -> None:
+    label.setText(text)
+    label.setVisible(bool(text))
+    label.setAlignment(Qt.AlignCenter)
+    label.setFixedHeight(22)
+    label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    label.setStyleSheet(
+        "QLabel { background: #f8fafc; color: #334155; border: 1px solid #dbe4f0; "
+        "border-radius: 11px; padding: 2px 8px; font-size: 11px; font-weight: 700; }"
+    )
+
+
 class CursorPreview(QLabel):
     def __init__(self, size: int = 46, parent=None):
         super().__init__(parent)
@@ -449,7 +479,13 @@ class CursorPreview(QLabel):
         self.setStyleSheet("border-radius: 8px; background: #f8fbff;")
 
     def setPath(self, backend, path: Path | None, size: int = 42, role=None, showBadge: bool = True) -> None:
-        self.badgeText = cursor_kind_badge(path) if showBadge else ""
+        self.badgeText = ""
+        kind = cursor_kind_badge(path) if showBadge else ""
+        if path:
+            suffix_tip = f" · {'动画指针' if kind == '动' else '静态指针'}" if kind else ""
+            self.setToolTip(f"{path.name}{suffix_tip}")
+        else:
+            self.setToolTip("")
         if not path or not path.exists():
             self.setRoleIcon(backend, role, size)
             self.update()
@@ -483,23 +519,6 @@ class CursorPreview(QLabel):
         except Exception:
             self.badgeText = ""
             self.clear()
-
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        if not self.badgeText:
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        badge_rect = QRect(4, 4, 18, 18)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#2563eb" if self.badgeText == "动" else "#475569"))
-        painter.drawEllipse(badge_rect)
-        painter.setPen(QColor("white"))
-        font = painter.font()
-        font.setPointSize(8)
-        font.setBold(True)
-        painter.setFont(font)
-        painter.drawText(badge_rect, Qt.AlignCenter, self.badgeText)
 
 
 class ReplacementDropArea(QWidget):
@@ -812,6 +831,8 @@ class CursorRow(QWidget):
         preview_layout.addWidget(self.preview, 0, 0)
         preview_layout.addWidget(self.removeButton, 0, 0, Qt.AlignTop | Qt.AlignRight)
         self.name = StrongBodyLabel(role.label)
+        self.kindChip = QLabel()
+        style_kind_chip(self.kindChip, "")
         self.tip = CaptionLabel(role.tip)
         self.tip.setTextColor("#64748b", "#94a3b8")
 
@@ -823,7 +844,13 @@ class CursorRow(QWidget):
         text_layout = QVBoxLayout(text_box)
         text_layout.setContentsMargins(10, 8, 10, 8)
         text_layout.setSpacing(2)
-        text_layout.addWidget(self.name)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        title_row.addWidget(self.name)
+        title_row.addWidget(self.kindChip)
+        title_row.addStretch(1)
+        text_layout.addLayout(title_row)
         text_layout.addWidget(self.tip)
 
         layout.addWidget(self.previewFrame, 0, 0, 2, 1)
@@ -860,6 +887,7 @@ class CursorRow(QWidget):
         self.path = path
         self.setToolTip(str(path) if path else "")
         self.preview.setPath(self.backend, path, role=self.role)
+        style_kind_chip(self.kindChip, cursor_kind_badge(path))
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -882,16 +910,21 @@ class ExtraResourceItem(QWidget):
         super().__init__(parent)
         self.path = path
         self.dragStart = QPoint()
-        self.setFixedSize(56, 56)
+        self.setFixedSize(68, 76)
         self.setToolTip(path.name)
         self.setObjectName("extraResourceItem")
         self.setStyleSheet("#extraResourceItem { background: #ffffff; border: none; border-radius: 8px; } #extraResourceItem:hover { background: #eef7ff; }")
-        layout = QGridLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(0)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 4)
+        layout.setSpacing(3)
+        preview_box = QWidget()
+        preview_box.setFixedSize(56, 52)
+        preview_layout = QGridLayout(preview_box)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(0)
         preview = CursorPreview(46)
         preview.setPath(backend, path, 40)
-        layout.addWidget(preview, 0, 0, alignment=Qt.AlignCenter)
+        preview_layout.addWidget(preview, 0, 0, alignment=Qt.AlignCenter)
         self.closeButton = QLabel("×")
         self.closeButton.setFixedSize(16, 16)
         self.closeButton.setAlignment(Qt.AlignCenter)
@@ -899,7 +932,11 @@ class ExtraResourceItem(QWidget):
         self.closeButton.setStyleSheet("background: #ef4444; color: white; border-radius: 8px; font-weight: 700;")
         self.closeButton.hide()
         self.closeButton.mousePressEvent = lambda _event: self.deleteRequested.emit(self.path)
-        layout.addWidget(self.closeButton, 0, 0, alignment=Qt.AlignTop | Qt.AlignRight)
+        preview_layout.addWidget(self.closeButton, 0, 0, alignment=Qt.AlignTop | Qt.AlignRight)
+        layout.addWidget(preview_box, alignment=Qt.AlignCenter)
+        self.kindChip = QLabel()
+        style_kind_chip(self.kindChip, cursor_kind_badge(path))
+        layout.addWidget(self.kindChip, alignment=Qt.AlignCenter)
 
     def enterEvent(self, event) -> None:
         self.closeButton.show()
@@ -2137,6 +2174,9 @@ class ResourcePage(QWidget):
         self.scheme_page = scheme_page
         self.gridMode = False
         self.deleted: dict[str, Path] = {}
+        self.selectedNames: set[str] = set()
+        self.cardWidgets: dict[str, QWidget] = {}
+        self.checkBoxes: dict[str, QCheckBox] = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
@@ -2177,14 +2217,32 @@ class ResourcePage(QWidget):
         scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
         scroll.setWidget(self.container)
         layout.addWidget(scroll, 1)
+        action_bar = QHBoxLayout()
+        action_bar.setContentsMargins(0, 2, 0, 0)
+        self.selectionStatus = CaptionLabel("未选择方案")
+        self.selectionStatus.setTextColor("#64748b", "#94a3b8")
+        self.applySelectedButton = PrimaryPushButton("应用")
+        self.applySelectedButton.setIcon(FIF.ACCEPT)
+        self.applySelectedButton.setMinimumWidth(112)
+        self.deleteSelectedButton = PushButton("删除")
+        self.deleteSelectedButton.setIcon(FIF.DELETE)
+        self.deleteSelectedButton.setMinimumWidth(112)
+        action_bar.addWidget(self.selectionStatus)
+        action_bar.addStretch(1)
+        action_bar.addWidget(self.applySelectedButton)
+        action_bar.addWidget(self.deleteSelectedButton)
+        layout.addLayout(action_bar)
         self.openWeb.clicked.connect(lambda: webbrowser.open(self.backend.RESOURCE_URL))
         self.importButton.clicked.connect(self.importResources)
         self.importFolderButton.clicked.connect(self.importResourceFolder)
         self.refresh.clicked.connect(self.render)
         self.restoreButton.clicked.connect(self.restoreCursor)
         self.gridButton.clicked.connect(self.toggleGrid)
+        self.applySelectedButton.clicked.connect(self.applySelectedResource)
+        self.deleteSelectedButton.clicked.connect(self.deleteSelectedResources)
         self.loadedOnce = False
         self.cards.addWidget(CaptionLabel("进入资源库页面后再加载资源预览。"))
+        self.updateSelectionControls()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -2194,7 +2252,6 @@ class ResourcePage(QWidget):
 
     def toggleGrid(self):
         self.gridMode = self.gridButton.isChecked()
-        self.deleted.clear()
         self.render()
 
     def clearCards(self):
@@ -2217,25 +2274,49 @@ class ResourcePage(QWidget):
         self.cards = QGridLayout(self.container) if self.gridMode else QVBoxLayout(self.container)
         self.cards.setSpacing(10)
         names = self.scheme_page.schemeNames()
+        self.selectedNames.intersection_update(names)
+        self.cardWidgets = {}
+        self.checkBoxes = {}
         if not names:
-            self.cards.addWidget(BodyLabel("暂无资源"))
+            empty = BodyLabel("暂无资源")
+            if self.gridMode:
+                self.cards.addWidget(empty, 0, 0)
+            else:
+                self.cards.addWidget(empty)
+            self.updateSelectionControls()
             return
         for index, name in enumerate(names):
             card = QWidget()
             card.setObjectName("resourceCard")
-            card.setStyleSheet("#resourceCard { background: #ffffff; border: none; border-radius: 8px; }")
+            card.setCursor(Qt.PointingHandCursor)
             if self.gridMode:
                 card.setMinimumSize(320, 260)
+            else:
+                card.setMinimumHeight(92)
+            self.cardWidgets[name] = card
             layout = QVBoxLayout(card) if self.gridMode else QHBoxLayout(card)
             layout.setContentsMargins(14, 12, 14, 12)
             layout.setSpacing(10)
             text = QVBoxLayout()
-            text.addWidget(StrongBodyLabel(name))
+            text.setSpacing(5)
+            title_row = QHBoxLayout()
+            title_row.setContentsMargins(0, 0, 0, 0)
+            title_row.setSpacing(8)
+            checkbox = QCheckBox()
+            checkbox.setCursor(Qt.PointingHandCursor)
+            checkbox.setChecked(name in self.selectedNames)
+            checkbox.toggled.connect(lambda checked, n=name: self.setResourceSelected(n, checked))
+            self.checkBoxes[name] = checkbox
+            title_row.addWidget(checkbox)
+            title_row.addWidget(StrongBodyLabel(name))
             scheme_dir, files = self.backend.scheme_manifest(name)
             summary = cursor_kind_summary_text(scheme_dir, files)
+            summary_label = QLabel()
+            style_summary_chip(summary_label, summary)
+            title_row.addWidget(summary_label)
+            title_row.addStretch(1)
+            text.addLayout(title_row)
             count_text = f"{len(files)} 个鼠标状态"
-            if summary:
-                count_text = f"{count_text}    {summary}"
             text.addWidget(CaptionLabel(count_text))
             layout.addLayout(text, 1 if not self.gridMode else 0)
             preview_grid = QGridLayout()
@@ -2256,26 +2337,116 @@ class ResourcePage(QWidget):
                 preview_grid.addWidget(preview, shown_index // columns, shown_index % columns)
                 shown_index += 1
             layout.addLayout(preview_grid, 1)
-            action_row = QHBoxLayout()
-            delete_btn = PushButton("删除")
-            delete_btn.setIcon(FIF.DELETE)
-            delete_btn.setMinimumWidth(86)
-            delete_btn.clicked.connect(lambda _checked=False, n=name, b=delete_btn: self.deleteOrRestoreResource(n, b))
-            apply_btn = PrimaryPushButton("应用")
-            apply_btn.setMinimumWidth(86)
-            apply_btn.clicked.connect(lambda _checked=False, n=name: self.applyResource(n))
-            action_row.addWidget(delete_btn)
-            action_row.addWidget(apply_btn)
-            if self.gridMode:
-                layout.addLayout(action_row)
-            else:
-                layout.addLayout(action_row)
+            card.mousePressEvent = self.resourceCardPressHandler(name)
+            self.updateResourceCardStyle(name)
             if self.gridMode:
                 self.cards.addWidget(card, index // 3, index % 3)
             else:
                 self.cards.addWidget(card)
         if not self.gridMode:
             self.cards.addStretch(1)
+        self.updateSelectionControls()
+
+    def resourceCardPressHandler(self, name: str):
+        def handler(event):
+            if event.button() == Qt.LeftButton:
+                self.toggleResourceSelection(name)
+                event.accept()
+
+        return handler
+
+    def updateResourceCardStyle(self, name: str) -> None:
+        card = self.cardWidgets.get(name)
+        if not card:
+            return
+        if name in self.selectedNames:
+            card.setStyleSheet(
+                "#resourceCard { background: #eef6ff; border: 1px solid #60a5fa; "
+                "border-radius: 8px; } #resourceCard:hover { background: #e0f2fe; }"
+            )
+        else:
+            card.setStyleSheet(
+                "#resourceCard { background: #ffffff; border: 1px solid transparent; "
+                "border-radius: 8px; } #resourceCard:hover { background: #f4fbff; }"
+            )
+        checkbox = self.checkBoxes.get(name)
+        if checkbox:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(name in self.selectedNames)
+            checkbox.blockSignals(False)
+
+    def setResourceSelected(self, name: str, selected: bool) -> None:
+        if selected:
+            self.selectedNames.add(name)
+        else:
+            self.selectedNames.discard(name)
+        self.updateResourceCardStyle(name)
+        self.updateSelectionControls()
+
+    def toggleResourceSelection(self, name: str) -> None:
+        self.setResourceSelected(name, name not in self.selectedNames)
+
+    def selectedResourceNames(self) -> list[str]:
+        ordered = self.scheme_page.schemeNames()
+        return [name for name in ordered if name in self.selectedNames]
+
+    def updateSelectionControls(self) -> None:
+        count = len(self.selectedNames)
+        if count == 0:
+            self.selectionStatus.setText("未选择方案")
+        else:
+            self.selectionStatus.setText(f"已选择 {count} 个方案")
+        self.applySelectedButton.setEnabled(count == 1)
+        self.deleteSelectedButton.setEnabled(count > 0)
+
+    def applySelectedResource(self):
+        selected = self.selectedResourceNames()
+        if len(selected) != 1:
+            self.scheme_page.showWarn("请选择一个方案", "应用资源库方案时只能选择一个方案。")
+            return
+        self.applyResource(selected[0])
+
+    def deleteSelectedResources(self):
+        selected = self.selectedResourceNames()
+        if not selected:
+            return
+        trash_root = self.backend.WORK_ROOT / "resource_trash"
+        trash_root.mkdir(parents=True, exist_ok=True)
+        removed: list[str] = []
+        failed: list[str] = []
+        stamp = int(time.time())
+        for index, name in enumerate(selected):
+            source = self.backend.SCHEME_LIBRARY / name
+            if not source.exists():
+                self.selectedNames.discard(name)
+                continue
+            target = trash_root / f"{name}_{stamp}_{index}"
+            suffix = 1
+            while target.exists():
+                target = trash_root / f"{name}_{stamp}_{index}_{suffix}"
+                suffix += 1
+            try:
+                source.rename(target)
+                self.deleted[name] = target
+                removed.append(name)
+            except Exception as exc:
+                failed.append(f"{name}: {exc}")
+                self.backend.log_error("删除资源库方案失败", exc)
+        self.selectedNames.difference_update(removed)
+        self.scheme_page.refreshSchemes()
+        self.render()
+        if removed:
+            InfoBar.success(
+                title="删除完成",
+                content=f"已移动到回收区：{', '.join(removed[:3])}{' 等' if len(removed) > 3 else ''}。误删可从 build/resource_trash 恢复。",
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=5000,
+                parent=self.window(),
+            )
+        if failed:
+            self.scheme_page.showWarn("删除失败", "\n".join(failed[:3]))
 
     def applyResource(self, name: str):
         self.scheme_page.schemeBox.setCurrentText(name)

@@ -27,6 +27,8 @@
 | 多 INF 压缩包 | `theme-multi-inf.zip` | 真实多主题包 | 多 INF 批量导入 | 一次导入多个方案，结果统计正确 | 需要补素材 |
 | 命名不规范主题包 | `theme-role-alias-mixed.zip` | 手工整理一组 `pen/cross/pin/person/hand/link` 文件 | 角色匹配修复 | `NWPen`、`Crosshair`、`Pin`、`Person`、`Hand` 落位正确 | 需要补素材 |
 | 老主题包 | `theme-legacy-no-pin-person.zip` | 不包含 `Pin/Person` 的旧鼠标包 | 旧包兼容性 | 不报错，可正常导入已有角色 | 需要补素材 |
+| 资源库多方案样本 | `library-selection-set/` | 至少 5 个已导入方案目录 | 资源库选择、应用、批量删除 | 列表/宫格视图选择一致，单选可应用，多选可删除 | 需要补素材 |
+| 动静混合方案 | `theme-ani-cur-mixed.zip` | 同时包含 `.ani` 和 `.cur` 的主题包 | 动静汇总标识 | 方案页和替换池显示标识，资源库只显示汇总 | 需要补素材 |
 | 启动与托盘诊断样本 | `startup-diagnostics.txt` | 每次真机验证后记录 | 自启动、托盘、后台 | 能记录 Run、启动目录、任务计划、PID、进程路径 | 需要真机验证 |
 | 干净系统打包环境记录 | `clean-win-build-notes.md` | Win10 / Win11 无 Python 环境实测 | 安装包运行时、黑框问题 | 能明确验证“可生成安装包”或“清晰降级提示” | 需要真机验证 |
 
@@ -48,6 +50,14 @@
 
 - `theme-role-alias-mixed.zip`
 - `theme-legacy-no-pin-person.zip`
+
+### 资源库交互最小组合
+
+- `library-selection-set/`
+- `theme-ani-cur-mixed.zip`
+- 至少 1 个只含 `.cur` 的方案
+- 至少 1 个只含 `.ani` 的方案
+- 至少 1 个动静混合方案
 
 ### 打包与启动最小组合
 
