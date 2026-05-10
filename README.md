@@ -14,7 +14,7 @@
   <p align="center">
     <h3>给新手用户和鼠标指针制作者的图形化管理工具</h3>
     <br />
-    <a href="https://github.com/yuanyue1234/MousePointer/releases/download/v2.0.0/MousePointer_Portable.exe"><strong>下载软件 &raquo;</strong></a>
+    <a href="https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.0/MousePointer_Portable_Directory.zip"><strong>下载 v2.1 目录版 &raquo;</strong></a>
     <br />
     <br />
     <a href="README.en.md">English</a>
@@ -64,12 +64,17 @@
 ### Step 1：下载安装
 
 - GitHub Releases：
-  [下载最新版本](https://github.com/yuanyue1234/MousePointer/releases/download/v2.0.0/MousePointer_Portable.exe)
+  [下载推荐目录版 v2.1](https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.0/MousePointer_Portable_Directory.zip)
+- 备用单文件版：
+  [下载单文件 exe](https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.0/MousePointer_Portable.exe)
+- 在线资源库：
+  [打开鼠标指针资源库](http://8.135.33.2:5002/)
 
 ### Step 2：导入方案
 
 - 支持拖入 `.cur`、`.ani`、图片、压缩包、`exe` 或文件夹。
 - 资源包内如果存在 `.inf`，程序会自动识别并建立方案。
+- 也可以在应用的资源库页面打开在线资源库下载资源包。
 
 ### Step 3：编辑与应用
 
@@ -92,14 +97,16 @@
 ## 打包
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller -y --clean "鼠标指针配置生成器_绿色程序.spec"
+.\scripts\build_portable.ps1 -PackageMode Both
 ```
 
 输出位置：
 
 ```text
-dist\鼠标指针配置生成器_绿色程序.exe
 release-assets\鼠标指针配置生成器_绿色程序.exe
+release-assets\MousePointer_Portable_Directory\
+release-assets\MousePointer_Portable_Directory.zip
+release-assets\SHA256SUMS.txt
 ```
 
 ## 参考

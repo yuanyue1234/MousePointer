@@ -14,7 +14,7 @@
   <p align="center">
     <h3>A graphical cursor manager for beginners and cursor creators</h3>
     <br />
-    <a href="https://github.com/yuanyue1234/MousePointer/releases/download/v2.0.0/MousePointer_Portable.exe"><strong>Download &raquo;</strong></a>
+    <a href="https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.0/MousePointer_Portable_Directory.zip"><strong>Download v2.1 Folder Build &raquo;</strong></a>
     <br />
     <br />
     <a href="README.en.md">English</a>
@@ -64,12 +64,17 @@
 ### Step 1: Download
 
 - GitHub Releases:  
-  [Download latest build](https://github.com/yuanyue1234/MousePointer/releases/download/v2.0.0/MousePointer_Portable.exe)
+  [Download recommended v2.1 folder build](https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.0/MousePointer_Portable_Directory.zip)
+- Backup single-file build:  
+  [Download single exe](https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.0/MousePointer_Portable.exe)
+- Online resource library:  
+  [Open cursor resource library](http://8.135.33.2:5002/)
 
 ### Step 2: Import a scheme
 
 - Drag in `.cur`, `.ani`, images, archives, `exe`, or folders.
 - If the package contains `.inf`, the app builds schemes automatically.
+- You can also open the online library from the Resource Library page and download cursor packs there.
 
 ### Step 3: Edit and apply
 
@@ -92,14 +97,16 @@
 ## Build
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller -y --clean "鼠标指针配置生成器_绿色程序.spec"
+.\scripts\build_portable.ps1 -PackageMode Both
 ```
 
 Output:
 
 ```text
-dist\鼠标指针配置生成器_绿色程序.exe
 release-assets\鼠标指针配置生成器_绿色程序.exe
+release-assets\MousePointer_Portable_Directory\
+release-assets\MousePointer_Portable_Directory.zip
+release-assets\SHA256SUMS.txt
 ```
 
 ## References
