@@ -399,6 +399,56 @@ EXTRA_RESOURCE_EXTS = {".cur", ".ani", ".png", ".jpg", ".jpeg", ".bmp", ".gif", 
 ARCHIVE_RESOURCE_EXTS = {".zip", ".rar", ".7z", ".exe"}
 
 
+def create_file_dialog(
+    parent: QWidget | None,
+    title: str,
+    directory: str,
+    name_filter: str = "",
+    *,
+    file_mode: QFileDialog.FileMode = QFileDialog.FileMode.ExistingFile,
+    accept_mode: QFileDialog.AcceptMode = QFileDialog.AcceptMode.AcceptOpen,
+) -> QFileDialog:
+    dialog = QFileDialog(parent)
+    dialog.setWindowTitle(title)
+    if directory:
+        dialog.setDirectory(directory)
+    if name_filter:
+        dialog.setNameFilter(name_filter)
+    dialog.setFileMode(file_mode)
+    dialog.setAcceptMode(accept_mode)
+    return dialog
+
+
+def open_file_name(parent: QWidget | None, title: str, directory: str, name_filter: str) -> str:
+    dialog = create_file_dialog(parent, title, directory, name_filter)
+    return dialog.selectedFiles()[0] if dialog.exec() == QDialog.Accepted and dialog.selectedFiles() else ""
+
+
+def open_file_names(parent: QWidget | None, title: str, directory: str, name_filter: str) -> list[str]:
+    dialog = create_file_dialog(parent, title, directory, name_filter, file_mode=QFileDialog.FileMode.ExistingFiles)
+    return dialog.selectedFiles() if dialog.exec() == QDialog.Accepted else []
+
+
+def existing_directory(parent: QWidget | None, title: str, directory: str) -> str:
+    dialog = create_file_dialog(parent, title, directory, file_mode=QFileDialog.FileMode.Directory)
+    dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+    return dialog.selectedFiles()[0] if dialog.exec() == QDialog.Accepted and dialog.selectedFiles() else ""
+
+
+def save_file_name(parent: QWidget | None, title: str, path: str, name_filter: str) -> str:
+    dialog = create_file_dialog(
+        parent,
+        title,
+        str(Path(path).parent) if path else "",
+        name_filter,
+        file_mode=QFileDialog.FileMode.AnyFile,
+        accept_mode=QFileDialog.AcceptMode.AcceptSave,
+    )
+    if path:
+        dialog.selectFile(str(Path(path).name))
+    return dialog.selectedFiles()[0] if dialog.exec() == QDialog.Accepted and dialog.selectedFiles() else ""
+
+
 def pixmap_from_image(image: Image.Image, target_size: int | None = None) -> QPixmap:
     qimage = ImageQt(image.convert("RGBA"))
     pixmap = QPixmap.fromImage(qimage)
@@ -440,9 +490,22 @@ def cursor_kind_summary_text(scheme_dir: Path, files: dict[str, str]) -> str:
     return "  ".join(parts)
 
 
+def set_label_visible_after_parent(label: QLabel, visible: bool) -> None:
+    if visible and label.parentWidget() is None:
+        label.hide()
+
+        def show_when_parented():
+            if label.parentWidget() is not None and bool(label.text()):
+                label.setVisible(True)
+
+        QTimer.singleShot(0, show_when_parented)
+        return
+    label.setVisible(visible)
+
+
 def style_kind_chip(label: QLabel, text: str) -> None:
     label.setText(text)
-    label.setVisible(bool(text))
+    set_label_visible_after_parent(label, bool(text))
     label.setAlignment(Qt.AlignCenter)
     label.setFixedHeight(20)
     label.setMinimumWidth(30)
@@ -459,7 +522,7 @@ def style_kind_chip(label: QLabel, text: str) -> None:
 
 def style_summary_chip(label: QLabel, text: str) -> None:
     label.setText(text)
-    label.setVisible(bool(text))
+    set_label_visible_after_parent(label, bool(text))
     label.setAlignment(Qt.AlignCenter)
     label.setFixedHeight(22)
     label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -494,13 +557,17 @@ QMenu::separator {
 }
 QListView, QListWidget {
     background-color: #ffffff;
-    border: 1px solid #dbe4f0;
-    border-radius: 8px;
-    padding: 4px;
+    border: none;
+    border-radius: 0;
+    padding: 2px;
     color: #0f172a;
     outline: 0;
     selection-background-color: #eef6ff;
     selection-color: #0f172a;
+}
+QListView::viewport, QListWidget::viewport {
+    background-color: #ffffff;
+    border: none;
 }
 QListView::item, QListWidget::item {
     min-height: 28px;
@@ -1536,7 +1603,7 @@ class SchemePage(QWidget):
             self.status.setText(f"自动保存失败：{exc}")
 
     def importExtraResources(self):
-        files, _ = QFileDialog.getOpenFileNames(
+        files = open_file_names(
             self,
             "添加可替换指针资源",
             str(self.backend.configured_storage_root()),
@@ -1690,7 +1757,7 @@ class SchemePage(QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     def pickFileForRole(self, reg_name: str):
-        file_name, _ = QFileDialog.getOpenFileName(
+        file_name = open_file_name(
             self,
             "选择鼠标文件",
             str(self.backend.configured_storage_root()),
@@ -1747,7 +1814,7 @@ class SchemePage(QWidget):
             self.autoSaveCurrentScheme()
 
     def importPackage(self):
-        files, _ = QFileDialog.getOpenFileNames(
+        files = open_file_names(
             self,
             "导入安装包、压缩包或光标文件",
             str(self.backend.configured_storage_root()),
@@ -1770,7 +1837,7 @@ class SchemePage(QWidget):
                 self.showImportSummary(imported)
 
     def importFolder(self):
-        folder = QFileDialog.getExistingDirectory(self, "导入鼠标指针文件夹", str(self.backend.configured_storage_root()))
+        folder = existing_directory(self, "导入鼠标指针文件夹", str(self.backend.configured_storage_root()))
         if folder:
             self.beginImportBatch()
             imported = self.importPackagePath(Path(folder))
@@ -1972,7 +2039,7 @@ class SchemePage(QWidget):
         default_dir.mkdir(parents=True, exist_ok=True)
         theme = self.backend.sanitize_name(self.schemeBox.currentText() or "鼠标方案")
         default_path = default_dir / f"{theme}_方案预览截图.gif"
-        file_name, _ = QFileDialog.getSaveFileName(self, "请选择导出位置", str(default_path), "GIF (*.gif)")
+        file_name = save_file_name(self, "请选择导出位置", str(default_path), "GIF (*.gif)")
         if not file_name:
             return
         target = Path(file_name)
@@ -2054,7 +2121,7 @@ class SchemePage(QWidget):
             return
         default_dir = self.backend.configured_output_root()
         default_dir.mkdir(parents=True, exist_ok=True)
-        folder = QFileDialog.getExistingDirectory(self, "选择安装包保存位置", str(default_dir))
+        folder = existing_directory(self, "选择安装包保存位置", str(default_dir))
         if not folder:
             return
         output_dir = Path(folder)
@@ -2534,7 +2601,7 @@ class ResourcePage(QWidget):
         self.scheme_page.showImportSummary(imported)
 
     def importResources(self):
-        files, _ = QFileDialog.getOpenFileNames(
+        files = open_file_names(
             self,
             "导入资源包或安装器",
             str(self.backend.configured_storage_root()),
@@ -2544,7 +2611,7 @@ class ResourcePage(QWidget):
             self.importDroppedResources([Path(file) for file in files])
 
     def importResourceFolder(self):
-        folder = QFileDialog.getExistingDirectory(self, "导入资源文件夹", str(self.backend.configured_storage_root()))
+        folder = existing_directory(self, "导入资源文件夹", str(self.backend.configured_storage_root()))
         if folder:
             self.importDroppedResources([Path(folder)])
 
@@ -2620,7 +2687,7 @@ class SchedulePage(QWidget):
                 value = self.currentSchemeValue(scheme)
                 at = time_edit.currentText().strip()
                 if value:
-                    self.backend.CursorThemeBuilder.validate_time(None, at)
+                    self.backend.validate_time(at)
                     items.append({"mode": mode, "time": at, "scheme": value})
             self.backend.SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
             self.backend.SCHEDULE_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3044,7 +3111,7 @@ class SwitchPage(QWidget):
                     value = self.currentSchemeValue(scheme)
                     at = time_edit.currentText().strip()
                     if value:
-                        self.backend.CursorThemeBuilder.validate_time(None, at)
+                        self.backend.validate_time(at)
                         items.append({"mode": name, "time": at, "scheme": value})
             elif mode == "timer":
                 selected = self.timerSelectedSchemes()
@@ -3297,7 +3364,7 @@ class SettingsPage(QWidget):
         self.refreshStartupStatus()
 
     def pickStorage(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择鼠标文件存放位置", self.storage.text())
+        folder = existing_directory(self, "选择鼠标文件存放位置", self.storage.text())
         if folder:
             self.storage.setText(folder)
 

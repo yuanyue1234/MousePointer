@@ -64,14 +64,25 @@ QPushButton#primaryButton {
 QPushButton#primaryButton:hover {
     background: #1d4ed8;
 }
-QMenu, QListView {
+QMenu {
     background: #ffffff;
     border: 1px solid #dbe4f0;
     border-radius: 8px;
     padding: 4px;
     color: #0f172a;
+}
+QListView {
+    background: #ffffff;
+    border: none;
+    border-radius: 0;
+    padding: 2px;
+    color: #0f172a;
     selection-background-color: #eef6ff;
     selection-color: #0f172a;
+}
+QListView::viewport {
+    background: #ffffff;
+    border: none;
 }
 """
 

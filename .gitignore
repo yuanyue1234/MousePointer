@@ -10,3 +10,6 @@ dist/
 _build/
 PyQt-Fluent-Widgets-master/
 PyQt-Fluent-Widgets-master.zip
+release-assets/MousePointer_Portable_Directory/
+release-assets/MousePointer_Portable_Directory.zip
+release-assets/SHA256SUMS.txt

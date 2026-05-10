@@ -419,6 +419,25 @@ fix: sync release download links
 
 - GitHub Release 中文资产名此前有规范化问题，建议继续用英文资产名。
 
+### 13.1 v2.1 干净发布验收
+
+目标：避免旧 UI、旧依赖、旧下载链接再次进入发布包。
+
+要做：
+
+- `APP_VERSION` 固定为 `2.1.0`。
+- `main.py` 只保留 PySide6/qfluentwidgets 主线和后端逻辑，移除旧 Tk `CursorThemeBuilder` 运行时代码。
+- `requirements.txt` 移除 `tkinterdnd2`。
+- PyInstaller 打包参数显式排除 `tkinter`、`_tkinter`、`tkinterdnd2`。
+- 打包脚本每次先清理受管理的旧产物，再生成单文件版、目录版、目录版 zip 和 `SHA256SUMS.txt`。
+- README、英文 README、官网页面和介绍页统一指向 `v2.1.0` 下载资产。
+
+验收：
+
+- 包体检查不含 `tkinterdnd2` / `pyi_rth__tkinter`。
+- `release-assets` 不再残留旧 `_build` 或旧错误日志。
+- 推荐资产为 `MousePointer_Portable_Directory.zip`，单文件 exe 只作为备用。
+
 ### 14. 优化启动速度
 
 目标：打开程序等待时间明显降低。
