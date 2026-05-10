@@ -12,7 +12,8 @@ function Join-Chars {
 }
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$python = Join-Path $root ".venv\Scripts\python.exe"
+$venvPython = Join-Path $root ".venv\Scripts\python.exe"
+$python = if (Test-Path -LiteralPath $venvPython) { $venvPython } else { "python" }
 $exeName = Join-Chars @(0x9F20, 0x6807, 0x6307, 0x9488, 0x914D, 0x7F6E, 0x751F, 0x6210, 0x5668, 0x005F, 0x7EFF, 0x8272, 0x7A0B, 0x5E8F)
 $exeFile = "$exeName.exe"
 $distDir = Join-Path $root "dist"
@@ -24,8 +25,9 @@ $payloadRoot = Join-Path $root "build\package_payload"
 $payloadAssets = Join-Path $payloadRoot "assets"
 $iconFinalName = "icon" + (Join-Chars @(0x7EC8)) + ".png"
 
-if (-not (Test-Path -LiteralPath $python)) {
-    throw "Missing Python runtime: $python"
+& $python --version | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to run Python: $python"
 }
 
 function Remove-InWorkspace {
