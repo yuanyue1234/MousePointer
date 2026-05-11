@@ -68,3 +68,14 @@ Validation already run:
 .\.venv\Scripts\python.exe -m compileall main.py fluent_ui.py cursor_preview_light.py tests
 .\.venv\Scripts\python.exe -m unittest tests.test_cursor_metadata
 ```
+
+## 2026-05-12 Import Stability Work
+
+Implemented after commit `8707543`:
+
+- Import tasks now report progress through Qt signals and show a progress bar in the scheme page.
+- Resource filtering rules are explicit: documents/links are excluded, images/GIF/ICO over 1MB are excluded, and `.cur/.ani` files use an 8MB safety limit.
+- Archives or folders without `.inf` are imported as resource-only entries with `resource_only: true` and `files: {}` instead of hanging or pretending to be mapped schemes.
+- Resource-only entries remain visible in the resource library and can be deleted, but the apply action is disabled.
+- INF parsing now supports `Control Panel\Cursors\Schemes` ordered cursor lists and can disable filename fallback when an INF exists.
+- The hotspot adjustment dialog is forced to a white background so Windows dark mode does not make it unreadable.

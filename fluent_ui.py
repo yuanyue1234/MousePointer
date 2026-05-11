@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QSizePolicy,
@@ -349,6 +350,7 @@ def apply_widget_language(root: QWidget, english: bool) -> None:
 class TaskSignal(QObject):
     finished = Signal(object)
     failed = Signal(str)
+    progress = Signal(str, int, int)
 
 
 class GuiCommandBridge(QObject):
@@ -411,8 +413,35 @@ def role_icon_path(backend, role) -> Path:
     return backend.resource_path(f"assets/role_icons/{role.file_stem}.png")
 
 
-EXTRA_RESOURCE_EXTS = {".cur", ".ani", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}
+CURSOR_RESOURCE_EXTS = {".cur", ".ani"}
+IMAGE_RESOURCE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}
+EXTRA_RESOURCE_EXTS = CURSOR_RESOURCE_EXTS | IMAGE_RESOURCE_EXTS
 ARCHIVE_RESOURCE_EXTS = {".zip", ".rar", ".7z", ".exe"}
+DOCUMENT_RESOURCE_EXTS = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf",
+    ".txt", ".md", ".html", ".htm", ".url", ".lnk",
+}
+IMAGE_RESOURCE_MAX_BYTES = 1 * 1024 * 1024
+CURSOR_RESOURCE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def resource_filter_reason(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if not path.is_file():
+        return "不是文件"
+    if suffix in DOCUMENT_RESOURCE_EXTS:
+        return "文档或链接文件已排除"
+    if suffix not in EXTRA_RESOURCE_EXTS:
+        return "不支持的资源格式"
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return f"无法读取大小：{exc}"
+    if suffix in IMAGE_RESOURCE_EXTS and size > IMAGE_RESOURCE_MAX_BYTES:
+        return "图片/GIF/ICO 超过 1MB"
+    if suffix in CURSOR_RESOURCE_EXTS and size > CURSOR_RESOURCE_MAX_BYTES:
+        return "鼠标指针文件超过 8MB"
+    return ""
 
 
 def create_file_dialog(
@@ -882,6 +911,11 @@ class HotspotDialog(QDialog):
     def __init__(self, backend, role, path: Path | None, ratio: tuple[float, float], parent=None):
         super().__init__(parent)
         self.setWindowTitle("调整鼠标焦点")
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; color: #0f172a; } "
+            "QLabel { color: #0f172a; background: transparent; } "
+            "QDialogButtonBox QPushButton { color: #0f172a; background: #ffffff; border: 1px solid #dbe4f0; border-radius: 6px; padding: 6px 12px; }"
+        )
         self.ratio = ratio
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -1218,6 +1252,9 @@ class SchemePage(QWidget):
         self.loadingScheme = False
         self.importSkipped: list[str] = []
         self.importFailed: list[str] = []
+        self.importResourceOnly: list[str] = []
+        self.importFiltered: list[str] = []
+        self.recordImportFilters = False
         self.animationTimer = QTimer(self)
         self.animationTimer.timeout.connect(self.nextAnimationFrame)
         self.sizeApplyTimer = QTimer(self)
@@ -1404,6 +1441,15 @@ class SchemePage(QWidget):
         self.status.setWordWrap(True)
         self.status.setTextColor("#64748b", "#94a3b8")
         right_layout.addWidget(self.status)
+        self.taskProgress = QProgressBar()
+        self.taskProgress.setTextVisible(True)
+        self.taskProgress.setVisible(False)
+        self.taskProgress.setStyleSheet(
+            "QProgressBar { background: #f8fafc; color: #0f172a; border: 1px solid #dbe4f0; "
+            "border-radius: 6px; height: 18px; text-align: center; } "
+            "QProgressBar::chunk { background: #4f8cff; border-radius: 5px; }"
+        )
+        right_layout.addWidget(self.taskProgress)
         self.currentSchemeStatus = CaptionLabel("")
         self.currentSchemeStatus.setTextColor("#64748b", "#94a3b8")
         self.currentSchemeStatus.setWordWrap(True)
@@ -1567,7 +1613,7 @@ class SchemePage(QWidget):
             if path.is_dir() or path.suffix.lower() in ARCHIVE_RESOURCE_EXTS:
                 blocked = True
                 continue
-            if path.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+            if resource_filter_reason(path):
                 blocked = True
                 continue
             self.appendExtraResource(path)
@@ -1640,7 +1686,9 @@ class SchemePage(QWidget):
         staged = []
         source_list = self.extraFiles if sources is None else sources
         for source in source_list:
-            if not source.exists() or source.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+            reason = resource_filter_reason(source)
+            if reason:
+                self.noteFilteredResource(source, reason)
                 continue
             output_name = self.uniqueFileName(staging_dir, source.name)
             target = staging_dir / output_name
@@ -1656,7 +1704,9 @@ class SchemePage(QWidget):
         extra_names: list[str] = []
         source_list = self.extraFiles if sources is None else sources
         for source in source_list:
-            if not source.exists() or source.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+            reason = resource_filter_reason(source)
+            if reason:
+                self.noteFilteredResource(source, reason)
                 continue
             output_name = self.uniqueFileName(extras_dir, source.name)
             target = extras_dir / output_name
@@ -1890,6 +1940,13 @@ class SchemePage(QWidget):
     def beginImportBatch(self) -> None:
         self.importSkipped = []
         self.importFailed = []
+        self.importResourceOnly = []
+        self.importFiltered = []
+        self.recordImportFilters = True
+
+    def noteFilteredResource(self, path: Path, reason: str) -> None:
+        if self.recordImportFilters:
+            self.importFiltered.append(f"{path.name}: {reason}")
 
     def showImportSummary(self, imported: list[str]) -> None:
         imported = [name for name in imported if name]
@@ -1899,14 +1956,20 @@ class SchemePage(QWidget):
             if len(imported) > 6:
                 preview += f" 等 {len(imported)} 个"
             lines.append(preview)
+        if self.importResourceOnly:
+            lines.append(f"资源包/无映射：{len(self.importResourceOnly)} 个")
         if self.importSkipped:
             lines.append(f"跳过重复：{len(self.importSkipped)} 个")
+        if self.importFiltered:
+            lines.append(f"已过滤：{len(self.importFiltered)} 个")
         if self.importFailed:
             lines.append(f"失败：{len(self.importFailed)} 个，详情见错误记录。")
         content = "\n".join(lines)
         if imported:
             self.showInfo("导入完成", content)
-        elif self.importSkipped:
+        elif self.importResourceOnly:
+            self.showWarn("导入完成", content)
+        elif self.importSkipped or self.importFiltered:
             self.showWarn("导入完成", content)
         elif self.importFailed:
             self.showWarn("导入失败", content)
@@ -1954,20 +2017,23 @@ class SchemePage(QWidget):
         if not packages:
             return
 
-        def work():
+        def work(progress):
             self.beginImportBatch()
             imported: list[str] = []
-            for package in packages:
+            total = max(1, len(packages))
+            for index, package in enumerate(packages, start=1):
+                progress(f"正在导入：{package.name}", index - 1, total)
                 imported.extend(self.importPackagePath(package, notify=False))
+                progress(f"已处理：{package.name}", index, total)
             return imported
 
         def done(imported: list[str]):
             if after_done:
                 after_done(imported)
-            if imported or self.importSkipped or self.importFailed:
+            if imported or self.importResourceOnly or self.importSkipped or self.importFiltered or self.importFailed:
                 self.showImportSummary(imported)
 
-        self.runTask(title, work, done)
+        self.runTask(title, work, done, with_progress=True)
 
     def importPackagePath(self, package: Path, *, notify: bool = True) -> list[str]:
         imported = []
@@ -2011,7 +2077,10 @@ class SchemePage(QWidget):
         mapped = {path.resolve() for path in mapping.values() if path.exists()}
         extras = []
         for path in base.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+            reason = resource_filter_reason(path)
+            if reason:
+                if path.is_file() and path.suffix.lower() in EXTRA_RESOURCE_EXTS | DOCUMENT_RESOURCE_EXTS:
+                    self.noteFilteredResource(path, reason)
                 continue
             try:
                 if path.resolve() in mapped:
@@ -2020,6 +2089,25 @@ class SchemePage(QWidget):
                 pass
             extras.append(path)
         return extras
+
+    def uniqueImportSchemeName(self, raw_name: str) -> tuple[str, Path]:
+        name = self.backend.sanitize_name(raw_name)
+        if name in self.backend.DEFAULT_SCHEME_NAMES:
+            name = f"{name}_资源"
+        base = name
+        index = 2
+        while (self.backend.SCHEME_LIBRARY / name / "scheme.json").exists():
+            name = f"{base}_{index}"
+            index += 1
+        return name, self.backend.SCHEME_LIBRARY / name
+
+    def importRootAsResourceOnly(self, root: Path, raw_name: str, search_root: Path | None = None, reason: str = "未找到 INF 映射") -> str:
+        name, scheme_dir = self.uniqueImportSchemeName(raw_name)
+        scheme_dir.mkdir(parents=True, exist_ok=True)
+        extra_names = self.copyExtraFilesToScheme(scheme_dir, self.extraResourcesFromRoot(root, {}, search_root))
+        self.writeManifest(name, {}, scheme_dir, extra_names, {}, resource_only=True, import_note=reason)
+        self.importResourceOnly.append(name)
+        return name
 
     def importRootAsScheme(self, root: Path, raw_name: str, search_root: Path | None = None, *, duplicate_policy: str = "ask") -> str:
         try:
@@ -2045,9 +2133,12 @@ class SchemePage(QWidget):
                     index += 1
                 name = f"{base}_{index}"
                 scheme_dir = self.backend.SCHEME_LIBRARY / name
-            mapping = self.backend.parse_inf_mapping(root)
+            has_inf = any(root.rglob("*.inf"))
+            if not has_inf:
+                return self.importRootAsResourceOnly(root, name, root, "压缩包内没有 INF 文件，已作为资源包导入。")
+            mapping = self.backend.parse_inf_mapping(root, use_filename_fallback=False)
             if not mapping:
-                raise RuntimeError(f"{root.name} 没有识别到鼠标方案。")
+                return self.importRootAsResourceOnly(root, name, root, "INF 未解析到鼠标角色映射，已作为资源包导入。")
             scheme_dir.mkdir(parents=True, exist_ok=True)
             files = {}
             for reg_name, source in mapping.items():
@@ -2059,11 +2150,9 @@ class SchemePage(QWidget):
                 files[reg_name] = output_name
             extra_names = self.copyExtraFilesToScheme(scheme_dir, self.extraResourcesFromRoot(root, mapping, search_root))
             self.writeManifest(name, files, scheme_dir, extra_names, {})
-            self.status.setText(f"已添加：{name}")
             return name
         except Exception as exc:
             self.importFailed.append(f"{raw_name}: {exc}")
-            self.showError("导入失败", exc)
             return ""
 
     def validate(self) -> str | None:
@@ -2099,11 +2188,25 @@ class SchemePage(QWidget):
             shutil.copy2(assets_dir / name, target_dir / name)
         return target_dir
 
-    def writeManifest(self, theme: str, files: dict[str, str], folder: Path, extras: list[str] | None = None, hotspots: dict[str, tuple[float, float]] | None = None):
+    def writeManifest(
+        self,
+        theme: str,
+        files: dict[str, str],
+        folder: Path,
+        extras: list[str] | None = None,
+        hotspots: dict[str, tuple[float, float]] | None = None,
+        *,
+        resource_only: bool = False,
+        import_note: str = "",
+    ):
         folder.mkdir(parents=True, exist_ok=True)
         manifest = {"name": theme, "files": files, "order": self.backend.time.time(), "saved_at": datetime.now().isoformat()}
         if extras:
             manifest["extras"] = extras
+        if resource_only:
+            manifest["resource_only"] = True
+        if import_note:
+            manifest["import_note"] = import_note
         hotspot_data = self.hotspots if hotspots is None else hotspots
         if hotspot_data:
             manifest["hotspots"] = {reg: [ratio[0], ratio[1]] for reg, ratio in hotspot_data.items()}
@@ -2385,24 +2488,43 @@ class SchemePage(QWidget):
         except Exception as exc:
             self.showError("删除失败", exc)
 
-    def runTask(self, title: str, func, on_done):
+    def runTask(self, title: str, func, on_done, *, with_progress: bool = False):
         self.applyButton.setEnabled(False)
         self.status.setText(title)
+        self.taskProgress.setVisible(True)
+        self.taskProgress.setRange(0, 0 if with_progress else 1)
+        self.taskProgress.setValue(0)
         signal = TaskSignal(self)
         signal.finished.connect(lambda value: self.finishTask(value, on_done))
         signal.failed.connect(lambda msg: self.failTask(msg))
+        signal.progress.connect(self.updateTaskProgress)
+
+        def progress(message: str, current: int = -1, total: int = 0) -> None:
+            signal.progress.emit(str(message), int(current), int(total))
 
         def target():
             try:
-                signal.finished.emit(func())
+                signal.finished.emit(func(progress) if with_progress else func())
             except Exception as exc:
                 self.backend.log_error(title, exc)
                 signal.failed.emit(str(exc))
 
         threading.Thread(target=target, daemon=True).start()
 
+    def updateTaskProgress(self, message: str, current: int, total: int) -> None:
+        if message:
+            self.status.setText(message)
+        self.taskProgress.setVisible(True)
+        if total <= 0:
+            self.taskProgress.setRange(0, 0)
+            return
+        self.taskProgress.setRange(0, total)
+        self.taskProgress.setValue(max(0, min(current, total)))
+
     def finishTask(self, value, on_done):
         self.applyButton.setEnabled(True)
+        self.recordImportFilters = False
+        self.taskProgress.setVisible(False)
         self.status.setText("完成")
         on_done(value)
         self.refreshSchemes()
@@ -2410,6 +2532,8 @@ class SchemePage(QWidget):
 
     def failTask(self, message: str):
         self.applyButton.setEnabled(True)
+        self.recordImportFilters = False
+        self.taskProgress.setVisible(False)
         self.status.setText("失败")
         self.showWarn("操作失败", message)
 
@@ -2561,14 +2685,16 @@ class ResourcePage(QWidget):
             title_row.setContentsMargins(0, 0, 0, 0)
             title_row.setSpacing(8)
             title_row.addWidget(StrongBodyLabel(name))
-            scheme_dir, files = self.backend.scheme_manifest(name)
+            scheme_dir, manifest = self.backend.scheme_manifest_data(name)
+            files = manifest.get("files", {}) if isinstance(manifest, dict) else {}
             summary = cursor_kind_summary_text(scheme_dir, files)
             summary_label = QLabel()
-            style_summary_chip(summary_label, summary)
+            style_summary_chip(summary_label, "资源包" if self.backend.scheme_is_resource_only(name) else summary)
             title_row.addWidget(summary_label)
             title_row.addStretch(1)
             text.addLayout(title_row)
-            count_text = f"{len(files)} 个鼠标状态"
+            extras = manifest.get("extras", []) if isinstance(manifest, dict) else []
+            count_text = f"{len(extras)} 个资源，无映射" if self.backend.scheme_is_resource_only(name) else f"{len(files)} 个鼠标状态"
             text.addWidget(CaptionLabel(count_text))
             layout.addLayout(text, 1 if not self.gridMode else 0)
             preview_grid = QGridLayout()
@@ -2646,15 +2772,21 @@ class ResourcePage(QWidget):
     def updateSelectionControls(self) -> None:
         if not self.selectedName:
             self.selectionStatus.setText("未选择方案")
+            can_apply = False
         else:
-            self.selectionStatus.setText(f"已选择：{self.selectedName}")
-        self.applySelectedButton.setEnabled(bool(self.selectedName))
+            resource_only = self.backend.scheme_is_resource_only(self.selectedName)
+            self.selectionStatus.setText(f"已选择：{self.selectedName}{'（资源包，无映射）' if resource_only else ''}")
+            can_apply = not resource_only
+        self.applySelectedButton.setEnabled(bool(self.selectedName) and can_apply)
         self.deleteSelectedButton.setEnabled(bool(self.selectedName))
 
     def applySelectedResource(self):
         selected = self.selectedResourceName()
         if not selected:
             self.scheme_page.showWarn("请选择一个方案", "应用资源库方案前需要先选择一个方案。")
+            return
+        if self.backend.scheme_is_resource_only(selected):
+            self.scheme_page.showWarn("无法应用", "该资源包没有 INF 映射，不能直接应用为鼠标方案。")
             return
         self.applyResource(selected)
 

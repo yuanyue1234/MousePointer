@@ -10,7 +10,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 DEPENDENCY_SKIP_REASON = ""
 try:
     import main as backend
-    from fluent_ui import cursor_kind_badge, cursor_kind_summary, cursor_kind_summary_text
+    from PySide6.QtWidgets import QApplication
+    from fluent_ui import SchemePage, cursor_kind_badge, cursor_kind_summary, cursor_kind_summary_text, resource_filter_reason
     from cursor_preview_light import cursor_kind as light_cursor_kind
     from cursor_preview_light import file_cache_key
 except ModuleNotFoundError as exc:
@@ -85,6 +86,81 @@ location = "Cursors\\place.cur"
             self.assertEqual(mapping["Arrow"].name, "normal.cur")
             self.assertEqual(mapping["NWPen"].name, "write.ani")
             self.assertEqual(mapping["Pin"].name, "place.cur")
+
+    def test_inf_mapping_supports_scheme_list_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cursor_dir = root / "Cursors"
+            cursor_dir.mkdir()
+            names = [
+                "arrow.cur", "help.cur", "work.ani", "wait.ani", "cross.cur", "beam.cur",
+                "pen.cur", "no.cur", "ns.cur", "we.cur", "nwse.cur", "nesw.cur",
+                "all.cur", "up.cur", "hand.cur", "pin.cur", "person.cur",
+            ]
+            for name in names:
+                (cursor_dir / name).write_bytes(b"")
+            scheme_value = ",".join(f"%10%\\Cursors\\{name}" for name in names)
+            (root / "theme.inf").write_text(
+                f"""
+[DefaultInstall]
+AddReg = Scheme.Reg
+
+[Scheme.Reg]
+HKCU,"Control Panel\\Cursors\\Schemes","My Scheme",,"{scheme_value}"
+""",
+                encoding="utf-8",
+            )
+
+            mapping = backend.parse_inf_mapping(root, use_filename_fallback=False)
+            self.assertEqual(mapping["Arrow"].name, "arrow.cur")
+            self.assertEqual(mapping["NWPen"].name, "pen.cur")
+            self.assertEqual(mapping["Pin"].name, "pin.cur")
+            self.assertEqual(mapping["Person"].name, "person.cur")
+
+    def test_inf_mapping_can_disable_filename_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "arrow.cur").write_bytes(b"")
+            self.assertEqual(backend.parse_inf_mapping(root, use_filename_fallback=False), {})
+
+    def test_resource_filter_excludes_documents_and_large_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf = root / "readme.pdf"
+            png = root / "large.png"
+            cur = root / "large.cur"
+            pdf.write_bytes(b"%PDF")
+            png.write_bytes(b"0" * (1024 * 1024 + 1))
+            cur.write_bytes(b"0" * (1024 * 1024 + 1))
+
+            self.assertIn("文档", resource_filter_reason(pdf))
+            self.assertIn("1MB", resource_filter_reason(png))
+            self.assertEqual(resource_filter_reason(cur), "")
+
+    def test_no_inf_import_creates_resource_only_scheme(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _app = QApplication.instance() or QApplication([])
+            old_root = backend.SCHEME_LIBRARY.parent
+            storage = Path(tmp) / "storage"
+            package = Path(tmp) / "package"
+            package.mkdir()
+            (package / "preview.png").write_bytes(b"png")
+            (package / "arrow.cur").write_bytes(b"cur")
+            (package / "manual.pdf").write_bytes(b"%PDF")
+            backend.apply_storage_root(storage)
+            page = SchemePage(backend)
+            try:
+                page.beginImportBatch()
+                name = page.importRootAsScheme(package, "Loose Assets", package, duplicate_policy="copy")
+                _scheme_dir, data = backend.scheme_manifest_data(name)
+                self.assertTrue(data.get("resource_only"))
+                self.assertEqual(data.get("files"), {})
+                self.assertIn("extras/preview.png", data.get("extras", []))
+                self.assertIn("extras/arrow.cur", data.get("extras", []))
+                self.assertTrue(any("manual.pdf" in item for item in page.importFiltered))
+            finally:
+                page.deleteLater()
+                backend.apply_storage_root(old_root)
 
     def test_input_switch_only_resolves_configured_existing_scheme(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

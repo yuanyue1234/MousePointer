@@ -43,7 +43,15 @@ WinUI App 目标平台为 Windows x64，最低系统版本 Windows 10 2004 (`10.
 
 ## 运行
 
-开发期可从项目目录运行：
+开发期首选先构建，再直接运行输出目录里的 exe：
+
+```powershell
+dotnet build .\src\MousePointer.App\MousePointer.App.csproj -c Debug -p:Platform=x64
+
+& ".\src\MousePointer.App\bin\x64\Debug\net9.0-windows10.0.19041.0\win-x64\MousePointer.App.exe"
+```
+
+也可以从项目目录使用 `dotnet run`：
 
 ```powershell
 dotnet run --project .\src\MousePointer.App\MousePointer.App.csproj -c Debug -p:Platform=x64
@@ -56,5 +64,6 @@ dotnet run --project .\src\MousePointer.App\MousePointer.App.csproj -c Debug -p:
 dotnet run --project .\src\MousePointer.App\MousePointer.App.csproj -c Debug -p:Platform=x64 -- --tray
 ```
 
-涉及注册表、系统鼠标、自启动和文件关联的功能需要在真实 Windows 环境手测。
+当前 Debug 输出是未打包、自包含的 WinUI 应用，不要用 `Add-AppxPackage -Register` 注册 `bin` 目录里的 `AppxManifest.xml` 来检查启动；这个输出目录不是 MSIX 包根目录。
 
+涉及注册表、系统鼠标、自启动和文件关联的功能需要在真实 Windows 环境手测。

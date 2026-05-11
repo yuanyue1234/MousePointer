@@ -56,6 +56,25 @@ ERROR_LOG_MAX_ARCHIVES = 5
 ERROR_LOG_KEEP_DAYS = 30
 DEFAULT_CURSOR_SIZE = 64
 DEFAULT_PREVIEW_SIZE_LEVEL = 3
+CURSOR_SCHEME_ORDER = [
+    "Arrow",
+    "Help",
+    "AppStarting",
+    "Wait",
+    "Crosshair",
+    "IBeam",
+    "NWPen",
+    "No",
+    "SizeNS",
+    "SizeWE",
+    "SizeNWSE",
+    "SizeNESW",
+    "SizeAll",
+    "UpArrow",
+    "Hand",
+    "Pin",
+    "Person",
+]
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RESOURCE_URL = "http://8.135.33.2:5002/"
 APP_NAME = "鼠标指针配置管理器"
@@ -1383,11 +1402,29 @@ def _cursor_path_from_inf_value(
     return None
 
 
-def parse_inf_mapping(root: Path) -> dict[str, Path]:
+def _apply_inf_scheme_list(
+    value: str,
+    root: Path,
+    by_name: dict[str, Path],
+    by_relative: dict[str, Path],
+    strings: dict[str, str],
+    mapping: dict[str, Path],
+) -> None:
+    expanded = _expand_inf_vars(value.strip().strip('"'), strings)
+    entries = _split_inf_fields(expanded)
+    for index, role_name in enumerate(CURSOR_SCHEME_ORDER):
+        if index >= len(entries):
+            break
+        path = _cursor_path_from_inf_value(entries[index], root, by_name, by_relative, strings)
+        if path:
+            mapping[role_name] = path
+
+
+def parse_inf_mapping(root: Path, *, use_filename_fallback: bool = True) -> dict[str, Path]:
     infs = sorted(root.rglob("*.inf"))
     files = [p for p in root.rglob("*") if p.suffix.lower() in {".cur", ".ani"}]
     if not infs:
-        return map_files_to_roles(files)
+        return map_files_to_roles(files) if use_filename_fallback else {}
     mapping: dict[str, Path] = {}
     by_name = {p.name.lower(): p for p in files}
     by_relative = {
@@ -1403,6 +1440,13 @@ def parse_inf_mapping(root: Path) -> dict[str, Path]:
                 fields = _split_inf_fields(line)
                 normalized_fields = [field.replace("/", "\\").lower() for field in fields]
                 for index, field in enumerate(normalized_fields):
+                    if "control panel\\cursors\\schemes" in field:
+                        value_parts = [part for part in fields[index + 3:] if part]
+                        if len(value_parts) > 1 and not re.search(r"\.(cur|ani)\b|%", value_parts[0], re.I):
+                            value_parts = value_parts[1:]
+                        if value_parts:
+                            _apply_inf_scheme_list(",".join(value_parts), root, by_name, by_relative, strings, mapping)
+                        continue
                     if "control panel\\cursors" not in field:
                         continue
                     if index + 1 >= len(fields):
@@ -1424,7 +1468,8 @@ def parse_inf_mapping(root: Path) -> dict[str, Path]:
                 path = _cursor_path_from_inf_value(value, root, by_name, by_relative, strings)
                 if path:
                     mapping[reg] = path
-    mapping.update({k: v for k, v in map_files_to_roles(files).items() if k not in mapping})
+    if not mapping and use_filename_fallback:
+        mapping.update(map_files_to_roles(files))
     return mapping
 
 
@@ -2556,6 +2601,24 @@ def scheme_manifest(theme: str) -> tuple[Path, dict[str, str]]:
         return scheme_dir, {}
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     return scheme_dir, manifest.get("files", {})
+
+
+def scheme_manifest_data(theme: str) -> tuple[Path, dict]:
+    scheme_dir = SCHEME_LIBRARY / theme
+    manifest_path = scheme_dir / "scheme.json"
+    if not manifest_path.exists():
+        return scheme_dir, {}
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return scheme_dir, data if isinstance(data, dict) else {}
+    except Exception:
+        return scheme_dir, {}
+
+
+def scheme_is_resource_only(theme: str) -> bool:
+    _scheme_dir, data = scheme_manifest_data(theme)
+    files = data.get("files", {}) if isinstance(data, dict) else {}
+    return bool(data.get("resource_only")) or not bool(files)
 
 
 
