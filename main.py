@@ -421,6 +421,39 @@ def read_hkcu_class_value(path: str, value_name: str = "") -> str:
         return ""
 
 
+def read_class_value(path: str, value_name: str = "") -> str:
+    for root, subkey in (
+        (winreg.HKEY_CURRENT_USER, f"Software\\Classes\\{path}"),
+        (winreg.HKEY_CLASSES_ROOT, path),
+    ):
+        try:
+            with winreg.OpenKey(root, subkey, 0, winreg.KEY_READ) as key:
+                value, _kind = winreg.QueryValueEx(key, value_name)
+                return str(value)
+        except (FileNotFoundError, OSError):
+            continue
+    return ""
+
+
+def read_machine_class_value(path: str, value_name: str = "") -> str:
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"Software\\Classes\\{path}", 0, winreg.KEY_READ) as key:
+            value, _kind = winreg.QueryValueEx(key, value_name)
+            return str(value)
+    except (FileNotFoundError, OSError):
+        return ""
+
+
+def default_icon_for_cursor_extension(ext: str, current_prog_id: str = "") -> str:
+    for prog_id in (current_prog_id, read_machine_class_value(ext), read_class_value(ext)):
+        if not prog_id or prog_id in {CUR_FILE_PROG_ID, ANI_FILE_PROG_ID}:
+            continue
+        icon_value = read_class_value(f"{prog_id}\\DefaultIcon") or read_machine_class_value(f"{prog_id}\\DefaultIcon")
+        if icon_value:
+            return icon_value
+    return ""
+
+
 def write_hkcu_class_value(path: str, value: str, value_name: str = "") -> None:
     with _classes_key(path, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, value)
@@ -460,16 +493,22 @@ def _restore_extension_association(ext: str, prog_id: str, backup_key: str) -> N
 def register_cursor_file_associations(exe_path: Path | None = None) -> None:
     command = preview_cursor_command(exe_path)
     data = load_settings()
-    for ext, prog_id, label, backup_key in (
-        (".cur", CUR_FILE_PROG_ID, "Mouse Pointer Cursor File", "file_assoc_backup_cur"),
-        (".ani", ANI_FILE_PROG_ID, "Mouse Pointer Animated Cursor File", "file_assoc_backup_ani"),
+    for ext, prog_id, label, backup_key, icon_backup_key in (
+        (".cur", CUR_FILE_PROG_ID, "Mouse Pointer Cursor File", "file_assoc_backup_cur", "file_assoc_backup_cur_icon"),
+        (".ani", ANI_FILE_PROG_ID, "Mouse Pointer Animated Cursor File", "file_assoc_backup_ani", "file_assoc_backup_ani_icon"),
     ):
         current = read_hkcu_class_value(ext)
         if current != prog_id and backup_key not in data:
             data[backup_key] = current
+        if current != prog_id and icon_backup_key not in data:
+            data[icon_backup_key] = default_icon_for_cursor_extension(ext, current)
         write_hkcu_class_value(ext, prog_id)
         write_hkcu_class_value(prog_id, label)
-        write_hkcu_class_value(f"{prog_id}\\DefaultIcon", f"{Path(exe_path or sys.executable).resolve()},0")
+        icon_value = str(data.get(icon_backup_key, "") or default_icon_for_cursor_extension(ext, current) or "")
+        if icon_value:
+            write_hkcu_class_value(f"{prog_id}\\DefaultIcon", icon_value)
+        else:
+            delete_hkcu_class_tree(f"{prog_id}\\DefaultIcon")
         write_hkcu_class_value(f"{prog_id}\\shell\\open\\command", command)
     data[CURSOR_FILE_ASSOCIATION_KEY] = "1"
     save_settings(data)
@@ -488,6 +527,8 @@ def unregister_cursor_file_associations() -> None:
     data[CURSOR_FILE_ASSOCIATION_KEY] = "0"
     data.pop("file_assoc_backup_cur", None)
     data.pop("file_assoc_backup_ani", None)
+    data.pop("file_assoc_backup_cur_icon", None)
+    data.pop("file_assoc_backup_ani_icon", None)
     save_settings(data)
     try:
         ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
@@ -1197,85 +1238,192 @@ def map_files_to_roles(files: list[Path]) -> dict[str, Path]:
     return mapping
 
 
+def _strip_inf_comment(line: str) -> str:
+    in_quote = False
+    for index, char in enumerate(line):
+        if char == '"':
+            in_quote = not in_quote
+        elif char == ";" and not in_quote:
+            return line[:index]
+    return line
+
+
+def _decode_inf_text(path: Path) -> str:
+    raw = path.read_bytes()
+    for encoding in ("utf-16", "utf-8-sig", "gbk", "cp936", "latin1"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin1", errors="ignore")
+
+
+def _split_inf_fields(value: str) -> list[str]:
+    fields: list[str] = []
+    buffer: list[str] = []
+    in_quote = False
+    for char in value:
+        if char == '"':
+            in_quote = not in_quote
+            continue
+        if char == "," and not in_quote:
+            fields.append("".join(buffer).strip())
+            buffer = []
+            continue
+        buffer.append(char)
+    fields.append("".join(buffer).strip())
+    return fields
+
+
+def _parse_inf_sections(text: str) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {"": []}
+    current = ""
+    for raw_line in text.splitlines():
+        line = _strip_inf_comment(raw_line).strip()
+        if not line:
+            continue
+        if line.startswith("[") and "]" in line:
+            current = line[1:line.index("]")].strip().lower()
+            sections.setdefault(current, [])
+            continue
+        sections.setdefault(current, []).append(line)
+    return sections
+
+
+def _inf_strings(sections: dict[str, list[str]]) -> dict[str, str]:
+    strings: dict[str, str] = {}
+    for line in sections.get("strings", []):
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().strip("%").lower()
+        parts = _split_inf_fields(value)
+        strings[key] = (parts[0] if parts else value).strip().strip('"')
+    return strings
+
+
+def _expand_inf_vars(value: str, strings: dict[str, str], depth: int = 0) -> str:
+    if depth > 8:
+        return value
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1).strip().lower()
+        if key.isdigit():
+            return ""
+        replacement = strings.get(key)
+        if replacement is None:
+            return match.group(0)
+        return _expand_inf_vars(replacement, strings, depth + 1)
+
+    return re.sub(r"%([^%]+)%", replace, value)
+
+
+def _normalize_inf_alias(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.strip().strip("%").strip('"').lower())
+
+
+def _inf_alias_to_reg() -> dict[str, str]:
+    aliases: dict[str, list[str]] = {
+        "Arrow": ["arrow", "normal", "default", "left_ptr", "leftptr", "pointer", "cursor", "normal_select", "normalselect", "normalcursor", "正常选择"],
+        "Help": ["help", "helpsel", "help_select", "helpselect", "question", "帮助选择"],
+        "AppStarting": ["work", "working", "appstarting", "app_starting", "background", "busy_wait", "后台运行"],
+        "Wait": ["busy", "wait", "waiting", "等待"],
+        "Crosshair": ["cross", "crosshair", "precision", "precision_select", "precisionselect", "精确选择"],
+        "IBeam": ["text", "ibeam", "beam", "text_select", "textselect", "文本选择"],
+        "NWPen": ["pen", "nwpen", "handwriting", "hand_write", "write", "ink", "手写"],
+        "No": ["unavailable", "unavailiable", "forbidden", "blocked", "no", "不可用"],
+        "SizeNS": ["vert", "vertical", "sizens", "size_ns", "ns", "上下"],
+        "SizeWE": ["horz", "horiz", "horizontal", "sizewe", "size_we", "we", "左右"],
+        "SizeNWSE": ["dgn1", "nwse", "size_nwse", "对角线1"],
+        "SizeNESW": ["dgn2", "nesw", "size_nesw", "对角线2"],
+        "SizeAll": ["move", "all", "sizeall", "size_all", "移动"],
+        "UpArrow": ["alternate", "up", "uparrow", "up_arrow", "候选"],
+        "Hand": ["hand", "link", "pointerhand", "pointer_hand", "pointinghand", "handcursor", "链接选择"],
+        "Pin": ["pin", "location", "locate", "position", "geo", "place", "位置选择", "位置"],
+        "Person": ["person", "people", "user", "contact", "individual", "个人选择", "个人"],
+    }
+    result: dict[str, str] = {}
+    for reg in ROLE_BY_REG:
+        result[_normalize_inf_alias(reg)] = reg
+    for reg, names in aliases.items():
+        for name in names:
+            result[_normalize_inf_alias(name)] = reg
+    return result
+
+
+def _cursor_path_from_inf_value(
+    value: str,
+    root: Path,
+    by_name: dict[str, Path],
+    by_relative: dict[str, Path],
+    strings: dict[str, str],
+) -> Path | None:
+    expanded = _expand_inf_vars(value.strip().strip('"'), strings)
+    if not expanded:
+        return None
+    candidates = _split_inf_fields(expanded)
+    candidates.append(expanded)
+    for candidate in candidates:
+        cleaned = candidate.strip().strip('"').replace("\\", "/")
+        if not cleaned:
+            continue
+        relative_key = cleaned.lstrip("/").lower()
+        if relative_key in by_relative:
+            return by_relative[relative_key]
+        name = Path(cleaned).name.lower()
+        if name in by_name:
+            return by_name[name]
+        if cleaned.lower().endswith((".cur", ".ani")):
+            maybe_path = (root / cleaned).resolve()
+            try:
+                if maybe_path.exists():
+                    return maybe_path
+            except OSError:
+                pass
+    return None
+
+
 def parse_inf_mapping(root: Path) -> dict[str, Path]:
-    infs = list(root.rglob("*.inf"))
+    infs = sorted(root.rglob("*.inf"))
     files = [p for p in root.rglob("*") if p.suffix.lower() in {".cur", ".ani"}]
     if not infs:
         return map_files_to_roles(files)
-    raw = infs[0].read_bytes()
-    text = ""
-    for encoding in ("utf-16", "utf-8-sig", "gbk", "cp936", "latin1"):
-        try:
-            text = raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-        if "Cursors" in text or "Control Panel" in text:
-            break
     mapping: dict[str, Path] = {}
     by_name = {p.name.lower(): p for p in files}
-    alias_to_reg = {
-        "arrow": "Arrow",
-        "normal": "Arrow",
-        "default": "Arrow",
-        "left_ptr": "Arrow",
-        "help": "Help",
-        "helpsel": "Help",
-        "work": "AppStarting",
-        "appstarting": "AppStarting",
-        "app_starting": "AppStarting",
-        "busy": "Wait",
-        "wait": "Wait",
-        "cross": "Crosshair",
-        "crosshair": "Crosshair",
-        "precision": "Crosshair",
-        "text": "IBeam",
-        "ibeam": "IBeam",
-        "beam": "IBeam",
-        "hand": "Hand",
-        "link": "Hand",
-        "pointerhand": "Hand",
-        "pointer_hand": "Hand",
-        "pen": "NWPen",
-        "nwpen": "NWPen",
-        "handwriting": "NWPen",
-        "ink": "NWPen",
-        "unavailable": "No",
-        "unavailiable": "No",
-        "no": "No",
-        "vert": "SizeNS",
-        "sizens": "SizeNS",
-        "horz": "SizeWE",
-        "horiz": "SizeWE",
-        "sizewe": "SizeWE",
-        "dgn1": "SizeNWSE",
-        "dgn2": "SizeNESW",
-        "move": "SizeAll",
-        "alternate": "UpArrow",
-        "up": "UpArrow",
-        "pin": "Pin",
-        "location": "Pin",
-        "position": "Pin",
-        "person": "Person",
-        "user": "Person",
+    by_relative = {
+        str(p.relative_to(root)).replace("\\", "/").lower(): p
+        for p in files
     }
-    for alias, reg in alias_to_reg.items():
-        match = re.search(rf"^\s*{re.escape(alias)}\s*=\s*\"?([^\"\r\n]+)\"?", text, re.I | re.M)
-        if match:
-            name = Path(match.group(1).strip()).name.lower()
-            if name in by_name:
-                mapping[reg] = by_name[name]
-    for reg in ROLE_BY_REG:
-        match = re.search(rf"HKCU,\s*\"Control Panel\\Cursors\",\s*{reg}\s*,[^,]*,\s*\"?([^\"\\r\\n]+)\"?", text, re.I)
-        if match:
-            raw_name = match.group(1).strip()
-            var_match = re.fullmatch(r".*%([^%]+)%", raw_name)
-            if var_match:
-                variable = var_match.group(1)
-                string_match = re.search(rf"^\s*{re.escape(variable)}\s*=\s*\"?([^\"\\r\\n]+)\"?", text, re.I | re.M)
-                raw_name = string_match.group(1).strip() if string_match else raw_name
-            name = Path(raw_name).name.lower()
-            if name in by_name:
-                mapping[reg] = by_name[name]
+    alias_to_reg = _inf_alias_to_reg()
+    for inf in infs:
+        sections = _parse_inf_sections(_decode_inf_text(inf))
+        strings = _inf_strings(sections)
+        for lines in sections.values():
+            for line in lines:
+                fields = _split_inf_fields(line)
+                normalized_fields = [field.replace("/", "\\").lower() for field in fields]
+                for index, field in enumerate(normalized_fields):
+                    if "control panel\\cursors" not in field:
+                        continue
+                    if index + 1 >= len(fields):
+                        continue
+                    reg = alias_to_reg.get(_normalize_inf_alias(_expand_inf_vars(fields[index + 1], strings)))
+                    if not reg:
+                        continue
+                    for candidate in reversed(fields[index + 2:]):
+                        path = _cursor_path_from_inf_value(candidate, root, by_name, by_relative, strings)
+                        if path:
+                            mapping[reg] = path
+                            break
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                reg = alias_to_reg.get(_normalize_inf_alias(_expand_inf_vars(key, strings)))
+                if not reg:
+                    continue
+                path = _cursor_path_from_inf_value(value, root, by_name, by_relative, strings)
+                if path:
+                    mapping[reg] = path
     mapping.update({k: v for k, v in map_files_to_roles(files).items() if k not in mapping})
     return mapping
 
@@ -1945,7 +2093,7 @@ def run_pystray_tray() -> None:
                 scheme = item.get(f"{state_name}_scheme", "")
                 key = f"input|{state_name}|{scheme}"
                 if scheme and key != state["last_key"]:
-                    picked = pick_scheduled_scheme(scheme, "随机", 0)
+                    picked = resolve_input_switch_scheme(item, state_name)
                     if picked:
                         apply_library_scheme(picked)
                     state["last_key"] = key
@@ -2036,7 +2184,7 @@ def run_background() -> None:
                     scheme = item.get(f"{state}_scheme", "")
                     key = f"input|{state}|{scheme}"
                     if scheme and key != last_key:
-                        picked = pick_scheduled_scheme(scheme, "随机", 0)
+                        picked = resolve_input_switch_scheme(item, state)
                         if picked:
                             apply_library_scheme(picked)
                         last_key = key
@@ -2113,6 +2261,13 @@ def pick_scheduled_scheme(value: str, order: str = "顺序", index: int = 0, sel
         return names[seq_index]
     # 固定方案名
     return value
+
+
+def resolve_input_switch_scheme(item: dict, state: str) -> str:
+    scheme = str(item.get(f"{state}_scheme", "") or "").strip()
+    if not scheme or scheme == RANDOM_SCHEME_VALUE:
+        return ""
+    return scheme if scheme in available_scheme_names() else ""
 
 
 def focused_window_handle() -> int:

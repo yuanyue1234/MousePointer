@@ -519,3 +519,48 @@ fix: verify autostart tray and background modes
 
 第三优先级：悬停小 X、晃动、动静标识、资源库图标和网页同步。这些能明显提升体验，但不应压过稳定性修复。
 
+## 2026-05-11 当前修复计划
+
+本轮目标：修复真实功能错误，不再围绕“隐藏窗口”做大范围猜测式改动。
+
+### A. INF 映射
+
+- 导入包时必须优先使用每个文件夹里的 `.inf` 映射。
+- 解析全部 `.inf`，不只读第一个文件。
+- 支持 `[Strings]`、`%变量%`、`HKCU,"Control Panel\Cursors",Arrow/NWPen/Pin,...`。
+- `正常选择`、`手写`、`位置选择`分别落到 `Arrow`、`NWPen`、`Pin`。
+- 单测覆盖多 INF、字符串变量和中文/英文别名。
+
+### B. 下拉与计时控件
+
+- 所有 qfluent ComboBox popup 走统一补丁：白底、浅边框、无透明暗框、无异常阴影。
+- 计时切换的上下数字控件使用浅色 SpinBox 样式，文字必须为深色。
+- 不再因为窗口闪烁问题替换整页控件。
+
+### C. 文件关联与预览
+
+- `.cur/.ani` 关联只改打开命令，不把文件图标改成应用 icon。
+- 若已有旧版本污染，优先读取系统级 `HKLM\Software\Classes` 的原始默认图标。
+- 预览窗口删除多余说明文字，失败时只显示短错误。
+
+### D. 输入法切换
+
+- 中英文/大写切换只允许应用已配置且仍存在的方案。
+- 随机方案和已删除方案在输入法切换模式下视为无效，不自动套用其它方案。
+
+### E. 卡顿与线程
+
+- 导入资源包、导入文件夹、拖入资源改为后台任务。
+- 后台导入遇到重复方案时自动创建副本名，禁止在 worker 线程弹 `QMessageBox`。
+- 后续继续拆分主文件，优先抽出导入服务、方案服务和预览服务。
+
+### 验收
+
+- `python -m compileall main.py fluent_ui.py cursor_preview_light.py tests`
+- `python -m unittest tests.test_cursor_metadata`
+- 用含 `.inf` 的素材包验证 `Arrow/NWPen/Pin` 映射。
+- 打开所有下拉框，无旧 UI 透明黑边。
+- 计时 SpinBox 字体清晰可见。
+- 开启 `.cur/.ani` 关联后文件图标不变成应用 icon。
+- 中英文输入来回切换不应用配置外方案。
+

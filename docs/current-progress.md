@@ -43,3 +43,28 @@ The script cleans managed old outputs before each build, excludes `tkinter`, `_t
 - `release-assets\SHA256SUMS.txt`
 
 Generated release artifacts are local outputs. The GitHub Release workflow rebuilds them from source when tag `v2.1.0` is pushed.
+
+## 2026-05-11 Fix Plan In Progress
+
+Scope stays on the Python mainline. Do not stage `MousePointer.WinUI/`, and do not stage deleted `assets/role_icons/*.png`.
+
+Current fixes applied:
+
+- INF mapping now parses every `.inf` under an imported folder, reads `[Strings]`, expands `%Name%` values, and honors `HKCU,"Control Panel\Cursors",Role,...` mappings before falling back to filename matching.
+- `正常选择` / `手写` / `位置选择` are covered by role aliases and by real INF registry role names: `Arrow`, `NWPen`, `Pin`.
+- `.cur` / `.ani` file association no longer writes the app exe as `DefaultIcon`; it preserves the previous or system cursor icon where available.
+- Input-language switching now refuses random or missing schemes, so Chinese/English toggles cannot apply a scheme outside the saved configuration.
+- qfluent ComboBox popup creation is patched centrally to force a solid white popup, no translucent background, no drop shadow, and stable viewport styling.
+- Timer SpinBox controls are styled with dark foreground text on a white field.
+- Resource library remains single-select; grid cards use fixed size and top-left layout instead of stretching across the page.
+- Resource library no longer shows per-thumbnail dynamic/static chips; only the scheme title row keeps the summary line.
+- Import buttons and resource-drop imports now run through background tasks; duplicate schemes imported in background auto-create a suffixed copy instead of showing a QMessageBox from a worker thread.
+- Automatic first-launch desktop-shortcut prompt is disabled; the Settings page button remains the manual path.
+- Cursor preview text is reduced: normal preview shows only metadata/actions; failure shows a short error.
+
+Validation already run:
+
+```powershell
+.\.venv\Scripts\python.exe -m compileall main.py fluent_ui.py cursor_preview_light.py tests
+.\.venv\Scripts\python.exe -m unittest tests.test_cursor_metadata
+```

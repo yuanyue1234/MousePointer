@@ -151,13 +151,14 @@ class CursorPreviewWindow(QWidget):
         self.kind = QLabel("")
         self.kind.setObjectName("kindChip")
         self.kind.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.preview = QLabel("正在加载预览...")
+        self.preview = QLabel("")
         self.preview.setObjectName("previewCanvas")
         self.preview.setFixedHeight(220)
         self.preview.setAlignment(Qt.AlignCenter)
-        self.message = QLabel("轻量预览窗口会先显示首帧，再补齐动画帧。")
+        self.message = QLabel("")
         self.message.setObjectName("mutedText")
         self.message.setWordWrap(True)
+        self.message.setVisible(False)
 
         actions = QHBoxLayout()
         open_main = QPushButton("打开完整软件")
@@ -207,7 +208,13 @@ class CursorPreviewWindow(QWidget):
 
     def openFolder(self) -> None:
         if self.path and self.path.exists():
-            subprocess.Popen(["explorer.exe", "/select,", str(self.path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(
+                ["explorer.exe", "/select,", str(self.path)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
 
     def loadPreviewAsync(self) -> None:
         threading.Thread(target=self.loadPreview, daemon=True).start()
@@ -221,17 +228,14 @@ class CursorPreviewWindow(QWidget):
             frames = self.previewFrames(path)
             if not frames:
                 raise RuntimeError("没有生成可用预览。")
-            message = "预览已就绪。"
-            if len(frames) > 1:
-                message = "动画预览已就绪，已限制帧数以保持启动速度。"
-            self.signal.loaded.emit(PreviewResult(frames, message, False))
+            self.signal.loaded.emit(PreviewResult(frames, "", False))
         except Exception as exc:
             try:
                 self.backend.log_error("光标轻量预览失败", exc)
             except Exception:
                 pass
             fallback = self.fallbackImage(path)
-            self.signal.loaded.emit(PreviewResult([fallback], f"无法完整预览该文件：{exc}", True))
+            self.signal.loaded.emit(PreviewResult([fallback], f"无法预览：{exc}", True))
 
     def previewFrames(self, path: Path) -> list[object]:
         if path.suffix.lower() == ".ani":
@@ -272,6 +276,7 @@ class CursorPreviewWindow(QWidget):
         else:
             self.preview.setText("预览不可用")
         self.message.setText(result.message)
+        self.message.setVisible(bool(result.message))
         if len(self.frames) > 1 and not result.failed:
             self.timer.start(100)
 

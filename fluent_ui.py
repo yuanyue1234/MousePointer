@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import webbrowser
+import ctypes
 from datetime import datetime
 from pathlib import Path
 
@@ -51,6 +52,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     ScrollArea,
+    SpinBox,
     StrongBodyLabel,
     SubtitleLabel,
     SwitchButton,
@@ -59,6 +61,20 @@ from qfluentwidgets import (
     setTheme,
     setThemeColor,
 )
+
+
+def open_path_no_console(target) -> bool:
+    try:
+        if sys.platform.startswith("win"):
+            result = ctypes.windll.shell32.ShellExecuteW(None, "open", str(target), None, None, 1)
+            return int(result) > 32
+        return bool(webbrowser.open(str(target)))
+    except Exception:
+        return False
+
+
+def open_url_no_console(url: str) -> bool:
+    return open_path_no_console(url)
 
 
 CN_TO_EN = {
@@ -555,6 +571,9 @@ QMenu::separator {
     background: #e2e8f0;
     margin: 5px 8px;
 }
+QMenu, QFrame, QListView, QListWidget {
+    background-color: #ffffff;
+}
 QListView, QListWidget {
     background-color: #ffffff;
     border: none;
@@ -581,7 +600,100 @@ QListView::item:selected, QListWidget::item:selected {
 """
 
 
+SPIN_BOX_QSS = """
+QSpinBox {
+    background: #ffffff;
+    color: #0f172a;
+    border: 1px solid #dbe4f0;
+    border-radius: 6px;
+    padding: 2px 6px;
+    selection-background-color: #eef6ff;
+    selection-color: #0f172a;
+}
+QSpinBox:focus {
+    border-color: #5b9bff;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    width: 18px;
+    border: none;
+    background: transparent;
+}
+QSpinBox QLineEdit {
+    background: transparent;
+    color: #0f172a;
+}
+"""
+
+
+_COMBO_MENU_PATCHED = False
+
+
+def polish_spin_box(box: QSpinBox) -> None:
+    box.setStyleSheet(SPIN_BOX_QSS)
+    try:
+        box.lineEdit().setStyleSheet(
+            "QLineEdit { background: transparent; color: #0f172a; selection-background-color: #eef6ff; selection-color: #0f172a; }"
+        )
+    except Exception:
+        pass
+
+
+def polish_combo_menu(menu):
+    if menu is None:
+        return menu
+    try:
+        menu.setAttribute(Qt.WA_TranslucentBackground, False)
+        menu.setWindowFlag(Qt.NoDropShadowWindowHint, True)
+        menu.setStyleSheet(POPUP_LAYER_QSS)
+        menu.setAutoFillBackground(True)
+        if menu.layout():
+            menu.layout().setContentsMargins(1, 1, 1, 1)
+        menu.setGraphicsEffect(None)
+    except Exception:
+        pass
+    for name in ("view", "listWidget"):
+        view = getattr(menu, name, None)
+        if view is None:
+            continue
+        try:
+            view.setStyleSheet(POPUP_LAYER_QSS)
+            view.setAutoFillBackground(True)
+            view.viewport().setAutoFillBackground(True)
+            view.viewport().setStyleSheet("background-color: #ffffff; border: none;")
+            view.setGraphicsEffect(None)
+        except Exception:
+            pass
+    return menu
+
+
+def install_combo_menu_patch() -> None:
+    global _COMBO_MENU_PATCHED
+    if _COMBO_MENU_PATCHED:
+        return
+    try:
+        from qfluentwidgets.components.widgets.combo_box import ComboBoxBase
+    except Exception:
+        return
+    original = getattr(ComboBoxBase, "_mouse_pointer_original_create_combo_menu", None)
+    if original is None:
+        original = ComboBoxBase._createComboMenu
+        setattr(ComboBoxBase, "_mouse_pointer_original_create_combo_menu", original)
+
+    def patched_create_combo_menu(self):
+        menu = original(self)
+        try:
+            if self.width() > 0:
+                menu.setMinimumWidth(self.width())
+        except Exception:
+            pass
+        return polish_combo_menu(menu)
+
+    ComboBoxBase._createComboMenu = patched_create_combo_menu
+    _COMBO_MENU_PATCHED = True
+
+
 def apply_popup_layer_style(app: QApplication, *, force: bool = False) -> None:
+    install_combo_menu_patch()
     if app.property("mousePointerPopupLayerStyled") and not force:
         return
     current = app.styleSheet() or ""
@@ -591,8 +703,7 @@ def apply_popup_layer_style(app: QApplication, *, force: bool = False) -> None:
 
 
 def style_popup_menu(menu: QMenu) -> QMenu:
-    menu.setStyleSheet(POPUP_LAYER_QSS)
-    return menu
+    return polish_combo_menu(menu)
 
 
 class CursorPreview(QLabel):
@@ -853,6 +964,7 @@ class CursorPreviewWindow(QDialog):
         self.message = CaptionLabel("")
         self.message.setWordWrap(True)
         self.message.setTextColor("#475569", "#cbd5e1")
+        self.message.setVisible(False)
 
         actions = QHBoxLayout()
         open_main = PrimaryPushButton("打开完整软件")
@@ -878,7 +990,8 @@ class CursorPreviewWindow(QDialog):
         path = self.path
         if not path or not path.exists():
             self.kind.setText("文件不存在")
-            self.message.setText("指定的鼠标文件不存在，无法预览。")
+            self.message.setText("无法预览：文件不存在。")
+            self.message.setVisible(True)
             return
         badge = cursor_kind_badge(path)
         self.kind.setText(f"类型：{path.suffix.lower()}  {'动' if badge == '动' else '静' if badge == '静' else ''}".strip())
@@ -896,11 +1009,13 @@ class CursorPreviewWindow(QDialog):
             self.preview.setPixmap(self.frames[0])
             if len(self.frames) > 1:
                 self.timer.start(90)
-            self.message.setText("双击文件时可直接进入这个轻量预览窗口，不会打开完整主界面。")
+            self.message.setText("")
+            self.message.setVisible(False)
         except Exception as exc:
             self.backend.log_error("光标轻量预览失败", exc)
             self.preview.setText("预览失败")
-            self.message.setText(f"无法预览该文件：{exc}")
+            self.message.setText(f"无法预览：{exc}")
+            self.message.setVisible(True)
 
     def nextFrame(self) -> None:
         if not self.frames:
@@ -1322,9 +1437,10 @@ class SchemePage(QWidget):
 
     def openPointerSettings(self):
         try:
-            os.startfile("ms-settings:easeofaccess-mousepointer")
+            if not open_path_no_console("ms-settings:easeofaccess-mousepointer"):
+                open_path_no_console("control.exe")
         except Exception:
-            os.startfile("control.exe")
+            open_path_no_console("control.exe")
 
     def schemeNames(self) -> list[str]:
         if self._schemeNamesCache is not None:
@@ -1798,12 +1914,7 @@ class SchemePage(QWidget):
     def handleDropped(self, paths: list[Path]):
         packages = [p for p in paths if p.is_dir() or p.suffix.lower() in {".zip", ".rar", ".7z", ".exe"}]
         if packages:
-            self.beginImportBatch()
-            imported = []
-            for package in packages:
-                imported.extend(self.importPackagePath(package))
-            self.refreshSchemes()
-            self.showImportSummary(imported)
+            self.importPackagesAsync(packages)
             return
         files = [p for p in paths if p.suffix.lower() in {".cur", ".ani", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}]
         for path in files:
@@ -1820,8 +1931,7 @@ class SchemePage(QWidget):
             str(self.backend.configured_storage_root()),
             "资源包和光标 (*.zip *.rar *.7z *.exe *.cur *.ani);;所有文件 (*.*)",
         )
-        imported = []
-        self.beginImportBatch()
+        import_paths: list[Path] = []
         for file_name in files:
             path = Path(file_name)
             if path.suffix.lower() in {".cur", ".ani"}:
@@ -1830,37 +1940,53 @@ class SchemePage(QWidget):
                 self.updateLargePreview(self.current_preview)
                 self.autoSaveCurrentScheme()
             else:
-                imported.extend(self.importPackagePath(path))
-        if files:
-            self.refreshSchemes()
-            if imported or self.importSkipped or self.importFailed:
-                self.showImportSummary(imported)
+                import_paths.append(path)
+        if import_paths:
+            self.importPackagesAsync(import_paths)
 
     def importFolder(self):
         folder = existing_directory(self, "导入鼠标指针文件夹", str(self.backend.configured_storage_root()))
         if folder:
-            self.beginImportBatch()
-            imported = self.importPackagePath(Path(folder))
-            self.refreshSchemes()
-            self.showImportSummary(imported)
+            self.importPackagesAsync([Path(folder)])
 
-    def importPackagePath(self, package: Path) -> list[str]:
+    def importPackagesAsync(self, packages: list[Path], title: str = "正在导入资源", after_done=None) -> None:
+        packages = [Path(path) for path in packages]
+        if not packages:
+            return
+
+        def work():
+            self.beginImportBatch()
+            imported: list[str] = []
+            for package in packages:
+                imported.extend(self.importPackagePath(package, notify=False))
+            return imported
+
+        def done(imported: list[str]):
+            if after_done:
+                after_done(imported)
+            if imported or self.importSkipped or self.importFailed:
+                self.showImportSummary(imported)
+
+        self.runTask(title, work, done)
+
+    def importPackagePath(self, package: Path, *, notify: bool = True) -> list[str]:
         imported = []
         try:
             extracted = self.backend.extract_import_package(package)
             roots = self.detectSchemeRoots(extracted)
-            if len(roots) > 1:
+            if len(roots) > 1 and notify:
                 self.showInfo("批量导入", f"识别到 {len(roots)} 份鼠标指针，正在批量添加。")
             for root in roots:
                 name = package.stem if len(roots) == 1 else root.name
                 search_root = extracted if len(roots) == 1 else root.parent
-                imported_name = self.importRootAsScheme(root, name, search_root)
+                imported_name = self.importRootAsScheme(root, name, search_root, duplicate_policy="ask" if notify else "copy")
                 if imported_name:
                     imported.append(imported_name)
             return imported
         except Exception as exc:
             self.importFailed.append(f"{package.name}: {exc}")
-            self.showError("导入失败", exc)
+            if notify:
+                self.showError("导入失败", exc)
             return imported
 
     def detectSchemeRoots(self, extracted: Path) -> list[Path]:
@@ -1895,18 +2021,24 @@ class SchemePage(QWidget):
             extras.append(path)
         return extras
 
-    def importRootAsScheme(self, root: Path, raw_name: str, search_root: Path | None = None) -> str:
+    def importRootAsScheme(self, root: Path, raw_name: str, search_root: Path | None = None, *, duplicate_policy: str = "ask") -> str:
         try:
             name = self.backend.sanitize_name(raw_name)
             if name in self.backend.DEFAULT_SCHEME_NAMES:
                 name = f"{name}_资源"
             scheme_dir = self.backend.SCHEME_LIBRARY / name
             if (scheme_dir / "scheme.json").exists():
-                result = QMessageBox.question(self, "发现重复方案", f"{name} 已存在，是否继续导入为新副本？\n选择“否”将跳过该方案。")
-                if result != QMessageBox.Yes:
+                if duplicate_policy == "skip":
                     self.importSkipped.append(name)
-                    self.showWarn("已跳过", f"{name} 已存在，未重复导入。")
+                    if duplicate_policy == "ask":
+                        self.showWarn("已跳过", f"{name} 已存在，未重复导入。")
                     return ""
+                if duplicate_policy == "ask":
+                    result = QMessageBox.question(self, "发现重复方案", f"{name} 已存在，是否继续导入为新副本？\n选择“否”将跳过该方案。")
+                    if result != QMessageBox.Yes:
+                        self.importSkipped.append(name)
+                        self.showWarn("已跳过", f"{name} 已存在，未重复导入。")
+                        return ""
                 base = name
                 index = 2
                 while (self.backend.SCHEME_LIBRARY / f"{base}_{index}" / "scheme.json").exists():
@@ -2174,7 +2306,7 @@ class SchemePage(QWidget):
 
         def done(path: Path):
             self.showInfo("生成完成", str(path))
-            os.startfile(path.parent)
+            open_path_no_console(path.parent)
 
         self.runTask("正在生成安装包", work, done)
 
@@ -2356,7 +2488,7 @@ class ResourcePage(QWidget):
         action_bar.addWidget(self.applySelectedButton)
         action_bar.addWidget(self.deleteSelectedButton)
         layout.addLayout(action_bar)
-        self.openWeb.clicked.connect(lambda: webbrowser.open(self.backend.RESOURCE_URL))
+        self.openWeb.clicked.connect(lambda: open_url_no_console(self.backend.RESOURCE_URL))
         self.importButton.clicked.connect(self.importResources)
         self.importFolderButton.clicked.connect(self.importResourceFolder)
         self.refresh.clicked.connect(self.render)
@@ -2397,6 +2529,8 @@ class ResourcePage(QWidget):
             QWidget().setLayout(old)
         self.cards = QGridLayout(self.container) if self.gridMode else QVBoxLayout(self.container)
         self.cards.setSpacing(10)
+        if self.gridMode:
+            self.cards.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         names = self.scheme_page.schemeNames()
         if self.selectedName not in names:
             self.selectedName = None
@@ -2414,7 +2548,7 @@ class ResourcePage(QWidget):
             card.setObjectName("resourceCard")
             card.setCursor(Qt.PointingHandCursor)
             if self.gridMode:
-                card.setMinimumSize(320, 260)
+                card.setFixedSize(320, 260)
             else:
                 card.setMinimumHeight(92)
             self.cardWidgets[name] = card
@@ -2592,13 +2726,23 @@ class ResourcePage(QWidget):
         self.scheme_page.runTask("正在恢复鼠标方案", self.backend.restore_cursor_backup, lambda _value: InfoBar.success(title="已恢复", content="已恢复应用前鼠标方案", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window()))
 
     def importDroppedResources(self, paths: list[Path]):
-        imported = []
-        self.scheme_page.beginImportBatch()
-        for path in paths:
-            imported.extend([name for name in self.scheme_page.importPackagePath(path) if name])
-        self.scheme_page.refreshSchemes()
-        self.render()
-        self.scheme_page.showImportSummary(imported)
+        paths = [Path(path) for path in paths]
+        if not paths:
+            return
+
+        def work():
+            self.scheme_page.beginImportBatch()
+            imported: list[str] = []
+            for path in paths:
+                imported.extend([name for name in self.scheme_page.importPackagePath(path, notify=False) if name])
+            return imported
+
+        def done(imported: list[str]):
+            self.scheme_page.refreshSchemes()
+            self.render()
+            self.scheme_page.showImportSummary(imported)
+
+        self.scheme_page.runTask("正在导入资源", work, done)
 
     def importResources(self):
         files = open_file_names(
@@ -2661,13 +2805,15 @@ class SchedulePage(QWidget):
 
     def currentSchemeValue(self, combo: ComboBox) -> str:
         data = combo.currentData()
-        return str(data) if data else combo.currentText().strip()
+        if data:
+            return str(data)
+        text = combo.currentText().strip()
+        return text if text and combo.findText(text) >= 0 else ""
 
     def setSchemeValue(self, combo: ComboBox, value: str):
-        if value == self.backend.RANDOM_SCHEME_VALUE:
-            combo.setCurrentText("随机方案")
-        else:
-            combo.setCurrentText(value)
+        target = "随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value
+        index = combo.findText(target)
+        combo.setCurrentIndex(index if index >= 0 else 0)
 
     def load(self):
         try:
@@ -2711,9 +2857,10 @@ class TimerPage(QWidget):
         row = QHBoxLayout(card)
         row.setContentsMargins(16, 14, 16, 14)
         self.enabled = SwitchButton("启用计时切换")
-        self.interval = QSpinBox()
+        self.interval = SpinBox()
         self.interval.setRange(1, 86400)
         self.interval.setValue(5)
+        polish_spin_box(self.interval)
         self.unit = ComboBox()
         self.unit.addItems(["秒", "分钟"])
         self.scheme = ComboBox()
@@ -2738,7 +2885,10 @@ class TimerPage(QWidget):
 
     def currentSchemeValue(self) -> str:
         data = self.scheme.currentData()
-        return str(data) if data else self.scheme.currentText().strip()
+        if data:
+            return str(data)
+        text = self.scheme.currentText().strip()
+        return text if text and self.scheme.findText(text) >= 0 else ""
 
     def load(self):
         try:
@@ -2832,10 +2982,11 @@ class SwitchPage(QWidget):
         self.modeSwitches["timer"] = self.timerSwitch
         timer_header.addWidget(self.timerSwitch)
         timer_header.addWidget(BodyLabel("每"))
-        self.timerInterval = QSpinBox()
+        self.timerInterval = SpinBox()
         self.timerInterval.setRange(1, 86400)
         self.timerInterval.setValue(5)
         self.timerInterval.setFixedWidth(88)
+        polish_spin_box(self.timerInterval)
         self.timerUnit = ComboBox()
         self.timerUnit.setFixedWidth(82)
         self.timerUnit.addItems(["秒", "分钟"])
@@ -3020,13 +3171,14 @@ class SwitchPage(QWidget):
     def currentSchemeValue(self, combo: ComboBox) -> str:
         data = combo.currentData()
         if data:
-            text = str(data)
-            return text
+            return str(data)
         text = combo.currentText().strip()
-        return text
+        return text if text and combo.findText(text) >= 0 else ""
 
     def setSchemeValue(self, combo: ComboBox, value: str):
-        combo.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
+        target = "随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value
+        index = combo.findText(target)
+        combo.setCurrentIndex(index if index >= 0 else 0)
 
     def onModeChanged(self, mode: str, checked: bool):
         if checked:
@@ -3146,13 +3298,11 @@ class SwitchPage(QWidget):
             if apply_now and mode == "input":
                 input_item = next((item for item in items if item.get("mode") == "input"), {})
                 state = self.backend.current_input_state()
-                scheme = input_item.get(f"{state}_scheme", "")
-                if scheme:
-                    picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
-                    if picked:
-                        self.backend.apply_library_scheme(picked)
-                        self.scheme_page.schemeBox.setCurrentText(picked)
-                        self.scheme_page.loadScheme(picked)
+                picked = self.backend.resolve_input_switch_scheme(input_item, state)
+                if picked:
+                    self.backend.apply_library_scheme(picked)
+                    self.scheme_page.schemeBox.setCurrentText(picked)
+                    self.scheme_page.loadScheme(picked)
             elif apply_now and mode == "week":
                 today = str(datetime.now().weekday())
                 scheme = week_items.get(today)
@@ -3347,7 +3497,7 @@ class SettingsPage(QWidget):
             text, url, icon = item
             btn = PushButton(text)
             btn.setIcon(icon)
-            btn.clicked.connect(lambda _checked=False, u=url: webbrowser.open(u))
+            btn.clicked.connect(lambda _checked=False, u=url: open_url_no_console(u))
             link_row.addWidget(btn)
         link_row.addStretch(1)
         layout.addWidget(switch_card)
@@ -3371,7 +3521,7 @@ class SettingsPage(QWidget):
     def openStorageFolder(self):
         folder = Path(self.storage.text()).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
-        os.startfile(folder)
+        open_path_no_console(folder)
 
     def createDesktopShortcut(self):
         english = ui_english_enabled(self.backend)
@@ -3489,7 +3639,13 @@ class SettingsPage(QWidget):
     def openErrorLog(self):
         self.backend.ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
         self.backend.ERROR_LOG.touch(exist_ok=True)
-        subprocess.Popen(["notepad.exe", str(self.backend.ERROR_LOG)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            ["notepad.exe", str(self.backend.ERROR_LOG)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
 
     def copyDiagnostics(self):
         text = "\n".join([
@@ -3767,7 +3923,7 @@ class MousePointerFluentWindow(FluentWindow):
                     scheme = item.get(f"{state}_scheme", "")
                     key = f"input|{state}|{scheme}"
                     if scheme and key != self.lastScheduleKey:
-                        picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
+                        picked = self.backend.resolve_input_switch_scheme(item, state)
                         if picked:
                             self.applyScheduledScheme(picked, last_key=key)
                         self.lastScheduleKey = key
@@ -3907,7 +4063,7 @@ class LightweightTrayApp(QObject):
                     scheme = item.get(f"{state}_scheme", "")
                     key = f"input|{state}|{scheme}"
                     if scheme and key != self.lastScheduleKey:
-                        picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
+                        picked = self.backend.resolve_input_switch_scheme(item, state)
                         if picked:
                             self.backend.apply_library_scheme(picked)
                             self.refreshMenu()
@@ -4005,5 +4161,4 @@ def run_app(backend, start_hidden: bool = False) -> None:
         backend.startup_timing_mark("startup.first_window_visible")
         backend.startup_timing_flush()
         QTimer.singleShot(0, window.finishStartupLoad)
-        QTimer.singleShot(600, window.askDesktopShortcutOnFirstLaunch)
     app.exec()

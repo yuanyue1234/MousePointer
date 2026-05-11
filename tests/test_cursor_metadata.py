@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 DEPENDENCY_SKIP_REASON = ""
 try:
+    import main as backend
     from fluent_ui import cursor_kind_badge, cursor_kind_summary, cursor_kind_summary_text
     from cursor_preview_light import cursor_kind as light_cursor_kind
     from cursor_preview_light import file_cache_key
@@ -52,6 +53,59 @@ class CursorMetadataTests(unittest.TestCase):
             path.write_bytes(b"three")
             second = file_cache_key(path, 200)
             self.assertNotEqual(first, second)
+
+    def test_inf_mapping_uses_installer_role_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cursor_dir = root / "Cursors"
+            cursor_dir.mkdir()
+            for name in ["normal.cur", "write.ani", "place.cur"]:
+                (cursor_dir / name).write_bytes(b"")
+            (root / "theme.inf").write_text(
+                """
+[Strings]
+NormalCursor = "normal.cur"
+PenCursor = "write.ani"
+
+[Install]
+HKCU,"Control Panel\\Cursors",Arrow,0x00020000,"%10%\\Cursors\\%NormalCursor%"
+HKCU,"Control Panel\\Cursors",NWPen,0x00020000,"%10%\\Cursors\\%PenCursor%"
+""",
+                encoding="utf-8",
+            )
+            (root / "extra.inf").write_text(
+                """
+[Install]
+location = "Cursors\\place.cur"
+""",
+                encoding="utf-8",
+            )
+
+            mapping = backend.parse_inf_mapping(root)
+            self.assertEqual(mapping["Arrow"].name, "normal.cur")
+            self.assertEqual(mapping["NWPen"].name, "write.ani")
+            self.assertEqual(mapping["Pin"].name, "place.cur")
+
+    def test_input_switch_only_resolves_configured_existing_scheme(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_library = backend.SCHEME_LIBRARY
+            backend.SCHEME_LIBRARY = Path(tmp)
+            for name in ["Mouse Scheme 1", "Mouse Scheme 2"]:
+                scheme_dir = backend.SCHEME_LIBRARY / name
+                scheme_dir.mkdir(parents=True)
+                (scheme_dir / "scheme.json").write_text("{}", encoding="utf-8")
+            try:
+                item = {
+                    "mode": "input",
+                    "zh_scheme": "Mouse Scheme 1",
+                    "en_scheme": "Not Existing",
+                    "upper_scheme": backend.RANDOM_SCHEME_VALUE,
+                }
+                self.assertEqual(backend.resolve_input_switch_scheme(item, "zh"), "Mouse Scheme 1")
+                self.assertEqual(backend.resolve_input_switch_scheme(item, "en"), "")
+                self.assertEqual(backend.resolve_input_switch_scheme(item, "upper"), "")
+            finally:
+                backend.SCHEME_LIBRARY = old_library
 
 
 if __name__ == "__main__":
