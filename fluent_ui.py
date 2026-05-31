@@ -286,6 +286,7 @@ CN_TO_EN = {
     "选择、导入、预览并应用鼠标指针方案": "Choose, import, preview, and apply cursor schemes.",
     "拖入 zip/rar/7z/exe 或文件夹开始导入鼠标方案": "Drop a zip/rar/7z/exe file or folder to import cursor schemes.",
     "导入后会告诉你哪些是可直接应用的方案，哪些只是资源包。": "After import, the app will show which items can be applied and which are resource packs.",
+    "打开在线资源库下载更多鼠标方案。": "Open the online library to download more cursor schemes.",
     "打开在线资源库下载文件，放入鼠标文件目录后点击刷新。": "Open the online library, download files into the cursor folder, then refresh.",
     "在线资源库": "Online library",
     "导入资源": "Import resources",
@@ -1313,9 +1314,11 @@ class SchemePage(QWidget):
         self.importButton.setIcon(FIF.DOWNLOAD)
         self.importFolderButton = PushButton("导入文件夹")
         self.importFolderButton.setIcon(FIF.FOLDER)
+        self.onlineLibraryButton = PushButton("在线资源库")
+        self.onlineLibraryButton.setIcon(FIF.LINK)
         self.exportPreviewButton = PushButton("截图导出")
         self.exportPreviewButton.setIcon(FIF.PHOTO)
-        for button in [self.newButton, self.renameButton, self.deleteButton, self.importButton, self.importFolderButton, self.exportPreviewButton]:
+        for button in [self.newButton, self.renameButton, self.deleteButton, self.importButton, self.importFolderButton, self.onlineLibraryButton, self.exportPreviewButton]:
             toolbar.addWidget(button)
         toolbar.addStretch(1)
         left_layout.addLayout(toolbar)
@@ -1333,11 +1336,15 @@ class SchemePage(QWidget):
         self.emptyImportButton.setIcon(FIF.DOWNLOAD)
         self.emptyImportFolderButton = PushButton("导入文件夹")
         self.emptyImportFolderButton.setIcon(FIF.FOLDER)
+        self.emptyOnlineLibraryButton = PushButton("在线资源库")
+        self.emptyOnlineLibraryButton.setIcon(FIF.LINK)
         empty_actions.addWidget(self.emptyImportButton)
         empty_actions.addWidget(self.emptyImportFolderButton)
+        empty_actions.addWidget(self.emptyOnlineLibraryButton)
         empty_actions.addStretch(1)
         empty_layout.addWidget(empty_title)
         empty_layout.addWidget(empty_tip)
+        empty_layout.addWidget(CaptionLabel("打开在线资源库下载更多鼠标方案。"))
         empty_layout.addLayout(empty_actions)
         left_layout.addWidget(self.emptyGuide)
 
@@ -1509,6 +1516,8 @@ class SchemePage(QWidget):
         self.importFolderButton.clicked.connect(self.importFolder)
         self.emptyImportButton.clicked.connect(self.importPackage)
         self.emptyImportFolderButton.clicked.connect(self.importFolder)
+        self.onlineLibraryButton.clicked.connect(self.openOnlineLibrary)
+        self.emptyOnlineLibraryButton.clicked.connect(self.openOnlineLibrary)
         self.newButton.clicked.connect(self.newScheme)
         self.deleteButton.clicked.connect(self.deleteScheme)
         self.renameButton.clicked.connect(self.renameScheme)
@@ -1574,6 +1583,10 @@ class SchemePage(QWidget):
                 open_path_no_console("control.exe")
         except Exception:
             open_path_no_console("control.exe")
+
+    def openOnlineLibrary(self) -> None:
+        if not open_url_no_console(self.backend.RESOURCE_URL):
+            self.showWarn("无法打开在线资源库", self.backend.RESOURCE_URL)
 
     def schemeNames(self, include_resource_only: bool = False) -> list[str]:
         if self._schemeNamesCache is not None:

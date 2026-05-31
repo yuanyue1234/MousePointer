@@ -464,6 +464,50 @@ img {
   gap: 18px;
 }
 
+.resource-section {
+  padding-top: 26px;
+  padding-bottom: 26px;
+}
+
+.resource-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: center;
+  padding: 26px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: var(--shadow), var(--ring);
+}
+
+.resource-panel h2 {
+  margin: 0;
+  max-width: 720px;
+  font-family: "Noto Serif SC", Georgia, serif;
+  font-size: clamp(28px, 3.4vw, 42px);
+  line-height: 1.18;
+  font-weight: 600;
+}
+
+.resource-panel p:not(.eyebrow),
+.resource-actions p {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.resource-actions {
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+  max-width: 260px;
+}
+
+.resource-actions p {
+  text-align: right;
+}
+
 .feature-section {
   min-height: calc(100vh - 96px);
   display: flex;
@@ -633,10 +677,24 @@ img {
     grid-template-columns: 1fr;
   }
 
+  .resource-panel,
   .feature-grid,
   .step-list,
   .reference-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .resource-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .resource-actions {
+    justify-items: start;
+    max-width: none;
+  }
+
+  .resource-actions p {
+    text-align: left;
   }
 
   .app-icon-panel {
@@ -720,6 +778,7 @@ img {
     display: block;
   }
 
+  .resource-panel,
   .feature-grid,
   .step-list,
   .reference-list {
