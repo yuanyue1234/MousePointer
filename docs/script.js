@@ -6,7 +6,6 @@ const langButtons = Array.from(document.querySelectorAll(".lang-btn"));
 const navLinks = Array.from(document.querySelectorAll(".nav a"));
 const pageSections = [
   document.querySelector(".hero"),
-  document.querySelector("#resources"),
   document.querySelector("#features"),
   document.querySelector("#workflow")
 ].filter(Boolean);
@@ -45,11 +44,6 @@ const translations = {
     caption1: "方案编辑与预览联动",
     caption2: "资源库与导入流程",
     caption3: "设置、下载与系统集成",
-    resourceEyebrow: "在线资源库",
-    resourceTitle: "打开已经整理好的鼠标指针资源库。",
-    resourceText: "资源库页面会直接在 GitHub Pages 展示资源清单，可下载鼠标方案包后拖入绿色版应用使用。",
-    resourceOpen: "打开在线资源库",
-    resourceNote: "不需要单独服务器，资源库网页由 GitHub Pages 托管。",
     workflowEyebrow: "快速上手",
     workflowTitle: "从下载到应用，只需要四步。",
     step1Title: "下载安装",
@@ -112,11 +106,6 @@ const translations = {
     caption1: "Scheme editing and preview linkage",
     caption2: "Resource library and import flow",
     caption3: "Settings, downloads, and system integration",
-    resourceEyebrow: "Resource Library",
-    resourceTitle: "Open the curated cursor resource library.",
-    resourceText: "The resource library is hosted on GitHub Pages. Download cursor packs there, then drag them into the portable app.",
-    resourceOpen: "Open Resource Library",
-    resourceNote: "No standalone server is required; GitHub Pages hosts the library page.",
     workflowEyebrow: "Quick Start",
     workflowTitle: "From download to apply, it takes only four steps.",
     step1Title: "Download",
