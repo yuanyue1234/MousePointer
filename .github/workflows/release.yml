@@ -29,7 +29,7 @@ jobs:
       - name: Build portable packages
         shell: pwsh
         run: |
-          .\scripts\build_portable.ps1 -PackageMode Both
+          .\scripts\build_portable.ps1 -PackageMode OneFile
 
       - name: Publish GitHub Release
         env:
@@ -92,8 +92,7 @@ jobs:
 
           release_body = (
               "Mouse Pointer Manager 2.1 portable release.\n\n"
-              "- MousePointer_Portable.exe: single-file portable executable.\n"
-              "- MousePointer_Portable_Directory.zip: recommended folder portable build with faster startup.\n"
+              "- MousePointer_Portable.exe: single-file portable executable with bundled installer runtime.\n"
               "- SHA256SUMS.txt: package hashes."
           )
           _, release = request("POST", f"{api}/releases", {
@@ -106,10 +105,13 @@ jobs:
           })
 
           upload_base = release["upload_url"].split("{", 1)[0]
+          release_dir = Path("release-assets")
+          portable_candidates = sorted(release_dir.glob("*.exe"))
+          if len(portable_candidates) != 1:
+              raise RuntimeError(f"Expected exactly one portable exe, found {len(portable_candidates)}: {portable_candidates}")
           assets = [
-              (Path("release-assets/鼠标指针配置生成器_绿色程序.exe"), "MousePointer_Portable.exe"),
-              (Path("release-assets/MousePointer_Portable_Directory.zip"), "MousePointer_Portable_Directory.zip"),
-              (Path("release-assets/SHA256SUMS.txt"), "SHA256SUMS.txt"),
+              (portable_candidates[0], "MousePointer_Portable.exe"),
+              (release_dir / "SHA256SUMS.txt", "SHA256SUMS.txt"),
           ]
           for asset, release_name in assets:
               if not asset.exists():

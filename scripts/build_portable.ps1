@@ -1,6 +1,6 @@
 param(
-    [ValidateSet("OneDir", "OneFile", "Both")]
-    [string]$PackageMode = "Both"
+    [ValidateSet("OneFile")]
+    [string]$PackageMode = "OneFile"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,11 +18,10 @@ $exeName = Join-Chars @(0x9F20, 0x6807, 0x6307, 0x9488, 0x914D, 0x7F6E, 0x751F, 
 $exeFile = "$exeName.exe"
 $distDir = Join-Path $root "dist"
 $releaseDir = Join-Path $root "release-assets"
-$oneDirName = "MousePointer_Portable_Directory"
-$oneDirZip = Join-Path $releaseDir "$oneDirName.zip"
 $sumFile = Join-Path $releaseDir "SHA256SUMS.txt"
 $payloadRoot = Join-Path $root "build\package_payload"
 $payloadAssets = Join-Path $payloadRoot "assets"
+$runtimeBundles = Join-Path $root "runtime-bundles"
 $iconFinalName = "icon" + (Join-Chars @(0x7EC8)) + ".png"
 
 & $python --version | Out-Host
@@ -49,16 +48,13 @@ function New-PackagePayload {
         Copy-Item -Path (Join-Path $assets "*") -Destination $payloadAssets -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    $payloadPrefix = [System.IO.Path]::GetFullPath($payloadRoot) + [System.IO.Path]::DirectorySeparatorChar
-    $roleIconFiles = & git -C $root ls-files -- "assets/role_icons/*.png"
-    if (-not $roleIconFiles) {
-        throw "No tracked role icons found for package payload."
+    $roleIconsDir = Join-Path $root "assets\role_icons"
+    if (-not (Test-Path -LiteralPath $roleIconsDir)) {
+        throw "No role icons directory found for package payload."
     }
-    foreach ($file in $roleIconFiles) {
-        & git -C $root checkout-index -f --prefix=$payloadPrefix -- $file
-        if ($LASTEXITCODE -ne 0) {
-            throw "Unable to restore tracked role icon into package payload: $file"
-        }
+    $roleIconFiles = Get-ChildItem -LiteralPath $roleIconsDir -Filter "*.png" -File
+    if (-not $roleIconFiles -or $roleIconFiles.Count -eq 0) {
+        throw "No role icon PNG files found for package payload."
     }
 }
 
@@ -66,8 +62,6 @@ function Clear-ManagedReleaseOutputs {
     Remove-InWorkspace (Join-Path $distDir $exeFile)
     Remove-InWorkspace (Join-Path $distDir $exeName)
     Remove-InWorkspace (Join-Path $releaseDir $exeFile)
-    Remove-InWorkspace (Join-Path $releaseDir $oneDirName)
-    Remove-InWorkspace $oneDirZip
     Remove-InWorkspace $sumFile
     Remove-InWorkspace (Join-Path $distDir "_build")
     Remove-InWorkspace (Join-Path $distDir "错误记录.txt")
@@ -76,11 +70,8 @@ function Clear-ManagedReleaseOutputs {
 }
 
 function Invoke-PyInstaller {
-    param(
-        [switch]$OneFile
-    )
-    $work = Join-Path $root ("build\pyinstaller_" + ($(if ($OneFile) { "onefile" } else { "onedir" })))
-    $spec = Join-Path $root ("build\spec_" + ($(if ($OneFile) { "onefile" } else { "onedir" })))
+    $work = Join-Path $root "build\pyinstaller_onefile"
+    $spec = Join-Path $root "build\spec_onefile"
     $args = @(
         "-m", "PyInstaller",
         "--noconsole",
@@ -94,16 +85,13 @@ function Invoke-PyInstaller {
         "--add-data", "$payloadAssets;assets",
         "--add-data", "$(Join-Path $root 'icon.png');.",
         "--add-data", "$(Join-Path $root $iconFinalName);.",
+        "--add-data", "$runtimeBundles;runtime-bundles",
         "--collect-all", "qfluentwidgets",
         "--exclude-module", "tkinter",
         "--exclude-module", "_tkinter",
-        "--exclude-module", "tkinterdnd2"
+        "--exclude-module", "tkinterdnd2",
+        "--onefile"
     )
-    if ($OneFile) {
-        $args += "--onefile"
-    } else {
-        $args += "--onedir"
-    }
     $args += (Join-Path $root "main.py")
     & $python @args
     if ($LASTEXITCODE -ne 0) {
@@ -116,47 +104,30 @@ New-Item -ItemType Directory -Force -Path $distDir, $releaseDir | Out-Null
 Clear-ManagedReleaseOutputs
 New-PackagePayload
 
-$results = @()
-
-if ($PackageMode -in @("OneFile", "Both")) {
-    Invoke-PyInstaller -OneFile
-    $distExe = Join-Path $distDir $exeFile
-    $releaseExe = Join-Path $releaseDir $exeFile
-    Copy-Item -LiteralPath $distExe -Destination $releaseExe -Force
-    $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $releaseExe
-    $results += [PSCustomObject]@{
-        Kind = "onefile"
-        Path = $releaseExe
-        ReleaseName = "MousePointer_Portable.exe"
-        SizeMB = [math]::Round((Get-Item -LiteralPath $releaseExe).Length / 1MB, 2)
-        SHA256 = $hash.Hash
+& (Join-Path $PSScriptRoot "prepare_runtime_bundles.ps1") -Python $python
+if ($LASTEXITCODE -ne 0) {
+    throw "Runtime bundle preparation failed."
+}
+foreach ($bundle in @("python-pyinstaller-win-x64.zip", "7zip-win-x64.zip")) {
+    $path = Join-Path $runtimeBundles $bundle
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "Missing required runtime bundle: $path"
     }
 }
 
-if ($PackageMode -in @("OneDir", "Both")) {
-    $distOneDir = Join-Path $distDir $exeName
-    $releaseOneDir = Join-Path $releaseDir $oneDirName
-    Invoke-PyInstaller
-    Move-Item -LiteralPath $distOneDir -Destination $releaseOneDir -Force
-    $exe = Join-Path $releaseOneDir $exeFile
-    Compress-Archive -Path (Join-Path $releaseOneDir "*") -DestinationPath $oneDirZip -Force
-    $size = (Get-ChildItem -LiteralPath $releaseOneDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
-    $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $exe
-    $results += [PSCustomObject]@{
-        Kind = "onedir"
-        Path = $releaseOneDir
-        ReleaseName = $oneDirName
-        SizeMB = [math]::Round($size / 1MB, 2)
-        SHA256 = $hash.Hash
-    }
-    $zipHash = Get-FileHash -Algorithm SHA256 -LiteralPath $oneDirZip
-    $results += [PSCustomObject]@{
-        Kind = "onedir_zip"
-        Path = $oneDirZip
-        ReleaseName = "$oneDirName.zip"
-        SizeMB = [math]::Round((Get-Item -LiteralPath $oneDirZip).Length / 1MB, 2)
-        SHA256 = $zipHash.Hash
-    }
+$results = @()
+
+Invoke-PyInstaller
+$distExe = Join-Path $distDir $exeFile
+$releaseExe = Join-Path $releaseDir $exeFile
+Copy-Item -LiteralPath $distExe -Destination $releaseExe -Force
+$hash = Get-FileHash -Algorithm SHA256 -LiteralPath $releaseExe
+$results += [PSCustomObject]@{
+    Kind = "onefile"
+    Path = $releaseExe
+    ReleaseName = "MousePointer_Portable.exe"
+    SizeMB = [math]::Round((Get-Item -LiteralPath $releaseExe).Length / 1MB, 2)
+    SHA256 = $hash.Hash
 }
 
 $results | ForEach-Object {

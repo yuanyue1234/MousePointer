@@ -1,6 +1,6 @@
 param(
-    [ValidateSet("Source", "OneFile", "OneDir")]
-    [string]$Mode = "OneDir",
+    [ValidateSet("Source", "OneFile")]
+    [string]$Mode = "OneFile",
     [string]$CursorPath = "C:\Windows\Cursors\aero_arrow.cur",
     [int]$TimeoutSeconds = 15
 )
@@ -31,11 +31,6 @@ if ($Mode -eq "Source") {
     $processName = [System.IO.Path]::GetFileNameWithoutExtension($file)
 } elseif ($Mode -eq "OneFile") {
     $file = Join-Path $root "release-assets\$exeFile"
-    $arguments = @("--preview-cursor", $CursorPath)
-    $working = Split-Path -Parent $file
-    $processName = $exeName
-} else {
-    $file = Join-Path $root "release-assets\MousePointer_Portable_Directory\$exeFile"
     $arguments = @("--preview-cursor", $CursorPath)
     $working = Split-Path -Parent $file
     $processName = $exeName

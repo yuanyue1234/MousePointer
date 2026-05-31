@@ -9,11 +9,18 @@ import sys
 import threading
 import time
 import webbrowser
+import ctypes
 from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
-from PIL.ImageQt import ImageQt
+try:
+    from PIL.ImageQt import ImageQt as _ImageQt
+except ImportError:
+    _ImageQt = None
+    from PIL import ImageQt as _PILImageQt
+else:
+    _PILImageQt = None
 from PySide6.QtCore import QMimeData, QPoint, QRect, Qt, QUrl, Signal, QObject, QTimer
 from PySide6.QtGui import QColor, QDrag, QDragEnterEvent, QDropEvent, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -22,12 +29,14 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QBoxLayout,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLayout,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QSizePolicy,
@@ -51,6 +60,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     ScrollArea,
+    SpinBox,
     StrongBodyLabel,
     SubtitleLabel,
     SwitchButton,
@@ -59,6 +69,20 @@ from qfluentwidgets import (
     setTheme,
     setThemeColor,
 )
+
+
+def open_path_no_console(target) -> bool:
+    try:
+        if sys.platform.startswith("win"):
+            result = ctypes.windll.shell32.ShellExecuteW(None, "open", str(target), None, None, 1)
+            return int(result) > 32
+        return bool(webbrowser.open(str(target)))
+    except Exception:
+        return False
+
+
+def open_url_no_console(url: str) -> bool:
+    return open_path_no_console(url)
 
 
 CN_TO_EN = {
@@ -111,6 +135,7 @@ CN_TO_EN = {
     "重命名": "Rename",
     "删除": "Delete",
     "导入": "Import",
+    "导入压缩包": "Import archive",
     "导入文件夹": "Explorer",
     "保存": "Save",
     "截图导出": "Export screenshot",
@@ -257,7 +282,10 @@ CN_TO_EN = {
     "应用": "Apply",
     "生成安装包": "Build installer",
     "恢复": "Restore",
+    "恢复应用前方案": "Restore previous scheme",
     "选择、导入、预览并应用鼠标指针方案": "Choose, import, preview, and apply cursor schemes.",
+    "拖入 zip/rar/7z/exe 或文件夹开始导入鼠标方案": "Drop a zip/rar/7z/exe file or folder to import cursor schemes.",
+    "导入后会告诉你哪些是可直接应用的方案，哪些只是资源包。": "After import, the app will show which items can be applied and which are resource packs.",
     "打开在线资源库下载文件，放入鼠标文件目录后点击刷新。": "Open the online library, download files into the cursor folder, then refresh.",
     "在线资源库": "Online library",
     "导入资源": "Import resources",
@@ -333,6 +361,7 @@ def apply_widget_language(root: QWidget, english: bool) -> None:
 class TaskSignal(QObject):
     finished = Signal(object)
     failed = Signal(str)
+    progress = Signal(str, int, int)
 
 
 class GuiCommandBridge(QObject):
@@ -395,8 +424,35 @@ def role_icon_path(backend, role) -> Path:
     return backend.resource_path(f"assets/role_icons/{role.file_stem}.png")
 
 
-EXTRA_RESOURCE_EXTS = {".cur", ".ani", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}
+CURSOR_RESOURCE_EXTS = {".cur", ".ani"}
+IMAGE_RESOURCE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}
+EXTRA_RESOURCE_EXTS = CURSOR_RESOURCE_EXTS | IMAGE_RESOURCE_EXTS
 ARCHIVE_RESOURCE_EXTS = {".zip", ".rar", ".7z", ".exe"}
+DOCUMENT_RESOURCE_EXTS = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf",
+    ".txt", ".md", ".html", ".htm", ".url", ".lnk",
+}
+IMAGE_RESOURCE_MAX_BYTES = 1 * 1024 * 1024
+CURSOR_RESOURCE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def resource_filter_reason(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if not path.is_file():
+        return "不是文件"
+    if suffix in DOCUMENT_RESOURCE_EXTS:
+        return "文档或链接文件已排除"
+    if suffix not in EXTRA_RESOURCE_EXTS:
+        return "不支持的资源格式"
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return f"无法读取大小：{exc}"
+    if suffix in IMAGE_RESOURCE_EXTS and size > IMAGE_RESOURCE_MAX_BYTES:
+        return "图片/GIF/ICO 超过 1MB"
+    if suffix in CURSOR_RESOURCE_EXTS and size > CURSOR_RESOURCE_MAX_BYTES:
+        return "鼠标指针文件超过 8MB"
+    return ""
 
 
 def create_file_dialog(
@@ -450,7 +506,8 @@ def save_file_name(parent: QWidget | None, title: str, path: str, name_filter: s
 
 
 def pixmap_from_image(image: Image.Image, target_size: int | None = None) -> QPixmap:
-    qimage = ImageQt(image.convert("RGBA"))
+    rgba = image.convert("RGBA")
+    qimage = _ImageQt(rgba) if _ImageQt else _PILImageQt.toqimage(rgba)
     pixmap = QPixmap.fromImage(qimage)
     if target_size:
         return pixmap.scaled(target_size, target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -555,6 +612,9 @@ QMenu::separator {
     background: #e2e8f0;
     margin: 5px 8px;
 }
+QMenu, QFrame, QListView, QListWidget {
+    background-color: #ffffff;
+}
 QListView, QListWidget {
     background-color: #ffffff;
     border: none;
@@ -581,7 +641,100 @@ QListView::item:selected, QListWidget::item:selected {
 """
 
 
+SPIN_BOX_QSS = """
+QSpinBox {
+    background: #ffffff;
+    color: #0f172a;
+    border: 1px solid #dbe4f0;
+    border-radius: 6px;
+    padding: 2px 6px;
+    selection-background-color: #eef6ff;
+    selection-color: #0f172a;
+}
+QSpinBox:focus {
+    border-color: #5b9bff;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    width: 18px;
+    border: none;
+    background: transparent;
+}
+QSpinBox QLineEdit {
+    background: transparent;
+    color: #0f172a;
+}
+"""
+
+
+_COMBO_MENU_PATCHED = False
+
+
+def polish_spin_box(box: QSpinBox) -> None:
+    box.setStyleSheet(SPIN_BOX_QSS)
+    try:
+        box.lineEdit().setStyleSheet(
+            "QLineEdit { background: transparent; color: #0f172a; selection-background-color: #eef6ff; selection-color: #0f172a; }"
+        )
+    except Exception:
+        pass
+
+
+def polish_combo_menu(menu):
+    if menu is None:
+        return menu
+    try:
+        menu.setAttribute(Qt.WA_TranslucentBackground, False)
+        menu.setWindowFlag(Qt.NoDropShadowWindowHint, True)
+        menu.setStyleSheet(POPUP_LAYER_QSS)
+        menu.setAutoFillBackground(True)
+        if menu.layout():
+            menu.layout().setContentsMargins(1, 1, 1, 1)
+        menu.setGraphicsEffect(None)
+    except Exception:
+        pass
+    for name in ("view", "listWidget"):
+        view = getattr(menu, name, None)
+        if view is None:
+            continue
+        try:
+            view.setStyleSheet(POPUP_LAYER_QSS)
+            view.setAutoFillBackground(True)
+            view.viewport().setAutoFillBackground(True)
+            view.viewport().setStyleSheet("background-color: #ffffff; border: none;")
+            view.setGraphicsEffect(None)
+        except Exception:
+            pass
+    return menu
+
+
+def install_combo_menu_patch() -> None:
+    global _COMBO_MENU_PATCHED
+    if _COMBO_MENU_PATCHED:
+        return
+    try:
+        from qfluentwidgets.components.widgets.combo_box import ComboBoxBase
+    except Exception:
+        return
+    original = getattr(ComboBoxBase, "_mouse_pointer_original_create_combo_menu", None)
+    if original is None:
+        original = ComboBoxBase._createComboMenu
+        setattr(ComboBoxBase, "_mouse_pointer_original_create_combo_menu", original)
+
+    def patched_create_combo_menu(self):
+        menu = original(self)
+        try:
+            if self.width() > 0:
+                menu.setMinimumWidth(self.width())
+        except Exception:
+            pass
+        return polish_combo_menu(menu)
+
+    ComboBoxBase._createComboMenu = patched_create_combo_menu
+    _COMBO_MENU_PATCHED = True
+
+
 def apply_popup_layer_style(app: QApplication, *, force: bool = False) -> None:
+    install_combo_menu_patch()
     if app.property("mousePointerPopupLayerStyled") and not force:
         return
     current = app.styleSheet() or ""
@@ -591,8 +744,7 @@ def apply_popup_layer_style(app: QApplication, *, force: bool = False) -> None:
 
 
 def style_popup_menu(menu: QMenu) -> QMenu:
-    menu.setStyleSheet(POPUP_LAYER_QSS)
-    return menu
+    return polish_combo_menu(menu)
 
 
 class CursorPreview(QLabel):
@@ -668,7 +820,7 @@ class ReplacementDropArea(QWidget):
 class PreviewPane(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(380, 380)
+        self.setMinimumSize(260, 260)
         self.setMouseTracking(True)
         self.setCursor(Qt.BlankCursor)
         self.pixmap = QPixmap()
@@ -771,6 +923,11 @@ class HotspotDialog(QDialog):
     def __init__(self, backend, role, path: Path | None, ratio: tuple[float, float], parent=None):
         super().__init__(parent)
         self.setWindowTitle("调整鼠标焦点")
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; color: #0f172a; } "
+            "QLabel { color: #0f172a; background: transparent; } "
+            "QDialogButtonBox QPushButton { color: #0f172a; background: #ffffff; border: 1px solid #dbe4f0; border-radius: 6px; padding: 6px 12px; }"
+        )
         self.ratio = ratio
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -853,6 +1010,7 @@ class CursorPreviewWindow(QDialog):
         self.message = CaptionLabel("")
         self.message.setWordWrap(True)
         self.message.setTextColor("#475569", "#cbd5e1")
+        self.message.setVisible(False)
 
         actions = QHBoxLayout()
         open_main = PrimaryPushButton("打开完整软件")
@@ -878,7 +1036,8 @@ class CursorPreviewWindow(QDialog):
         path = self.path
         if not path or not path.exists():
             self.kind.setText("文件不存在")
-            self.message.setText("指定的鼠标文件不存在，无法预览。")
+            self.message.setText("无法预览：文件不存在。")
+            self.message.setVisible(True)
             return
         badge = cursor_kind_badge(path)
         self.kind.setText(f"类型：{path.suffix.lower()}  {'动' if badge == '动' else '静' if badge == '静' else ''}".strip())
@@ -896,11 +1055,13 @@ class CursorPreviewWindow(QDialog):
             self.preview.setPixmap(self.frames[0])
             if len(self.frames) > 1:
                 self.timer.start(90)
-            self.message.setText("双击文件时可直接进入这个轻量预览窗口，不会打开完整主界面。")
+            self.message.setText("")
+            self.message.setVisible(False)
         except Exception as exc:
             self.backend.log_error("光标轻量预览失败", exc)
             self.preview.setText("预览失败")
-            self.message.setText(f"无法预览该文件：{exc}")
+            self.message.setText(f"无法预览：{exc}")
+            self.message.setVisible(True)
 
     def nextFrame(self) -> None:
         if not self.frames:
@@ -1103,18 +1264,25 @@ class SchemePage(QWidget):
         self.loadingScheme = False
         self.importSkipped: list[str] = []
         self.importFailed: list[str] = []
+        self.importResourceOnly: list[str] = []
+        self.importFiltered: list[str] = []
+        self.recordImportFilters = False
+        self.currentTaskCancel: threading.Event | None = None
+        self.taskRunning = False
         self.animationTimer = QTimer(self)
         self.animationTimer.timeout.connect(self.nextAnimationFrame)
         self.sizeApplyTimer = QTimer(self)
         self.sizeApplyTimer.setSingleShot(True)
         self.sizeApplyTimer.timeout.connect(self.applyCurrentCursorSize)
 
-        root = QHBoxLayout(self)
+        root = QBoxLayout(QBoxLayout.LeftToRight, self)
+        self.rootLayout = root
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(18)
 
         left = QWidget()
-        left.setMinimumWidth(500)
+        self.leftPane = left
+        left.setMinimumWidth(320)
         left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -1128,7 +1296,7 @@ class SchemePage(QWidget):
         header.addLayout(title_box)
         header.addStretch(1)
         self.schemeBox = ComboBox()
-        self.schemeBox.setMinimumWidth(220)
+        self.schemeBox.setMinimumWidth(160)
         self.schemeBox.setMaximumWidth(280)
         self.schemeBox.currentTextChanged.connect(self.loadScheme)
         header.addWidget(self.schemeBox)
@@ -1141,7 +1309,7 @@ class SchemePage(QWidget):
         self.renameButton.setIcon(FIF.EDIT)
         self.deleteButton = PushButton("删除")
         self.deleteButton.setIcon(FIF.DELETE)
-        self.importButton = PushButton("导入")
+        self.importButton = PrimaryPushButton("导入压缩包")
         self.importButton.setIcon(FIF.DOWNLOAD)
         self.importFolderButton = PushButton("导入文件夹")
         self.importFolderButton.setIcon(FIF.FOLDER)
@@ -1152,7 +1320,28 @@ class SchemePage(QWidget):
         toolbar.addStretch(1)
         left_layout.addLayout(toolbar)
 
-        self.dropArea = DropArea("拖入文件即可导入或替换当前选中项")
+        self.emptyGuide = CardWidget()
+        empty_layout = QVBoxLayout(self.emptyGuide)
+        empty_layout.setContentsMargins(16, 14, 16, 14)
+        empty_layout.setSpacing(10)
+        empty_title = StrongBodyLabel("拖入 zip/rar/7z/exe 或文件夹开始导入鼠标方案")
+        empty_tip = CaptionLabel("导入后会告诉你哪些是可直接应用的方案，哪些只是资源包。")
+        empty_tip.setWordWrap(True)
+        empty_tip.setTextColor("#64748b", "#94a3b8")
+        empty_actions = QHBoxLayout()
+        self.emptyImportButton = PrimaryPushButton("导入压缩包")
+        self.emptyImportButton.setIcon(FIF.DOWNLOAD)
+        self.emptyImportFolderButton = PushButton("导入文件夹")
+        self.emptyImportFolderButton.setIcon(FIF.FOLDER)
+        empty_actions.addWidget(self.emptyImportButton)
+        empty_actions.addWidget(self.emptyImportFolderButton)
+        empty_actions.addStretch(1)
+        empty_layout.addWidget(empty_title)
+        empty_layout.addWidget(empty_tip)
+        empty_layout.addLayout(empty_actions)
+        left_layout.addWidget(self.emptyGuide)
+
+        self.dropArea = DropArea("拖入 zip/rar/7z/exe 或文件夹开始导入鼠标方案")
         self.dropArea.dropped.connect(self.handleDropped)
         left_layout.addWidget(self.dropArea)
 
@@ -1183,7 +1372,7 @@ class SchemePage(QWidget):
 
         self.extraBox = ReplacementDropArea()
         self.extraBox.setObjectName("extraBox")
-        self.extraBox.setMinimumHeight(184)
+        self.extraBox.setMinimumHeight(150)
         self.extraBox.setMaximumHeight(220)
         self.extraBox.setStyleSheet("#extraBox { background: rgba(255, 255, 255, 0.82); border: none; border-radius: 8px; }")
         self.extraBox.dropped.connect(self.handleExtraDropped)
@@ -1218,8 +1407,10 @@ class SchemePage(QWidget):
         left_layout.addWidget(self.extraBox)
 
         right = CardWidget()
-        right.setFixedWidth(460)
-        right.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.rightPane = right
+        right.setMinimumWidth(280)
+        right.setMaximumWidth(460)
+        right.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(18, 18, 18, 18)
         right_layout.setSpacing(12)
@@ -1278,7 +1469,7 @@ class SchemePage(QWidget):
         self.applyButton.setIcon(FIF.ACCEPT)
         self.buildButton = PushButton("生成安装包")
         self.buildButton.setIcon(FIF.APPLICATION)
-        self.restoreButton = PushButton("恢复")
+        self.restoreButton = PushButton("恢复应用前方案")
         self.restoreButton.setIcon(FIF.RETURN)
         action_row.addWidget(self.sizeSettingsButton, 0, 0)
         action_row.addWidget(self.buildButton, 0, 1)
@@ -1289,6 +1480,19 @@ class SchemePage(QWidget):
         self.status.setWordWrap(True)
         self.status.setTextColor("#64748b", "#94a3b8")
         right_layout.addWidget(self.status)
+        self.taskProgress = QProgressBar()
+        self.taskProgress.setTextVisible(True)
+        self.taskProgress.setVisible(False)
+        self.taskProgress.setStyleSheet(
+            "QProgressBar { background: #f8fafc; color: #0f172a; border: 1px solid #dbe4f0; "
+            "border-radius: 6px; height: 18px; text-align: center; } "
+            "QProgressBar::chunk { background: #4f8cff; border-radius: 5px; }"
+        )
+        right_layout.addWidget(self.taskProgress)
+        self.cancelTaskButton = PushButton("取消")
+        self.cancelTaskButton.setIcon(FIF.CLOSE)
+        self.cancelTaskButton.setVisible(False)
+        right_layout.addWidget(self.cancelTaskButton)
         self.currentSchemeStatus = CaptionLabel("")
         self.currentSchemeStatus.setTextColor("#64748b", "#94a3b8")
         self.currentSchemeStatus.setWordWrap(True)
@@ -1303,6 +1507,8 @@ class SchemePage(QWidget):
 
         self.importButton.clicked.connect(self.importPackage)
         self.importFolderButton.clicked.connect(self.importFolder)
+        self.emptyImportButton.clicked.connect(self.importPackage)
+        self.emptyImportFolderButton.clicked.connect(self.importFolder)
         self.newButton.clicked.connect(self.newScheme)
         self.deleteButton.clicked.connect(self.deleteScheme)
         self.renameButton.clicked.connect(self.renameScheme)
@@ -1310,6 +1516,7 @@ class SchemePage(QWidget):
         self.buildButton.clicked.connect(self.buildInstaller)
         self.exportPreviewButton.clicked.connect(self.exportPreviewScreenshot)
         self.restoreButton.clicked.connect(self.restoreCursor)
+        self.cancelTaskButton.clicked.connect(self.cancelCurrentTask)
         self.sizeSettingsButton.clicked.connect(self.openPointerSettings)
         self.extraAddButton.clicked.connect(self.importExtraResources)
         self.extraClearButton.clicked.connect(self.clearExtraResources)
@@ -1319,16 +1526,69 @@ class SchemePage(QWidget):
         self.onSizeChanged(self.sizeLevel)
         self.schemeBox.addItem("正在加载方案...")
         self.updateRuntimeInfo()
+        self.updateFirstRunState()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.applyResponsiveLayout()
+
+    def applyResponsiveLayout(self) -> None:
+        if not hasattr(self, "rightPane") or not hasattr(self, "rowLayout"):
+            return
+        narrow = self.width() < 1080
+        direction = QBoxLayout.TopToBottom if narrow else QBoxLayout.LeftToRight
+        if self.rootLayout.direction() != direction:
+            self.rootLayout.setDirection(direction)
+        self.rightPane.setMaximumWidth(16777215 if narrow else 460)
+        self.rightPane.setSizePolicy(QSizePolicy.Expanding if narrow else QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.reflowRoleRows()
+        if hasattr(self, "extraScroll"):
+            columns = self.extraColumnCount()
+            if getattr(self, "_extraColumns", None) != columns:
+                self._extraColumns = columns
+                self.updateExtraBox()
+
+    def roleColumnCount(self) -> int:
+        width = self.scroll.viewport().width() if hasattr(self.scroll, "viewport") else self.width()
+        return 1 if width < 620 else 2
+
+    def reflowRoleRows(self) -> None:
+        columns = self.roleColumnCount()
+        if getattr(self, "_roleColumns", None) == columns:
+            return
+        self._roleColumns = columns
+        while self.rowLayout.count():
+            self.rowLayout.takeAt(0)
+        for index, role in enumerate(self.backend.CURSOR_ROLES):
+            self.rowLayout.addWidget(self.rows[role.reg_name], index // columns, index % columns)
+        for column in range(2):
+            self.rowLayout.setColumnStretch(column, 1 if column < columns else 0)
+
+    def extraColumnCount(self) -> int:
+        width = self.extraScroll.viewport().width() if hasattr(self.extraScroll, "viewport") else self.width()
+        return max(2, min(8, width // 78))
 
     def openPointerSettings(self):
         try:
-            os.startfile("ms-settings:easeofaccess-mousepointer")
+            if not open_path_no_console("ms-settings:easeofaccess-mousepointer"):
+                open_path_no_console("control.exe")
         except Exception:
-            os.startfile("control.exe")
+            open_path_no_console("control.exe")
 
-    def schemeNames(self) -> list[str]:
+    def schemeNames(self, include_resource_only: bool = False) -> list[str]:
         if self._schemeNamesCache is not None:
-            return list(self._schemeNamesCache)
+            names = list(self._schemeNamesCache)
+            if include_resource_only:
+                root = self.backend.SCHEME_LIBRARY
+                extra = []
+                for path in root.iterdir() if root.exists() else []:
+                    if not path.is_dir() or path.name in names:
+                        continue
+                    _scheme_dir, data = self.backend.scheme_manifest_data(path.name)
+                    if data.get("resource_only") or data.get("extras"):
+                        extra.append(path.name)
+                names.extend(sorted(extra, key=lambda name: self.backend.scheme_order_value(root / name)))
+            return names
         root = self.backend.SCHEME_LIBRARY
         if not root.exists():
             return []
@@ -1343,7 +1603,7 @@ class SchemePage(QWidget):
             if files and any((path / name).exists() for name in files.values()):
                 names.append(path.name)
         self._schemeNamesCache = sorted(names, key=lambda name: self.backend.scheme_order_value(root / name))
-        return list(self._schemeNamesCache)
+        return self.schemeNames(include_resource_only=include_resource_only)
 
     def invalidateSchemeCache(self) -> None:
         self._schemeNamesCache = None
@@ -1355,11 +1615,7 @@ class SchemePage(QWidget):
         return self.backend.SCHEME_LIBRARY / self.backend.sanitize_name(name)
 
     def readManifest(self, name: str) -> tuple[Path, dict]:
-        scheme_dir = self.backend.SCHEME_LIBRARY / self.backend.sanitize_name(name)
-        manifest_path = scheme_dir / "scheme.json"
-        if not manifest_path.exists():
-            return scheme_dir, {}
-        return scheme_dir, json.loads(manifest_path.read_text(encoding="utf-8"))
+        return self.backend.scheme_manifest_data(self.backend.sanitize_name(name))
 
     def refreshSchemes(self):
         self.invalidateSchemeCache()
@@ -1376,6 +1632,7 @@ class SchemePage(QWidget):
         else:
             self.clearSelection()
         self.updateRuntimeInfo()
+        self.updateFirstRunState()
 
     def clearSelection(self):
         self.selected.clear()
@@ -1386,6 +1643,7 @@ class SchemePage(QWidget):
         self.updateLargePreview("Arrow")
         self.updateExtraBox()
         self.updateRuntimeInfo()
+        self.updateFirstRunState()
 
     def loadScheme(self, name: str):
         if not name:
@@ -1415,6 +1673,29 @@ class SchemePage(QWidget):
         finally:
             self.loadingScheme = False
         self.updateRuntimeInfo()
+        self.updateFirstRunState()
+
+    def buildDisabledReason(self) -> str:
+        if not self.schemeBox.currentText().strip():
+            return "请先导入或新建一个可应用方案。"
+        error = self.validate()
+        if error:
+            return error
+        return ""
+
+    def updateFirstRunState(self) -> None:
+        has_scheme = bool(self.schemeNames())
+        has_selection = bool(self.selected)
+        self.emptyGuide.setVisible(not has_scheme or not has_selection)
+        build_reason = self.buildDisabledReason()
+        self.buildButton.setEnabled(not build_reason)
+        self.applyButton.setEnabled(not self.taskRunning and has_selection)
+        if build_reason:
+            self.buildButton.setToolTip(f"当前方案还不能生成安装包：{build_reason}")
+            if not self.taskRunning and (not self.status.text() or self.status.text() in {"完成", "失败"}):
+                self.status.setText(f"当前方案还不能生成安装包：{build_reason}")
+        else:
+            self.buildButton.setToolTip("当前方案可生成安装包。")
 
     def clearGrid(self, layout: QGridLayout) -> None:
         while layout.count():
@@ -1436,13 +1717,15 @@ class SchemePage(QWidget):
             empty.setTextColor("#64748b", "#94a3b8")
             self.extraGrid.addWidget(empty, 0, 0)
             return
+        columns = self.extraColumnCount()
+        self._extraColumns = columns
         for index, path in enumerate(self.extraFiles):
-            row = index // 6
-            col = index % 6
+            row = index // columns
+            col = index % columns
             item = ExtraResourceItem(self.backend, path)
             item.deleteRequested.connect(self.removeExtraResource)
             self.extraGrid.addWidget(item, row, col)
-        self.extraGrid.setRowStretch(max(2, (len(self.extraFiles) + 5) // 6), 1)
+        self.extraGrid.setRowStretch(max(2, (len(self.extraFiles) + columns - 1) // columns), 1)
 
     def handleExtraDropped(self, paths: list[Path]) -> None:
         added = False
@@ -1451,7 +1734,7 @@ class SchemePage(QWidget):
             if path.is_dir() or path.suffix.lower() in ARCHIVE_RESOURCE_EXTS:
                 blocked = True
                 continue
-            if path.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+            if resource_filter_reason(path):
                 blocked = True
                 continue
             self.appendExtraResource(path)
@@ -1524,7 +1807,9 @@ class SchemePage(QWidget):
         staged = []
         source_list = self.extraFiles if sources is None else sources
         for source in source_list:
-            if not source.exists() or source.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+            reason = resource_filter_reason(source)
+            if reason:
+                self.noteFilteredResource(source, reason)
                 continue
             output_name = self.uniqueFileName(staging_dir, source.name)
             target = staging_dir / output_name
@@ -1540,7 +1825,9 @@ class SchemePage(QWidget):
         extra_names: list[str] = []
         source_list = self.extraFiles if sources is None else sources
         for source in source_list:
-            if not source.exists() or source.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+            reason = resource_filter_reason(source)
+            if reason:
+                self.noteFilteredResource(source, reason)
                 continue
             output_name = self.uniqueFileName(extras_dir, source.name)
             target = extras_dir / output_name
@@ -1556,9 +1843,9 @@ class SchemePage(QWidget):
         staged = self.stageExtraFiles(self.backend.WORK_ROOT / "fluent_extra_stage")
         extra_names = self.copyExtraFilesToScheme(scheme_dir, staged)
         manifest_path = scheme_dir / "scheme.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = self.backend.read_json_dict(manifest_path)
         manifest["extras"] = extra_names
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.backend.write_json_atomic(manifest_path, manifest)
         self.extraFiles = [scheme_dir / name for name in extra_names if (scheme_dir / name).exists()]
         if refresh_ui:
             self.updateExtraBox()
@@ -1585,11 +1872,13 @@ class SchemePage(QWidget):
             files = self.prepareAssets(package_dir)
             staged_extras = self.stageExtraFiles(extra_stage)
             scheme_dir = self.backend.SCHEME_LIBRARY / theme
-            if scheme_dir.exists():
-                shutil.rmtree(scheme_dir)
-            shutil.copytree(package_dir / "assets", scheme_dir)
-            extra_names = self.copyExtraFilesToScheme(scheme_dir, staged_extras)
-            self.writeManifest(theme, files, scheme_dir, extra_names)
+            staged_scheme = self.backend.WORK_ROOT / f"scheme_stage_{theme}"
+            if staged_scheme.exists():
+                shutil.rmtree(staged_scheme)
+            shutil.copytree(package_dir / "assets", staged_scheme)
+            extra_names = self.copyExtraFilesToScheme(staged_scheme, staged_extras)
+            self.writeManifest(theme, files, staged_scheme, extra_names)
+            self.backend.replace_directory(staged_scheme, scheme_dir)
             self.selected = {reg_name: scheme_dir / file_name for reg_name, file_name in files.items() if (scheme_dir / file_name).exists()}
             self.extraFiles = [scheme_dir / name for name in extra_names if (scheme_dir / name).exists()]
             for reg_name, row in self.rows.items():
@@ -1774,23 +2063,50 @@ class SchemePage(QWidget):
     def beginImportBatch(self) -> None:
         self.importSkipped = []
         self.importFailed = []
+        self.importResourceOnly = []
+        self.importFiltered = []
+        self.recordImportFilters = True
+
+    def noteFilteredResource(self, path: Path, reason: str) -> None:
+        if self.recordImportFilters:
+            self.importFiltered.append(f"{path.name}: {reason}")
 
     def showImportSummary(self, imported: list[str]) -> None:
         imported = [name for name in imported if name]
-        lines = [f"成功：{len(imported)} 个"]
-        if imported:
-            preview = "、".join(imported[:6])
-            if len(imported) > 6:
-                preview += f" 等 {len(imported)} 个"
-            lines.append(preview)
+        resource_only = list(dict.fromkeys(self.importResourceOnly))
+        resource_only_set = set(resource_only)
+        applicable = [name for name in imported if name not in resource_only_set]
+        lines = [
+            f"可应用方案：{len(applicable)} 个",
+            f"仅资源包：{len(resource_only)} 个",
+        ]
+        if applicable:
+            preview = "、".join(applicable[:6])
+            if len(applicable) > 6:
+                preview += f" 等 {len(applicable)} 个"
+            lines.append(f"可应用：{preview}")
+        if resource_only:
+            preview = "、".join(resource_only[:6])
+            if len(resource_only) > 6:
+                preview += f" 等 {len(resource_only)} 个"
+            lines.append(f"资源包：{preview}")
+            lines.append("资源包没有 INF 映射，不能直接应用，可在资源库中作为素材使用。")
+        if self.importResourceOnly:
+            notes = [item for item in self.importResourceOnly[:3]]
+            if notes:
+                lines.append(f"资源包记录：{'、'.join(notes)}")
         if self.importSkipped:
-            lines.append(f"跳过重复：{len(self.importSkipped)} 个")
+            lines.append(f"跳过重复：{len(self.importSkipped)} 个（{self.importSkipped[0]}）")
+        if self.importFiltered:
+            lines.append(f"已过滤：{len(self.importFiltered)} 个（{self.importFiltered[0]}）")
         if self.importFailed:
-            lines.append(f"失败：{len(self.importFailed)} 个，详情见错误记录。")
+            lines.append(f"失败：{len(self.importFailed)} 个（{self.importFailed[0]}）")
         content = "\n".join(lines)
-        if imported:
+        if applicable:
             self.showInfo("导入完成", content)
-        elif self.importSkipped:
+        elif resource_only:
+            self.showWarn("导入完成", content)
+        elif self.importSkipped or self.importFiltered:
             self.showWarn("导入完成", content)
         elif self.importFailed:
             self.showWarn("导入失败", content)
@@ -1798,12 +2114,7 @@ class SchemePage(QWidget):
     def handleDropped(self, paths: list[Path]):
         packages = [p for p in paths if p.is_dir() or p.suffix.lower() in {".zip", ".rar", ".7z", ".exe"}]
         if packages:
-            self.beginImportBatch()
-            imported = []
-            for package in packages:
-                imported.extend(self.importPackagePath(package))
-            self.refreshSchemes()
-            self.showImportSummary(imported)
+            self.importPackagesAsync(packages)
             return
         files = [p for p in paths if p.suffix.lower() in {".cur", ".ani", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico"}]
         for path in files:
@@ -1812,6 +2123,7 @@ class SchemePage(QWidget):
         self.updateLargePreview(self.current_preview)
         if files:
             self.autoSaveCurrentScheme()
+        self.updateFirstRunState()
 
     def importPackage(self):
         files = open_file_names(
@@ -1820,8 +2132,7 @@ class SchemePage(QWidget):
             str(self.backend.configured_storage_root()),
             "资源包和光标 (*.zip *.rar *.7z *.exe *.cur *.ani);;所有文件 (*.*)",
         )
-        imported = []
-        self.beginImportBatch()
+        import_paths: list[Path] = []
         for file_name in files:
             path = Path(file_name)
             if path.suffix.lower() in {".cur", ".ani"}:
@@ -1830,37 +2141,58 @@ class SchemePage(QWidget):
                 self.updateLargePreview(self.current_preview)
                 self.autoSaveCurrentScheme()
             else:
-                imported.extend(self.importPackagePath(path))
-        if files:
-            self.refreshSchemes()
-            if imported or self.importSkipped or self.importFailed:
-                self.showImportSummary(imported)
+                import_paths.append(path)
+        if import_paths:
+            self.importPackagesAsync(import_paths)
 
     def importFolder(self):
         folder = existing_directory(self, "导入鼠标指针文件夹", str(self.backend.configured_storage_root()))
         if folder:
-            self.beginImportBatch()
-            imported = self.importPackagePath(Path(folder))
-            self.refreshSchemes()
-            self.showImportSummary(imported)
+            self.importPackagesAsync([Path(folder)])
 
-    def importPackagePath(self, package: Path) -> list[str]:
+    def importPackagesAsync(self, packages: list[Path], title: str = "正在导入资源", after_done=None) -> None:
+        packages = [Path(path) for path in packages]
+        if not packages:
+            return
+
+        def work(progress, cancel_event):
+            self.beginImportBatch()
+            imported: list[str] = []
+            total = max(1, len(packages))
+            for index, package in enumerate(packages, start=1):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("导入已取消。")
+                progress(f"正在导入：{package.name}", index - 1, total)
+                imported.extend(self.importPackagePath(package, notify=False, progress=progress, cancel_event=cancel_event))
+                progress(f"已处理：{package.name}", index, total)
+            return imported
+
+        def done(imported: list[str]):
+            if after_done:
+                after_done(imported)
+            if imported or self.importResourceOnly or self.importSkipped or self.importFiltered or self.importFailed:
+                self.showImportSummary(imported)
+
+        self.runTask(title, work, done, with_progress=True, cancellable=True)
+
+    def importPackagePath(self, package: Path, *, notify: bool = True, progress=None, cancel_event=None) -> list[str]:
         imported = []
         try:
-            extracted = self.backend.extract_import_package(package)
+            extracted = self.backend.extract_import_package(package, progress=progress, cancel_event=cancel_event)
             roots = self.detectSchemeRoots(extracted)
-            if len(roots) > 1:
+            if len(roots) > 1 and notify:
                 self.showInfo("批量导入", f"识别到 {len(roots)} 份鼠标指针，正在批量添加。")
             for root in roots:
                 name = package.stem if len(roots) == 1 else root.name
                 search_root = extracted if len(roots) == 1 else root.parent
-                imported_name = self.importRootAsScheme(root, name, search_root)
+                imported_name = self.importRootAsScheme(root, name, search_root, duplicate_policy="ask" if notify else "copy")
                 if imported_name:
                     imported.append(imported_name)
             return imported
         except Exception as exc:
             self.importFailed.append(f"{package.name}: {exc}")
-            self.showError("导入失败", exc)
+            if notify:
+                self.showError("导入失败", exc)
             return imported
 
     def detectSchemeRoots(self, extracted: Path) -> list[Path]:
@@ -1885,7 +2217,10 @@ class SchemePage(QWidget):
         mapped = {path.resolve() for path in mapping.values() if path.exists()}
         extras = []
         for path in base.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in EXTRA_RESOURCE_EXTS:
+            reason = resource_filter_reason(path)
+            if reason:
+                if path.is_file() and path.suffix.lower() in EXTRA_RESOURCE_EXTS | DOCUMENT_RESOURCE_EXTS:
+                    self.noteFilteredResource(path, reason)
                 continue
             try:
                 if path.resolve() in mapped:
@@ -1895,27 +2230,55 @@ class SchemePage(QWidget):
             extras.append(path)
         return extras
 
-    def importRootAsScheme(self, root: Path, raw_name: str, search_root: Path | None = None) -> str:
+    def uniqueImportSchemeName(self, raw_name: str) -> tuple[str, Path]:
+        name = self.backend.sanitize_name(raw_name)
+        if name in self.backend.DEFAULT_SCHEME_NAMES:
+            name = f"{name}_资源"
+        base = name
+        index = 2
+        while (self.backend.SCHEME_LIBRARY / name / "scheme.json").exists():
+            name = f"{base}_{index}"
+            index += 1
+        return name, self.backend.SCHEME_LIBRARY / name
+
+    def importRootAsResourceOnly(self, root: Path, raw_name: str, search_root: Path | None = None, reason: str = "未找到 INF 映射") -> str:
+        name, scheme_dir = self.uniqueImportSchemeName(raw_name)
+        scheme_dir.mkdir(parents=True, exist_ok=True)
+        extra_names = self.copyExtraFilesToScheme(scheme_dir, self.extraResourcesFromRoot(root, {}, search_root))
+        self.writeManifest(name, {}, scheme_dir, extra_names, {}, resource_only=True, import_note=reason)
+        self.importResourceOnly.append(name)
+        return name
+
+    def importRootAsScheme(self, root: Path, raw_name: str, search_root: Path | None = None, *, duplicate_policy: str = "ask") -> str:
         try:
             name = self.backend.sanitize_name(raw_name)
             if name in self.backend.DEFAULT_SCHEME_NAMES:
                 name = f"{name}_资源"
             scheme_dir = self.backend.SCHEME_LIBRARY / name
             if (scheme_dir / "scheme.json").exists():
-                result = QMessageBox.question(self, "发现重复方案", f"{name} 已存在，是否继续导入为新副本？\n选择“否”将跳过该方案。")
-                if result != QMessageBox.Yes:
+                if duplicate_policy == "skip":
                     self.importSkipped.append(name)
-                    self.showWarn("已跳过", f"{name} 已存在，未重复导入。")
+                    if duplicate_policy == "ask":
+                        self.showWarn("已跳过", f"{name} 已存在，未重复导入。")
                     return ""
+                if duplicate_policy == "ask":
+                    result = QMessageBox.question(self, "发现重复方案", f"{name} 已存在，是否继续导入为新副本？\n选择“否”将跳过该方案。")
+                    if result != QMessageBox.Yes:
+                        self.importSkipped.append(name)
+                        self.showWarn("已跳过", f"{name} 已存在，未重复导入。")
+                        return ""
                 base = name
                 index = 2
                 while (self.backend.SCHEME_LIBRARY / f"{base}_{index}" / "scheme.json").exists():
                     index += 1
                 name = f"{base}_{index}"
                 scheme_dir = self.backend.SCHEME_LIBRARY / name
-            mapping = self.backend.parse_inf_mapping(root)
+            has_inf = any(root.rglob("*.inf"))
+            if not has_inf:
+                return self.importRootAsResourceOnly(root, name, root, "压缩包内没有 INF 文件，已作为资源包导入。")
+            mapping = self.backend.parse_inf_mapping(root, use_filename_fallback=False)
             if not mapping:
-                raise RuntimeError(f"{root.name} 没有识别到鼠标方案。")
+                return self.importRootAsResourceOnly(root, name, root, "INF 未解析到鼠标角色映射，已作为资源包导入。")
             scheme_dir.mkdir(parents=True, exist_ok=True)
             files = {}
             for reg_name, source in mapping.items():
@@ -1927,11 +2290,9 @@ class SchemePage(QWidget):
                 files[reg_name] = output_name
             extra_names = self.copyExtraFilesToScheme(scheme_dir, self.extraResourcesFromRoot(root, mapping, search_root))
             self.writeManifest(name, files, scheme_dir, extra_names, {})
-            self.status.setText(f"已添加：{name}")
             return name
         except Exception as exc:
             self.importFailed.append(f"{raw_name}: {exc}")
-            self.showError("导入失败", exc)
             return ""
 
     def validate(self) -> str | None:
@@ -1967,15 +2328,29 @@ class SchemePage(QWidget):
             shutil.copy2(assets_dir / name, target_dir / name)
         return target_dir
 
-    def writeManifest(self, theme: str, files: dict[str, str], folder: Path, extras: list[str] | None = None, hotspots: dict[str, tuple[float, float]] | None = None):
+    def writeManifest(
+        self,
+        theme: str,
+        files: dict[str, str],
+        folder: Path,
+        extras: list[str] | None = None,
+        hotspots: dict[str, tuple[float, float]] | None = None,
+        *,
+        resource_only: bool = False,
+        import_note: str = "",
+    ):
         folder.mkdir(parents=True, exist_ok=True)
         manifest = {"name": theme, "files": files, "order": self.backend.time.time(), "saved_at": datetime.now().isoformat()}
         if extras:
             manifest["extras"] = extras
+        if resource_only:
+            manifest["resource_only"] = True
+        if import_note:
+            manifest["import_note"] = import_note
         hotspot_data = self.hotspots if hotspots is None else hotspots
         if hotspot_data:
             manifest["hotspots"] = {reg: [ratio[0], ratio[1]] for reg, ratio in hotspot_data.items()}
-        (folder / "scheme.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.backend.write_json_atomic(folder / "scheme.json", manifest)
 
     def saveScheme(self):
         error = self.validate()
@@ -1988,11 +2363,13 @@ class SchemePage(QWidget):
             files = self.prepareAssets(package_dir)
             scheme_dir = self.backend.SCHEME_LIBRARY / theme
             staged_extras = self.stageExtraFiles(self.backend.WORK_ROOT / "fluent_library_extra_stage")
-            if scheme_dir.exists():
-                shutil.rmtree(scheme_dir)
-            shutil.copytree(package_dir / "assets", scheme_dir)
-            extra_names = self.copyExtraFilesToScheme(scheme_dir, staged_extras)
-            self.writeManifest(theme, files, scheme_dir, extra_names)
+            staged_scheme = self.backend.WORK_ROOT / f"scheme_stage_{theme}"
+            if staged_scheme.exists():
+                shutil.rmtree(staged_scheme)
+            shutil.copytree(package_dir / "assets", staged_scheme)
+            extra_names = self.copyExtraFilesToScheme(staged_scheme, staged_extras)
+            self.writeManifest(theme, files, staged_scheme, extra_names)
+            self.backend.replace_directory(staged_scheme, scheme_dir)
             self.refreshSchemes()
             self.schemeBox.setCurrentText(theme)
             self.loadScheme(theme)
@@ -2004,6 +2381,8 @@ class SchemePage(QWidget):
         error = self.validate()
         if error:
             self.showWarn("还不能应用", error)
+            return
+        if not self.confirmApplyOnce():
             return
         theme = self.backend.sanitize_name(self.schemeBox.currentText() or "当前方案")
         pixels = self.backend.size_level_to_pixels(self.sizeLevel)
@@ -2025,6 +2404,23 @@ class SchemePage(QWidget):
             return f"{theme}（{pixels}px）"
 
         self.runTask("正在应用鼠标方案", work, lambda name: self.showInfo("应用完成", f"已应用：{name}"))
+
+    def confirmApplyOnce(self) -> bool:
+        settings = self.backend.load_settings()
+        if settings.get("apply_confirmed_once"):
+            return True
+        result = QMessageBox.question(
+            self,
+            "确认应用鼠标方案",
+            "应用后会修改当前 Windows 鼠标指针方案。\n\n软件会先自动备份当前方案，之后可以点击“恢复应用前方案”撤回。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if result != QMessageBox.Yes:
+            return False
+        settings["apply_confirmed_once"] = True
+        self.backend.save_settings(settings)
+        return True
 
     def exportPreviewScreenshot(self):
         resources = [
@@ -2174,7 +2570,7 @@ class SchemePage(QWidget):
 
         def done(path: Path):
             self.showInfo("生成完成", str(path))
-            os.startfile(path.parent)
+            open_path_no_console(path.parent)
 
         self.runTask("正在生成安装包", work, done)
 
@@ -2227,9 +2623,9 @@ class SchemePage(QWidget):
                 old_dir.rename(new_dir)
                 manifest = new_dir / "scheme.json"
                 if manifest.exists():
-                    data = json.loads(manifest.read_text(encoding="utf-8"))
+                    data = self.backend.read_json_dict(manifest)
                     data["name"] = new
-                    manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                    self.backend.write_json_atomic(manifest, data)
             self.refreshSchemes()
             self.schemeBox.setCurrentText(new)
         except Exception as exc:
@@ -2253,33 +2649,75 @@ class SchemePage(QWidget):
         except Exception as exc:
             self.showError("删除失败", exc)
 
-    def runTask(self, title: str, func, on_done):
+    def runTask(self, title: str, func, on_done, *, with_progress: bool = False, cancellable: bool = False):
+        self.taskRunning = True
         self.applyButton.setEnabled(False)
+        self.buildButton.setEnabled(False)
         self.status.setText(title)
+        self.taskProgress.setVisible(True)
+        self.taskProgress.setRange(0, 0 if with_progress else 1)
+        self.taskProgress.setValue(0)
+        self.currentTaskCancel = threading.Event() if cancellable else None
+        self.cancelTaskButton.setVisible(cancellable)
         signal = TaskSignal(self)
         signal.finished.connect(lambda value: self.finishTask(value, on_done))
         signal.failed.connect(lambda msg: self.failTask(msg))
+        signal.progress.connect(self.updateTaskProgress)
+
+        def progress(message: str, current: int = -1, total: int = 0) -> None:
+            signal.progress.emit(str(message), int(current), int(total))
 
         def target():
             try:
-                signal.finished.emit(func())
+                if with_progress and cancellable:
+                    value = func(progress, self.currentTaskCancel)
+                elif with_progress:
+                    value = func(progress)
+                else:
+                    value = func()
+                signal.finished.emit(value)
             except Exception as exc:
                 self.backend.log_error(title, exc)
                 signal.failed.emit(str(exc))
 
         threading.Thread(target=target, daemon=True).start()
 
+    def cancelCurrentTask(self) -> None:
+        if self.currentTaskCancel is not None:
+            self.currentTaskCancel.set()
+            self.status.setText("正在取消...")
+
+    def updateTaskProgress(self, message: str, current: int, total: int) -> None:
+        if message:
+            self.status.setText(message)
+        self.taskProgress.setVisible(True)
+        if total <= 0:
+            self.taskProgress.setRange(0, 0)
+            return
+        self.taskProgress.setRange(0, total)
+        self.taskProgress.setValue(max(0, min(current, total)))
+
     def finishTask(self, value, on_done):
-        self.applyButton.setEnabled(True)
+        self.taskRunning = False
+        self.recordImportFilters = False
+        self.currentTaskCancel = None
+        self.taskProgress.setVisible(False)
+        self.cancelTaskButton.setVisible(False)
         self.status.setText("完成")
         on_done(value)
         self.refreshSchemes()
         self.updateRuntimeInfo()
+        self.updateFirstRunState()
 
     def failTask(self, message: str):
-        self.applyButton.setEnabled(True)
+        self.taskRunning = False
+        self.recordImportFilters = False
+        self.currentTaskCancel = None
+        self.taskProgress.setVisible(False)
+        self.cancelTaskButton.setVisible(False)
         self.status.setText("失败")
         self.showWarn("操作失败", message)
+        self.updateFirstRunState()
 
     def showInfo(self, title: str, content: str):
         InfoBar.success(title=title, content=content, orient=Qt.Horizontal, isClosable=True, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window())
@@ -2301,7 +2739,16 @@ class ResourcePage(QWidget):
         self.deleted: dict[str, Path] = {}
         self.selectedName: str | None = None
         self.cardWidgets: dict[str, QWidget] = {}
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.scroll = ScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
+        self.contentWidget = QWidget()
+        self.contentWidget.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(self.contentWidget)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("资源库"))
@@ -2356,7 +2803,9 @@ class ResourcePage(QWidget):
         action_bar.addWidget(self.applySelectedButton)
         action_bar.addWidget(self.deleteSelectedButton)
         layout.addLayout(action_bar)
-        self.openWeb.clicked.connect(lambda: webbrowser.open(self.backend.RESOURCE_URL))
+        self.scroll.setWidget(self.contentWidget)
+        outer.addWidget(self.scroll)
+        self.openWeb.clicked.connect(lambda: open_url_no_console(self.backend.RESOURCE_URL))
         self.importButton.clicked.connect(self.importResources)
         self.importFolderButton.clicked.connect(self.importResourceFolder)
         self.refresh.clicked.connect(self.render)
@@ -2378,6 +2827,18 @@ class ResourcePage(QWidget):
         self.gridMode = self.gridButton.isChecked()
         self.render()
 
+    def resourceGridColumns(self) -> int:
+        width = self.scroll.viewport().width() if hasattr(self.scroll, "viewport") else self.width()
+        return max(1, min(4, width // 340))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.gridMode and self.loadedOnce:
+            columns = self.resourceGridColumns()
+            if getattr(self, "_resourceGridColumns", None) != columns:
+                self._resourceGridColumns = columns
+                QTimer.singleShot(0, self.render)
+
     def clearCards(self):
         layout = self.container.layout()
         if layout:
@@ -2397,7 +2858,10 @@ class ResourcePage(QWidget):
             QWidget().setLayout(old)
         self.cards = QGridLayout(self.container) if self.gridMode else QVBoxLayout(self.container)
         self.cards.setSpacing(10)
-        names = self.scheme_page.schemeNames()
+        if self.gridMode:
+            self.cards.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            self._resourceGridColumns = self.resourceGridColumns()
+        names = self.scheme_page.schemeNames(include_resource_only=True)
         if self.selectedName not in names:
             self.selectedName = None
         self.cardWidgets = {}
@@ -2414,7 +2878,7 @@ class ResourcePage(QWidget):
             card.setObjectName("resourceCard")
             card.setCursor(Qt.PointingHandCursor)
             if self.gridMode:
-                card.setMinimumSize(320, 260)
+                card.setFixedSize(320, 260)
             else:
                 card.setMinimumHeight(92)
             self.cardWidgets[name] = card
@@ -2427,14 +2891,16 @@ class ResourcePage(QWidget):
             title_row.setContentsMargins(0, 0, 0, 0)
             title_row.setSpacing(8)
             title_row.addWidget(StrongBodyLabel(name))
-            scheme_dir, files = self.backend.scheme_manifest(name)
+            scheme_dir, manifest = self.backend.scheme_manifest_data(name)
+            files = manifest.get("files", {}) if isinstance(manifest, dict) else {}
             summary = cursor_kind_summary_text(scheme_dir, files)
             summary_label = QLabel()
-            style_summary_chip(summary_label, summary)
+            style_summary_chip(summary_label, "资源包" if self.backend.scheme_is_resource_only(name) else summary)
             title_row.addWidget(summary_label)
             title_row.addStretch(1)
             text.addLayout(title_row)
-            count_text = f"{len(files)} 个鼠标状态"
+            extras = manifest.get("extras", []) if isinstance(manifest, dict) else []
+            count_text = f"{len(extras)} 个资源，无映射" if self.backend.scheme_is_resource_only(name) else f"{len(files)} 个鼠标状态"
             text.addWidget(CaptionLabel(count_text))
             layout.addLayout(text, 1 if not self.gridMode else 0)
             preview_grid = QGridLayout()
@@ -2458,7 +2924,8 @@ class ResourcePage(QWidget):
             card.mousePressEvent = self.resourceCardPressHandler(name)
             self.updateResourceCardStyle(name)
             if self.gridMode:
-                self.cards.addWidget(card, index // 3, index % 3)
+                columns = max(1, getattr(self, "_resourceGridColumns", self.resourceGridColumns()))
+                self.cards.addWidget(card, index // columns, index % columns)
             else:
                 self.cards.addWidget(card)
         if not self.gridMode:
@@ -2504,7 +2971,7 @@ class ResourcePage(QWidget):
         self.setResourceSelected(name, name != self.selectedName)
 
     def selectedResourceName(self) -> str | None:
-        if self.selectedName in self.scheme_page.schemeNames():
+        if self.selectedName in self.scheme_page.schemeNames(include_resource_only=True):
             return self.selectedName
         self.selectedName = None
         return None
@@ -2512,15 +2979,21 @@ class ResourcePage(QWidget):
     def updateSelectionControls(self) -> None:
         if not self.selectedName:
             self.selectionStatus.setText("未选择方案")
+            can_apply = False
         else:
-            self.selectionStatus.setText(f"已选择：{self.selectedName}")
-        self.applySelectedButton.setEnabled(bool(self.selectedName))
+            resource_only = self.backend.scheme_is_resource_only(self.selectedName)
+            self.selectionStatus.setText(f"已选择：{self.selectedName}{'（资源包，无映射）' if resource_only else ''}")
+            can_apply = not resource_only
+        self.applySelectedButton.setEnabled(bool(self.selectedName) and can_apply)
         self.deleteSelectedButton.setEnabled(bool(self.selectedName))
 
     def applySelectedResource(self):
         selected = self.selectedResourceName()
         if not selected:
             self.scheme_page.showWarn("请选择一个方案", "应用资源库方案前需要先选择一个方案。")
+            return
+        if self.backend.scheme_is_resource_only(selected):
+            self.scheme_page.showWarn("无法应用", "该资源包没有 INF 映射，不能直接应用为鼠标方案，可在资源库中作为素材使用。")
             return
         self.applyResource(selected)
 
@@ -2592,13 +3065,23 @@ class ResourcePage(QWidget):
         self.scheme_page.runTask("正在恢复鼠标方案", self.backend.restore_cursor_backup, lambda _value: InfoBar.success(title="已恢复", content="已恢复应用前鼠标方案", orient=Qt.Horizontal, position=InfoBarPosition.TOP_RIGHT, duration=2500, parent=self.window()))
 
     def importDroppedResources(self, paths: list[Path]):
-        imported = []
-        self.scheme_page.beginImportBatch()
-        for path in paths:
-            imported.extend([name for name in self.scheme_page.importPackagePath(path) if name])
-        self.scheme_page.refreshSchemes()
-        self.render()
-        self.scheme_page.showImportSummary(imported)
+        paths = [Path(path) for path in paths]
+        if not paths:
+            return
+
+        def work():
+            self.scheme_page.beginImportBatch()
+            imported: list[str] = []
+            for path in paths:
+                imported.extend([name for name in self.scheme_page.importPackagePath(path, notify=False) if name])
+            return imported
+
+        def done(imported: list[str]):
+            self.scheme_page.refreshSchemes()
+            self.render()
+            self.scheme_page.showImportSummary(imported)
+
+        self.scheme_page.runTask("正在导入资源", work, done)
 
     def importResources(self):
         files = open_file_names(
@@ -2620,7 +3103,16 @@ class SchedulePage(QWidget):
     def __init__(self, backend, parent=None):
         super().__init__(parent)
         self.backend = backend
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.scroll = ScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
+        self.contentWidget = QWidget()
+        self.contentWidget.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(self.contentWidget)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("时间切换"))
@@ -2645,6 +3137,8 @@ class SchedulePage(QWidget):
         save.clicked.connect(self.save)
         layout.addWidget(save, alignment=Qt.AlignLeft)
         layout.addStretch(1)
+        self.scroll.setWidget(self.contentWidget)
+        outer.addWidget(self.scroll)
         self.load()
 
     def schemeNames(self) -> list[str]:
@@ -2661,13 +3155,15 @@ class SchedulePage(QWidget):
 
     def currentSchemeValue(self, combo: ComboBox) -> str:
         data = combo.currentData()
-        return str(data) if data else combo.currentText().strip()
+        if data:
+            return str(data)
+        text = combo.currentText().strip()
+        return text if text and combo.findText(text) >= 0 else ""
 
     def setSchemeValue(self, combo: ComboBox, value: str):
-        if value == self.backend.RANDOM_SCHEME_VALUE:
-            combo.setCurrentText("随机方案")
-        else:
-            combo.setCurrentText(value)
+        target = "随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value
+        index = combo.findText(target)
+        combo.setCurrentIndex(index if index >= 0 else 0)
 
     def load(self):
         try:
@@ -2702,7 +3198,16 @@ class TimerPage(QWidget):
     def __init__(self, backend, parent=None):
         super().__init__(parent)
         self.backend = backend
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.scroll = ScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
+        self.contentWidget = QWidget()
+        self.contentWidget.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(self.contentWidget)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("计时切换"))
@@ -2711,9 +3216,10 @@ class TimerPage(QWidget):
         row = QHBoxLayout(card)
         row.setContentsMargins(16, 14, 16, 14)
         self.enabled = SwitchButton("启用计时切换")
-        self.interval = QSpinBox()
+        self.interval = SpinBox()
         self.interval.setRange(1, 86400)
         self.interval.setValue(5)
+        polish_spin_box(self.interval)
         self.unit = ComboBox()
         self.unit.addItems(["秒", "分钟"])
         self.scheme = ComboBox()
@@ -2730,6 +3236,8 @@ class TimerPage(QWidget):
         save.clicked.connect(self.save)
         layout.addWidget(save, alignment=Qt.AlignLeft)
         layout.addStretch(1)
+        self.scroll.setWidget(self.contentWidget)
+        outer.addWidget(self.scroll)
         self.load()
 
     def schemeNames(self) -> list[str]:
@@ -2738,7 +3246,10 @@ class TimerPage(QWidget):
 
     def currentSchemeValue(self) -> str:
         data = self.scheme.currentData()
-        return str(data) if data else self.scheme.currentText().strip()
+        if data:
+            return str(data)
+        text = self.scheme.currentText().strip()
+        return text if text and self.scheme.findText(text) >= 0 else ""
 
     def load(self):
         try:
@@ -2794,7 +3305,16 @@ class SwitchPage(QWidget):
         self.saveTimer = QTimer(self)
         self.saveTimer.setSingleShot(True)
         self.saveTimer.timeout.connect(self.save)
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.scroll = ScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
+        self.contentWidget = QWidget()
+        self.contentWidget.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(self.contentWidget)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         layout.addWidget(SubtitleLabel("方案切换"))
@@ -2832,10 +3352,11 @@ class SwitchPage(QWidget):
         self.modeSwitches["timer"] = self.timerSwitch
         timer_header.addWidget(self.timerSwitch)
         timer_header.addWidget(BodyLabel("每"))
-        self.timerInterval = QSpinBox()
+        self.timerInterval = SpinBox()
         self.timerInterval.setRange(1, 86400)
         self.timerInterval.setValue(5)
         self.timerInterval.setFixedWidth(88)
+        polish_spin_box(self.timerInterval)
         self.timerUnit = ComboBox()
         self.timerUnit.setFixedWidth(82)
         self.timerUnit.addItems(["秒", "分钟"])
@@ -2902,6 +3423,8 @@ class SwitchPage(QWidget):
         layout.addWidget(self.inputCard)
 
         layout.addStretch(1)
+        self.scroll.setWidget(self.contentWidget)
+        outer.addWidget(self.scroll)
 
         for mode, switch in self.modeSwitches.items():
             switch.checkedChanged.connect(lambda checked, m=mode: self.onModeChanged(m, checked))
@@ -2917,17 +3440,29 @@ class SwitchPage(QWidget):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.refreshSchemeBoxes()
+        self.applyResponsiveLayout()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.applyResponsiveLayout()
+
+    def applyResponsiveLayout(self) -> None:
+        width = self.scroll.viewport().width() if hasattr(self, "scroll") else self.width()
+        columns = 2 if width >= 760 else 1
+        if getattr(self, "_timerColumns", None) != columns:
+            self._timerColumns = columns
+            self.rebuildTimerSchemeGrid(self.scheme_page.schemeNames(), self.timerSelectedSchemes())
 
     def createTimeBox(self) -> EditableComboBox:
         box = EditableComboBox()
-        box.setMinimumWidth(180)
+        box.setMinimumWidth(120)
         box.addItems([f"{hour:02d}:{minute:02d}" for hour in range(24) for minute in (0, 30)])
         box.setText("")
         return box
 
     def createSchemeBox(self, include_random: bool = True) -> ComboBox:
         box = ComboBox()
-        box.setMinimumWidth(220)
+        box.setMinimumWidth(150)
         box.addItem("")
         if include_random:
             box.addItem("随机方案", self.backend.RANDOM_SCHEME_VALUE)
@@ -2981,10 +3516,11 @@ class SwitchPage(QWidget):
             button = ToggleButton(name)
             button.setCheckable(True)
             button.setChecked(name in selected_set)
-            button.setMinimumWidth(132)
+            button.setMinimumWidth(112)
             button.clicked.connect(self.onTimerSchemeToggled)
             self.timerSchemeButtons[name] = button
-            self.timerSchemeGrid.addWidget(button, index // 4, index % 4)
+            columns = max(1, int(getattr(self, "_timerColumns", 2)))
+            self.timerSchemeGrid.addWidget(button, index // columns, index % columns)
         self.syncTimerAllButton()
 
     def timerSelectedSchemes(self) -> list[str]:
@@ -3020,13 +3556,14 @@ class SwitchPage(QWidget):
     def currentSchemeValue(self, combo: ComboBox) -> str:
         data = combo.currentData()
         if data:
-            text = str(data)
-            return text
+            return str(data)
         text = combo.currentText().strip()
-        return text
+        return text if text and combo.findText(text) >= 0 else ""
 
     def setSchemeValue(self, combo: ComboBox, value: str):
-        combo.setCurrentText("随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value)
+        target = "随机方案" if value == self.backend.RANDOM_SCHEME_VALUE else value
+        index = combo.findText(target)
+        combo.setCurrentIndex(index if index >= 0 else 0)
 
     def onModeChanged(self, mode: str, checked: bool):
         if checked:
@@ -3146,13 +3683,11 @@ class SwitchPage(QWidget):
             if apply_now and mode == "input":
                 input_item = next((item for item in items if item.get("mode") == "input"), {})
                 state = self.backend.current_input_state()
-                scheme = input_item.get(f"{state}_scheme", "")
-                if scheme:
-                    picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
-                    if picked:
-                        self.backend.apply_library_scheme(picked)
-                        self.scheme_page.schemeBox.setCurrentText(picked)
-                        self.scheme_page.loadScheme(picked)
+                picked = self.backend.resolve_input_switch_scheme(input_item, state)
+                if picked:
+                    self.backend.apply_library_scheme(picked)
+                    self.scheme_page.schemeBox.setCurrentText(picked)
+                    self.scheme_page.loadScheme(picked)
             elif apply_now and mode == "week":
                 today = str(datetime.now().weekday())
                 scheme = week_items.get(today)
@@ -3347,7 +3882,7 @@ class SettingsPage(QWidget):
             text, url, icon = item
             btn = PushButton(text)
             btn.setIcon(icon)
-            btn.clicked.connect(lambda _checked=False, u=url: webbrowser.open(u))
+            btn.clicked.connect(lambda _checked=False, u=url: open_url_no_console(u))
             link_row.addWidget(btn)
         link_row.addStretch(1)
         layout.addWidget(switch_card)
@@ -3371,7 +3906,7 @@ class SettingsPage(QWidget):
     def openStorageFolder(self):
         folder = Path(self.storage.text()).expanduser()
         folder.mkdir(parents=True, exist_ok=True)
-        os.startfile(folder)
+        open_path_no_console(folder)
 
     def createDesktopShortcut(self):
         english = ui_english_enabled(self.backend)
@@ -3489,7 +4024,13 @@ class SettingsPage(QWidget):
     def openErrorLog(self):
         self.backend.ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
         self.backend.ERROR_LOG.touch(exist_ok=True)
-        subprocess.Popen(["notepad.exe", str(self.backend.ERROR_LOG)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            ["notepad.exe", str(self.backend.ERROR_LOG)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
 
     def copyDiagnostics(self):
         text = "\n".join([
@@ -3527,8 +4068,16 @@ class MousePointerFluentWindow(FluentWindow):
         icon_path = backend.resource_path("icon终.png")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
-        self.resize(1440, 860)
-        self.setMinimumSize(1260, 740)
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else None
+        if available:
+            min_w = max(560, min(980, available.width() - 24))
+            min_h = max(360, min(640, available.height() - 24))
+            self.setMinimumSize(min_w, min_h)
+            self.resize(max(min_w, min(1320, int(available.width() * 0.92))), max(min_h, min(820, int(available.height() * 0.88))))
+        else:
+            self.resize(1180, 760)
+            self.setMinimumSize(720, 540)
         setTheme(Theme.LIGHT)
         setThemeColor("#4f8cff")
         app = QApplication.instance()
@@ -3555,8 +4104,9 @@ class MousePointerFluentWindow(FluentWindow):
         self.addSubInterface(self.switchPage, FIF.DATE_TIME, tr_text("方案切换", english))
         self.addSubInterface(self.settingsPage, FIF.SETTING, tr_text("设置", english), NavigationItemPosition.BOTTOM)
         self.navigationInterface.setAcrylicEnabled(False)
-        self.navigationInterface.setMinimumWidth(188)
-        self.navigationInterface.setMaximumWidth(188)
+        nav_width = 132 if self.minimumWidth() < 700 else (156 if self.minimumWidth() < 900 else 188)
+        self.navigationInterface.setMinimumWidth(nav_width)
+        self.navigationInterface.setMaximumWidth(nav_width)
         self.createTrayIcon()
         self.applyLanguage()
         self.scheduleTimer = QTimer(self)
@@ -3694,11 +4244,16 @@ class MousePointerFluentWindow(FluentWindow):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self.openFromTray()
 
-    def openFromTray(self):
-        self.centerOnScreen()
+    def forceWindowVisible(self):
+        self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
+        self.setVisible(True)
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def openFromTray(self):
+        self.centerOnScreen()
+        self.forceWindowVisible()
 
     def startCommandServer(self, bridge: GuiCommandBridge):
         token = os.urandom(16).hex()
@@ -3767,7 +4322,7 @@ class MousePointerFluentWindow(FluentWindow):
                     scheme = item.get(f"{state}_scheme", "")
                     key = f"input|{state}|{scheme}"
                     if scheme and key != self.lastScheduleKey:
-                        picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
+                        picked = self.backend.resolve_input_switch_scheme(item, state)
                         if picked:
                             self.applyScheduledScheme(picked, last_key=key)
                         self.lastScheduleKey = key
@@ -3907,7 +4462,7 @@ class LightweightTrayApp(QObject):
                     scheme = item.get(f"{state}_scheme", "")
                     key = f"input|{state}|{scheme}"
                     if scheme and key != self.lastScheduleKey:
-                        picked = self.backend.pick_scheduled_scheme(scheme, "随机", 0)
+                        picked = self.backend.resolve_input_switch_scheme(item, state)
                         if picked:
                             self.backend.apply_library_scheme(picked)
                             self.refreshMenu()
@@ -3977,8 +4532,13 @@ def run_app(backend, start_hidden: bool = False) -> None:
     app.setQuitOnLastWindowClosed(False)
     lock = backend.acquire_gui_lock()
     if lock is None:
-        backend.notify_existing_gui("show")
-        return
+        if backend.notify_existing_gui("show"):
+            return
+        backend.clear_gui_command_state()
+        backend.remove_pid_file(backend.APP_DATA / "gui.pid")
+        lock = backend.acquire_gui_lock()
+        if lock is None:
+            return
     window = MousePointerFluentWindow(backend, start_hidden=start_hidden)
     backend.startup_timing_mark("startup.build_ui")
     bridge = GuiCommandBridge()
@@ -4002,8 +4562,9 @@ def run_app(backend, start_hidden: bool = False) -> None:
     else:
         window.centerOnScreen()
         window.show()
+        window.forceWindowVisible()
         backend.startup_timing_mark("startup.first_window_visible")
         backend.startup_timing_flush()
         QTimer.singleShot(0, window.finishStartupLoad)
-        QTimer.singleShot(600, window.askDesktopShortcutOnFirstLaunch)
+        QTimer.singleShot(250, window.openFromTray)
     app.exec()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import base64
+import hashlib
 import io
 import json
 import os
@@ -56,8 +57,35 @@ ERROR_LOG_MAX_ARCHIVES = 5
 ERROR_LOG_KEEP_DAYS = 30
 DEFAULT_CURSOR_SIZE = 64
 DEFAULT_PREVIEW_SIZE_LEVEL = 3
+RUNTIME_BUNDLE_DIRNAME = "runtime-bundles"
+PYTHON_RUNTIME_BUNDLE = "python-pyinstaller-win-x64.zip"
+SEVENZIP_RUNTIME_BUNDLE = "7zip-win-x64.zip"
+PYTHON_RUNTIME_MARKER = APP_RUNTIME / "python" / ".bundle.sha256"
+SEVENZIP_RUNTIME_MARKER = APP_RUNTIME / "7zip" / ".bundle.sha256"
+MAX_IMPORT_FILES = 3000
+MAX_IMPORT_UNPACKED_BYTES = 512 * 1024 * 1024
+MAX_IMPORT_MEMBER_BYTES = 128 * 1024 * 1024
+CURSOR_SCHEME_ORDER = [
+    "Arrow",
+    "Help",
+    "AppStarting",
+    "Wait",
+    "Crosshair",
+    "IBeam",
+    "NWPen",
+    "No",
+    "SizeNS",
+    "SizeWE",
+    "SizeNWSE",
+    "SizeNESW",
+    "SizeAll",
+    "UpArrow",
+    "Hand",
+    "Pin",
+    "Person",
+]
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RESOURCE_URL = "http://8.135.33.2:5002/"
+RESOURCE_URL = "https://yuanyue1234.github.io/MousePointer/resources/"
 APP_NAME = "鼠标指针配置管理器"
 SOFTWARE_MISSION = "让新手小白也能用，让鼠标指针制作者能方便编辑和生成。"
 AUTO_START_VALUE = APP_NAME
@@ -197,6 +225,117 @@ def resource_path(relative: str) -> Path:
     if base:
         return Path(base) / relative
     return APP_DIR / relative
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def path_is_safe_relative(name: str) -> bool:
+    normalized = str(name).replace("\\", "/").strip()
+    if not normalized:
+        return False
+    candidate = Path(normalized)
+    if candidate.is_absolute() or candidate.drive:
+        return False
+    return ".." not in candidate.parts
+
+
+def safe_extract_zip(zip_path: Path, target: Path, *, cancel_event=None, progress=None, enforce_import_limits: bool = True) -> None:
+    with zipfile.ZipFile(zip_path) as archive:
+        infos = [info for info in archive.infolist() if not info.is_dir()]
+        members = [(info.filename, int(info.file_size), bool(info.flag_bits & 0x1)) for info in infos]
+        if enforce_import_limits:
+            validate_archive_members(members)
+        else:
+            for name, _size, encrypted in members:
+                if encrypted:
+                    raise RuntimeError("运行时 bundle 不应加密。")
+                if not path_is_safe_relative(str(name)):
+                    raise RuntimeError(f"运行时 bundle 包含不安全路径：{name}")
+        total = max(1, len(infos))
+        target.mkdir(parents=True, exist_ok=True)
+        for index, info in enumerate(infos, start=1):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("导入已取消。")
+            if progress:
+                progress(f"正在解压：{Path(info.filename).name}", index - 1, total)
+            destination = target / Path(info.filename)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as source, destination.open("wb") as output:
+                shutil.copyfileobj(source, output, 1024 * 1024)
+        if progress:
+            progress("解压完成", total, total)
+
+
+def safe_extract_runtime_bundle(bundle_name: str, target: Path, marker: Path) -> Path:
+    bundle = resource_path(f"{RUNTIME_BUNDLE_DIRNAME}/{bundle_name}")
+    if not bundle.exists():
+        raise RuntimeError(f"当前绿色版缺少内置运行时：{bundle_name}")
+    digest = file_sha256(bundle)
+    if target.exists() and marker.exists():
+        try:
+            if marker.read_text(encoding="ascii").strip() == digest:
+                return target
+        except Exception:
+            pass
+    staging = target.with_name(f".{target.name}.extracting")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
+    safe_extract_zip(bundle, staging, enforce_import_limits=False)
+    if target.exists():
+        shutil.rmtree(target)
+    staging.replace(target)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(digest, encoding="ascii")
+    return target
+
+
+def ensure_python_runtime() -> Path:
+    return safe_extract_runtime_bundle(PYTHON_RUNTIME_BUNDLE, APP_RUNTIME / "python", PYTHON_RUNTIME_MARKER)
+
+
+def ensure_7zip_runtime() -> Path:
+    return safe_extract_runtime_bundle(SEVENZIP_RUNTIME_BUNDLE, APP_RUNTIME / "7zip", SEVENZIP_RUNTIME_MARKER)
+
+
+def write_json_atomic(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def replace_directory(staging: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    backup = target.with_name(f".{target.name}.{os.getpid()}.bak")
+    if backup.exists():
+        shutil.rmtree(backup)
+    if target.exists():
+        target.rename(backup)
+    try:
+        staging.rename(target)
+    except Exception:
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        if backup.exists():
+            backup.rename(target)
+        raise
+    shutil.rmtree(backup, ignore_errors=True)
+
+
+def read_json_dict(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        log_error(f"读取 JSON 失败：{path}", exc)
+        return {}
 
 
 def default_cursor_path(role_or_reg) -> Path | None:
@@ -421,6 +560,39 @@ def read_hkcu_class_value(path: str, value_name: str = "") -> str:
         return ""
 
 
+def read_class_value(path: str, value_name: str = "") -> str:
+    for root, subkey in (
+        (winreg.HKEY_CURRENT_USER, f"Software\\Classes\\{path}"),
+        (winreg.HKEY_CLASSES_ROOT, path),
+    ):
+        try:
+            with winreg.OpenKey(root, subkey, 0, winreg.KEY_READ) as key:
+                value, _kind = winreg.QueryValueEx(key, value_name)
+                return str(value)
+        except (FileNotFoundError, OSError):
+            continue
+    return ""
+
+
+def read_machine_class_value(path: str, value_name: str = "") -> str:
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"Software\\Classes\\{path}", 0, winreg.KEY_READ) as key:
+            value, _kind = winreg.QueryValueEx(key, value_name)
+            return str(value)
+    except (FileNotFoundError, OSError):
+        return ""
+
+
+def default_icon_for_cursor_extension(ext: str, current_prog_id: str = "") -> str:
+    for prog_id in (current_prog_id, read_machine_class_value(ext), read_class_value(ext)):
+        if not prog_id or prog_id in {CUR_FILE_PROG_ID, ANI_FILE_PROG_ID}:
+            continue
+        icon_value = read_class_value(f"{prog_id}\\DefaultIcon") or read_machine_class_value(f"{prog_id}\\DefaultIcon")
+        if icon_value:
+            return icon_value
+    return ""
+
+
 def write_hkcu_class_value(path: str, value: str, value_name: str = "") -> None:
     with _classes_key(path, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, value)
@@ -460,16 +632,22 @@ def _restore_extension_association(ext: str, prog_id: str, backup_key: str) -> N
 def register_cursor_file_associations(exe_path: Path | None = None) -> None:
     command = preview_cursor_command(exe_path)
     data = load_settings()
-    for ext, prog_id, label, backup_key in (
-        (".cur", CUR_FILE_PROG_ID, "Mouse Pointer Cursor File", "file_assoc_backup_cur"),
-        (".ani", ANI_FILE_PROG_ID, "Mouse Pointer Animated Cursor File", "file_assoc_backup_ani"),
+    for ext, prog_id, label, backup_key, icon_backup_key in (
+        (".cur", CUR_FILE_PROG_ID, "Mouse Pointer Cursor File", "file_assoc_backup_cur", "file_assoc_backup_cur_icon"),
+        (".ani", ANI_FILE_PROG_ID, "Mouse Pointer Animated Cursor File", "file_assoc_backup_ani", "file_assoc_backup_ani_icon"),
     ):
         current = read_hkcu_class_value(ext)
         if current != prog_id and backup_key not in data:
             data[backup_key] = current
+        if current != prog_id and icon_backup_key not in data:
+            data[icon_backup_key] = default_icon_for_cursor_extension(ext, current)
         write_hkcu_class_value(ext, prog_id)
         write_hkcu_class_value(prog_id, label)
-        write_hkcu_class_value(f"{prog_id}\\DefaultIcon", f"{Path(exe_path or sys.executable).resolve()},0")
+        icon_value = str(data.get(icon_backup_key, "") or default_icon_for_cursor_extension(ext, current) or "")
+        if icon_value:
+            write_hkcu_class_value(f"{prog_id}\\DefaultIcon", icon_value)
+        else:
+            delete_hkcu_class_tree(f"{prog_id}\\DefaultIcon")
         write_hkcu_class_value(f"{prog_id}\\shell\\open\\command", command)
     data[CURSOR_FILE_ASSOCIATION_KEY] = "1"
     save_settings(data)
@@ -488,6 +666,8 @@ def unregister_cursor_file_associations() -> None:
     data[CURSOR_FILE_ASSOCIATION_KEY] = "0"
     data.pop("file_assoc_backup_cur", None)
     data.pop("file_assoc_backup_ani", None)
+    data.pop("file_assoc_backup_cur_icon", None)
+    data.pop("file_assoc_backup_ani_icon", None)
     save_settings(data)
     try:
         ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
@@ -1005,13 +1185,13 @@ def find_python_with_pyinstaller() -> str:
     creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     if not IS_FROZEN:
         return sys.executable
+    try:
+        runtime = ensure_python_runtime()
+    except Exception as exc:
+        raise RuntimeError("当前单文件绿色版未内置安装包生成运行时，请重新构建完整绿色版。") from exc
     candidates = [
-        resource_path("runtime/python/Scripts/python.exe"),
-        resource_path("runtime/python/python.exe"),
-        APP_DIR.parent / ".venv" / "Scripts" / "python.exe",
-        APP_DIR / ".venv" / "Scripts" / "python.exe",
-        shutil.which("python"),
-        shutil.which("python3"),
+        runtime / "Scripts" / "python.exe",
+        runtime / "python.exe",
     ]
     for candidate in candidates:
         if not candidate:
@@ -1028,7 +1208,7 @@ def find_python_with_pyinstaller() -> str:
         )
         if result.returncode == 0:
             return str(path)
-    raise RuntimeError("找不到包含 PyInstaller 的 Python。请先运行 requirements.txt 安装依赖。")
+    raise RuntimeError("当前单文件绿色版内置 Python 无法加载 PyInstaller，请重新构建完整绿色版。")
 
 
 def find_winrar() -> Path | None:
@@ -1046,7 +1226,17 @@ def find_winrar() -> Path | None:
 
 
 def find_bundled_7zip() -> Path | None:
-    for relative in ("runtime/7zip/7z.exe", "runtime/7zip/7za.exe"):
+    if IS_FROZEN:
+        try:
+            runtime = ensure_7zip_runtime()
+            for name in ("7z.exe", "7za.exe", "7zz.exe"):
+                candidate = runtime / name
+                if candidate.exists():
+                    return candidate
+        except Exception as exc:
+            log_error("内置 7-Zip 运行时不可用", exc)
+            return None
+    for relative in ("runtime/7zip/7z.exe", "runtime/7zip/7za.exe", "runtime/7zip/7zz.exe"):
         candidate = resource_path(relative)
         if candidate.exists():
             return candidate
@@ -1081,6 +1271,68 @@ def classify_rar_error(messages: list[str]) -> str:
     if joined:
         return f"无法导入 RAR：{messages[0]}"
     return "无法导入 RAR：没有可用的解压方式。"
+
+
+def validate_archive_members(members: list[tuple[str, int, bool]]) -> None:
+    files = [(name, size, encrypted) for name, size, encrypted in members if name and not str(name).endswith(("/", "\\"))]
+    if len(files) > MAX_IMPORT_FILES:
+        raise RuntimeError(f"压缩包文件过多（{len(files)} 个），为避免无响应已停止导入。")
+    total = 0
+    for name, size, encrypted in files:
+        if encrypted:
+            raise RuntimeError("暂不支持导入加密压缩包。")
+        if not path_is_safe_relative(str(name)):
+            raise RuntimeError(f"压缩包包含不安全路径：{name}")
+        size = max(0, int(size or 0))
+        if size > MAX_IMPORT_MEMBER_BYTES:
+            raise RuntimeError(f"压缩包内单个文件过大：{name}")
+        total += size
+    if total > MAX_IMPORT_UNPACKED_BYTES:
+        raise RuntimeError(f"压缩包解压后体积过大（约 {total // (1024 * 1024)}MB），为避免无响应已停止导入。")
+
+
+def scan_7z_archive(source: Path) -> list[tuple[str, int, bool]]:
+    import py7zr
+
+    with py7zr.SevenZipFile(source, mode="r") as archive:
+        rows = []
+        for item in archive.list():
+            rows.append((
+                str(getattr(item, "filename", "")),
+                int(getattr(item, "uncompressed", 0) or 0),
+                bool(getattr(item, "encrypted", False)),
+            ))
+        return rows
+
+
+def scan_archive_with_7zip(source: Path, executable: Path) -> list[tuple[str, int, bool]]:
+    result = run_archive_tool([str(executable), "l", "-slt", str(source)])
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or f"7-Zip exit code {result.returncode}"
+        raise RuntimeError(detail)
+    rows: list[tuple[str, int, bool]] = []
+    current: dict[str, str] = {}
+    for line in (result.stdout or "").splitlines():
+        if not line.strip():
+            if current.get("Path"):
+                rows.append((
+                    current.get("Path", ""),
+                    int(current.get("Size", "0") or 0),
+                    current.get("Encrypted", "-").strip() == "+",
+                ))
+            current = {}
+            continue
+        if " = " in line:
+            key, value = line.split(" = ", 1)
+            current[key] = value
+    if current.get("Path"):
+        rows.append((
+            current.get("Path", ""),
+            int(current.get("Size", "0") or 0),
+            current.get("Encrypted", "-").strip() == "+",
+        ))
+    source_names = {str(source).replace("\\", "/").lower(), source.name.lower()}
+    return [row for row in rows if row[0].replace("\\", "/").lower() not in source_names]
 
 
 def parse_drop_paths(data: str, tk_root: Tk) -> list[Path]:
@@ -1197,90 +1449,223 @@ def map_files_to_roles(files: list[Path]) -> dict[str, Path]:
     return mapping
 
 
-def parse_inf_mapping(root: Path) -> dict[str, Path]:
-    infs = list(root.rglob("*.inf"))
-    files = [p for p in root.rglob("*") if p.suffix.lower() in {".cur", ".ani"}]
-    if not infs:
-        return map_files_to_roles(files)
-    raw = infs[0].read_bytes()
-    text = ""
+def _strip_inf_comment(line: str) -> str:
+    in_quote = False
+    for index, char in enumerate(line):
+        if char == '"':
+            in_quote = not in_quote
+        elif char == ";" and not in_quote:
+            return line[:index]
+    return line
+
+
+def _decode_inf_text(path: Path) -> str:
+    raw = path.read_bytes()
     for encoding in ("utf-16", "utf-8-sig", "gbk", "cp936", "latin1"):
         try:
-            text = raw.decode(encoding)
+            return raw.decode(encoding)
         except UnicodeDecodeError:
             continue
-        if "Cursors" in text or "Control Panel" in text:
+    return raw.decode("latin1", errors="ignore")
+
+
+def _split_inf_fields(value: str) -> list[str]:
+    fields: list[str] = []
+    buffer: list[str] = []
+    in_quote = False
+    for char in value:
+        if char == '"':
+            in_quote = not in_quote
+            continue
+        if char == "," and not in_quote:
+            fields.append("".join(buffer).strip())
+            buffer = []
+            continue
+        buffer.append(char)
+    fields.append("".join(buffer).strip())
+    return fields
+
+
+def _parse_inf_sections(text: str) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {"": []}
+    current = ""
+    for raw_line in text.splitlines():
+        line = _strip_inf_comment(raw_line).strip()
+        if not line:
+            continue
+        if line.startswith("[") and "]" in line:
+            current = line[1:line.index("]")].strip().lower()
+            sections.setdefault(current, [])
+            continue
+        sections.setdefault(current, []).append(line)
+    return sections
+
+
+def _inf_strings(sections: dict[str, list[str]]) -> dict[str, str]:
+    strings: dict[str, str] = {}
+    for line in sections.get("strings", []):
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().strip("%").lower()
+        parts = _split_inf_fields(value)
+        strings[key] = (parts[0] if parts else value).strip().strip('"')
+    return strings
+
+
+def _expand_inf_vars(value: str, strings: dict[str, str], depth: int = 0) -> str:
+    if depth > 8:
+        return value
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1).strip().lower()
+        if key.isdigit():
+            return ""
+        replacement = strings.get(key)
+        if replacement is None:
+            return match.group(0)
+        return _expand_inf_vars(replacement, strings, depth + 1)
+
+    return re.sub(r"%([^%]+)%", replace, value)
+
+
+def _normalize_inf_alias(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.strip().strip("%").strip('"').lower())
+
+
+def _inf_alias_to_reg() -> dict[str, str]:
+    aliases: dict[str, list[str]] = {
+        "Arrow": ["arrow", "normal", "default", "left_ptr", "leftptr", "pointer", "cursor", "normal_select", "normalselect", "normalcursor", "正常选择"],
+        "Help": ["help", "helpsel", "help_select", "helpselect", "question", "帮助选择"],
+        "AppStarting": ["work", "working", "appstarting", "app_starting", "background", "busy_wait", "后台运行"],
+        "Wait": ["busy", "wait", "waiting", "等待"],
+        "Crosshair": ["cross", "crosshair", "precision", "precision_select", "precisionselect", "精确选择"],
+        "IBeam": ["text", "ibeam", "beam", "text_select", "textselect", "文本选择"],
+        "NWPen": ["pen", "nwpen", "handwriting", "hand_write", "write", "ink", "手写"],
+        "No": ["unavailable", "unavailiable", "forbidden", "blocked", "no", "不可用"],
+        "SizeNS": ["vert", "vertical", "sizens", "size_ns", "ns", "上下"],
+        "SizeWE": ["horz", "horiz", "horizontal", "sizewe", "size_we", "we", "左右"],
+        "SizeNWSE": ["dgn1", "nwse", "size_nwse", "对角线1"],
+        "SizeNESW": ["dgn2", "nesw", "size_nesw", "对角线2"],
+        "SizeAll": ["move", "all", "sizeall", "size_all", "移动"],
+        "UpArrow": ["alternate", "up", "uparrow", "up_arrow", "候选"],
+        "Hand": ["hand", "link", "pointerhand", "pointer_hand", "pointinghand", "handcursor", "链接选择"],
+        "Pin": ["pin", "location", "locate", "position", "geo", "place", "位置选择", "位置"],
+        "Person": ["person", "people", "user", "contact", "individual", "个人选择", "个人"],
+    }
+    result: dict[str, str] = {}
+    for reg in ROLE_BY_REG:
+        result[_normalize_inf_alias(reg)] = reg
+    for reg, names in aliases.items():
+        for name in names:
+            result[_normalize_inf_alias(name)] = reg
+    return result
+
+
+def _cursor_path_from_inf_value(
+    value: str,
+    root: Path,
+    by_name: dict[str, Path],
+    by_relative: dict[str, Path],
+    strings: dict[str, str],
+) -> Path | None:
+    expanded = _expand_inf_vars(value.strip().strip('"'), strings)
+    if not expanded:
+        return None
+    candidates = _split_inf_fields(expanded)
+    candidates.append(expanded)
+    for candidate in candidates:
+        cleaned = candidate.strip().strip('"').replace("\\", "/")
+        if not cleaned:
+            continue
+        relative_key = cleaned.lstrip("/").lower()
+        if relative_key in by_relative:
+            return by_relative[relative_key]
+        name = Path(cleaned).name.lower()
+        if name in by_name:
+            return by_name[name]
+        if cleaned.lower().endswith((".cur", ".ani")):
+            maybe_path = (root / cleaned).resolve()
+            try:
+                if maybe_path.exists():
+                    return maybe_path
+            except OSError:
+                pass
+    return None
+
+
+def _apply_inf_scheme_list(
+    value: str,
+    root: Path,
+    by_name: dict[str, Path],
+    by_relative: dict[str, Path],
+    strings: dict[str, str],
+    mapping: dict[str, Path],
+) -> None:
+    expanded = _expand_inf_vars(value.strip().strip('"'), strings)
+    entries = _split_inf_fields(expanded)
+    for index, role_name in enumerate(CURSOR_SCHEME_ORDER):
+        if index >= len(entries):
             break
+        path = _cursor_path_from_inf_value(entries[index], root, by_name, by_relative, strings)
+        if path:
+            mapping[role_name] = path
+
+
+def parse_inf_mapping(root: Path, *, use_filename_fallback: bool = True) -> dict[str, Path]:
+    infs = sorted(root.rglob("*.inf"))
+    files = [p for p in root.rglob("*") if p.suffix.lower() in {".cur", ".ani"}]
+    if not infs:
+        return map_files_to_roles(files) if use_filename_fallback else {}
     mapping: dict[str, Path] = {}
     by_name = {p.name.lower(): p for p in files}
-    alias_to_reg = {
-        "arrow": "Arrow",
-        "normal": "Arrow",
-        "default": "Arrow",
-        "left_ptr": "Arrow",
-        "help": "Help",
-        "helpsel": "Help",
-        "work": "AppStarting",
-        "appstarting": "AppStarting",
-        "app_starting": "AppStarting",
-        "busy": "Wait",
-        "wait": "Wait",
-        "cross": "Crosshair",
-        "crosshair": "Crosshair",
-        "precision": "Crosshair",
-        "text": "IBeam",
-        "ibeam": "IBeam",
-        "beam": "IBeam",
-        "hand": "Hand",
-        "link": "Hand",
-        "pointerhand": "Hand",
-        "pointer_hand": "Hand",
-        "pen": "NWPen",
-        "nwpen": "NWPen",
-        "handwriting": "NWPen",
-        "ink": "NWPen",
-        "unavailable": "No",
-        "unavailiable": "No",
-        "no": "No",
-        "vert": "SizeNS",
-        "sizens": "SizeNS",
-        "horz": "SizeWE",
-        "horiz": "SizeWE",
-        "sizewe": "SizeWE",
-        "dgn1": "SizeNWSE",
-        "dgn2": "SizeNESW",
-        "move": "SizeAll",
-        "alternate": "UpArrow",
-        "up": "UpArrow",
-        "pin": "Pin",
-        "location": "Pin",
-        "position": "Pin",
-        "person": "Person",
-        "user": "Person",
+    by_relative = {
+        str(p.relative_to(root)).replace("\\", "/").lower(): p
+        for p in files
     }
-    for alias, reg in alias_to_reg.items():
-        match = re.search(rf"^\s*{re.escape(alias)}\s*=\s*\"?([^\"\r\n]+)\"?", text, re.I | re.M)
-        if match:
-            name = Path(match.group(1).strip()).name.lower()
-            if name in by_name:
-                mapping[reg] = by_name[name]
-    for reg in ROLE_BY_REG:
-        match = re.search(rf"HKCU,\s*\"Control Panel\\Cursors\",\s*{reg}\s*,[^,]*,\s*\"?([^\"\\r\\n]+)\"?", text, re.I)
-        if match:
-            raw_name = match.group(1).strip()
-            var_match = re.fullmatch(r".*%([^%]+)%", raw_name)
-            if var_match:
-                variable = var_match.group(1)
-                string_match = re.search(rf"^\s*{re.escape(variable)}\s*=\s*\"?([^\"\\r\\n]+)\"?", text, re.I | re.M)
-                raw_name = string_match.group(1).strip() if string_match else raw_name
-            name = Path(raw_name).name.lower()
-            if name in by_name:
-                mapping[reg] = by_name[name]
-    mapping.update({k: v for k, v in map_files_to_roles(files).items() if k not in mapping})
+    alias_to_reg = _inf_alias_to_reg()
+    for inf in infs:
+        sections = _parse_inf_sections(_decode_inf_text(inf))
+        strings = _inf_strings(sections)
+        for lines in sections.values():
+            for line in lines:
+                fields = _split_inf_fields(line)
+                normalized_fields = [field.replace("/", "\\").lower() for field in fields]
+                for index, field in enumerate(normalized_fields):
+                    if "control panel\\cursors\\schemes" in field:
+                        value_parts = [part for part in fields[index + 3:] if part]
+                        if len(value_parts) > 1 and not re.search(r"\.(cur|ani)\b|%", value_parts[0], re.I):
+                            value_parts = value_parts[1:]
+                        if value_parts:
+                            _apply_inf_scheme_list(",".join(value_parts), root, by_name, by_relative, strings, mapping)
+                        continue
+                    if "control panel\\cursors" not in field:
+                        continue
+                    if index + 1 >= len(fields):
+                        continue
+                    reg = alias_to_reg.get(_normalize_inf_alias(_expand_inf_vars(fields[index + 1], strings)))
+                    if not reg:
+                        continue
+                    for candidate in reversed(fields[index + 2:]):
+                        path = _cursor_path_from_inf_value(candidate, root, by_name, by_relative, strings)
+                        if path:
+                            mapping[reg] = path
+                            break
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                reg = alias_to_reg.get(_normalize_inf_alias(_expand_inf_vars(key, strings)))
+                if not reg:
+                    continue
+                path = _cursor_path_from_inf_value(value, root, by_name, by_relative, strings)
+                if path:
+                    mapping[reg] = path
+    if not mapping and use_filename_fallback:
+        mapping.update(map_files_to_roles(files))
     return mapping
 
 
-def extract_import_package(source: Path) -> Path:
+def extract_import_package(source: Path, *, progress=None, cancel_event=None) -> Path:
     if source.is_dir():
         return source
     target = WORK_ROOT / "imports" / sanitize_name(source.stem)
@@ -1288,11 +1673,15 @@ def extract_import_package(source: Path) -> Path:
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
     if source.suffix.lower() == ".zip":
-        with zipfile.ZipFile(source) as archive:
-            archive.extractall(target)
+        safe_extract_zip(source, target, cancel_event=cancel_event, progress=progress)
         return target
     if source.suffix.lower() == ".7z":
         import py7zr
+        validate_archive_members(scan_7z_archive(source))
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("导入已取消。")
+        if progress:
+            progress("正在解压 7z 压缩包", 0, 0)
         with py7zr.SevenZipFile(source, mode="r") as archive:
             archive.extractall(target)
         return target
@@ -1301,10 +1690,17 @@ def extract_import_package(source: Path) -> Path:
         bundled_7zip = find_bundled_7zip()
         if bundled_7zip:
             try:
+                validate_archive_members(scan_archive_with_7zip(source, bundled_7zip))
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("导入已取消。")
+                if progress:
+                    progress("正在解压 RAR 压缩包", 0, 0)
                 extract_rar_with_7zip(source, target, bundled_7zip)
                 return target
             except Exception as exc:
                 errors.append(f"7-Zip: {exc}")
+        if IS_FROZEN:
+            raise RuntimeError(classify_rar_error(errors))
         winrar = find_winrar()
         if winrar:
             try:
@@ -1321,9 +1717,12 @@ def extract_import_package(source: Path) -> Path:
             errors.append(f"rarfile: {exc}")
         raise RuntimeError(classify_rar_error(errors))
     if source.suffix.lower() == ".exe":
+        if progress:
+            progress("正在识别 EXE 资源", 0, 0)
         if extract_pyinstaller_assets(source, target):
             return target
-    result = subprocess.run(["tar", "-xf", str(source), "-C", str(target)], text=True, capture_output=True, check=False)
+    creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    result = subprocess.run(["tar", "-xf", str(source), "-C", str(target)], text=True, capture_output=True, check=False, creationflags=creationflags)
     if result.returncode == 0:
         return target
     raise RuntimeError(f"无法解压 {source.name}。该文件可能不是可读取的压缩包，或 EXE 不是自解压格式。")
@@ -1680,6 +2079,7 @@ def notify_existing_gui(command: str = "show") -> bool:
     except FileNotFoundError:
         return False
     except Exception:
+        clear_gui_command_state()
         return False
 
 
@@ -1743,7 +2143,9 @@ def background_process_alive(pid: int, recorded_exe: str = "") -> bool:
     current_exe = str(Path(sys.executable).resolve())
     image = process_image_path(pid)
     if image:
-        if not IS_FROZEN and Path(image).name.lower().startswith("python"):
+        if recorded_exe:
+            return same_windows_path(image, recorded_exe)
+        if not IS_FROZEN and same_windows_path(image, current_exe):
             return True
         return same_windows_path(image, current_exe)
     if recorded_exe:
@@ -1820,6 +2222,46 @@ def extract_pyinstaller_assets(source: Path, target: Path) -> bool:
 
 
 
+def runtime_check_text() -> str:
+    lines = [
+        f"app_version={APP_VERSION}",
+        f"frozen={IS_FROZEN}",
+        f"app_dir={APP_DIR}",
+        f"app_data={APP_DATA}",
+        f"app_runtime={APP_RUNTIME}",
+        f"python_bundle={resource_path(f'{RUNTIME_BUNDLE_DIRNAME}/{PYTHON_RUNTIME_BUNDLE}')}",
+        f"7zip_bundle={resource_path(f'{RUNTIME_BUNDLE_DIRNAME}/{SEVENZIP_RUNTIME_BUNDLE}')}",
+    ]
+    try:
+        python = find_python_with_pyinstaller()
+        lines.append(f"python_with_pyinstaller=OK {python}")
+    except Exception as exc:
+        lines.append(f"python_with_pyinstaller=FAIL {exc}")
+    try:
+        sevenzip = find_bundled_7zip()
+        lines.append(f"7zip=OK {sevenzip}" if sevenzip else "7zip=FAIL not found")
+    except Exception as exc:
+        lines.append(f"7zip=FAIL {exc}")
+    try:
+        APP_RUNTIME.mkdir(parents=True, exist_ok=True)
+        probe = APP_RUNTIME / ".runtime-write-test"
+        probe.write_text("ok", encoding="ascii")
+        probe.unlink(missing_ok=True)
+        lines.append("runtime_write=OK")
+    except Exception as exc:
+        lines.append(f"runtime_write=FAIL {exc}")
+    return "\n".join(lines)
+
+
+def run_runtime_check() -> None:
+    text = runtime_check_text()
+    APP_DATA.mkdir(parents=True, exist_ok=True)
+    report = APP_DATA / "runtime_check.txt"
+    report.write_text(text, encoding="utf-8")
+    print(text)
+    print(f"runtime_check_report={report}")
+
+
 def validate_time(at: str) -> None:
     datetime.strptime(at, "%H:%M")
 
@@ -1827,6 +2269,9 @@ def validate_time(at: str) -> None:
 def main() -> None:
     startup_timing_reset()
     startup_timing_mark("startup.args")
+    if "--runtime-check" in sys.argv:
+        run_runtime_check()
+        return
     if "--preview-cursor" in sys.argv:
         try:
             index = sys.argv.index("--preview-cursor")
@@ -1945,7 +2390,7 @@ def run_pystray_tray() -> None:
                 scheme = item.get(f"{state_name}_scheme", "")
                 key = f"input|{state_name}|{scheme}"
                 if scheme and key != state["last_key"]:
-                    picked = pick_scheduled_scheme(scheme, "随机", 0)
+                    picked = resolve_input_switch_scheme(item, state_name)
                     if picked:
                         apply_library_scheme(picked)
                     state["last_key"] = key
@@ -2036,7 +2481,7 @@ def run_background() -> None:
                     scheme = item.get(f"{state}_scheme", "")
                     key = f"input|{state}|{scheme}"
                     if scheme and key != last_key:
-                        picked = pick_scheduled_scheme(scheme, "随机", 0)
+                        picked = resolve_input_switch_scheme(item, state)
                         if picked:
                             apply_library_scheme(picked)
                         last_key = key
@@ -2113,6 +2558,13 @@ def pick_scheduled_scheme(value: str, order: str = "顺序", index: int = 0, sel
         return names[seq_index]
     # 固定方案名
     return value
+
+
+def resolve_input_switch_scheme(item: dict, state: str) -> str:
+    scheme = str(item.get(f"{state}_scheme", "") or "").strip()
+    if not scheme or scheme == RANDOM_SCHEME_VALUE:
+        return ""
+    return scheme if scheme in available_scheme_names() else ""
 
 
 def focused_window_handle() -> int:
@@ -2399,8 +2851,43 @@ def scheme_manifest(theme: str) -> tuple[Path, dict[str, str]]:
     manifest_path = scheme_dir / "scheme.json"
     if not manifest_path.exists():
         return scheme_dir, {}
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return scheme_dir, manifest.get("files", {})
+    manifest = read_json_dict(manifest_path)
+    files = manifest.get("files", {}) if isinstance(manifest, dict) else {}
+    valid = {
+        reg_name: file_name
+        for reg_name, file_name in files.items()
+        if reg_name in ROLE_BY_REG and isinstance(file_name, str) and (scheme_dir / file_name).exists()
+    }
+    return scheme_dir, valid
+
+
+def scheme_manifest_data(theme: str) -> tuple[Path, dict]:
+    scheme_dir = SCHEME_LIBRARY / theme
+    manifest_path = scheme_dir / "scheme.json"
+    if not manifest_path.exists():
+        return scheme_dir, {}
+    data = read_json_dict(manifest_path)
+    files = data.get("files", {}) if isinstance(data, dict) else {}
+    if isinstance(files, dict):
+        data["files"] = {
+            reg_name: file_name
+            for reg_name, file_name in files.items()
+            if reg_name in ROLE_BY_REG and isinstance(file_name, str) and (scheme_dir / file_name).exists()
+        }
+    else:
+        data["files"] = {}
+    extras = data.get("extras", [])
+    if isinstance(extras, list):
+        data["extras"] = [name for name in extras if isinstance(name, str) and (scheme_dir / name).exists()]
+    else:
+        data["extras"] = []
+    return scheme_dir, data
+
+
+def scheme_is_resource_only(theme: str) -> bool:
+    _scheme_dir, data = scheme_manifest_data(theme)
+    files = data.get("files", {}) if isinstance(data, dict) else {}
+    return bool(data.get("resource_only")) or not bool(files)
 
 
 

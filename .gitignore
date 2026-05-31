@@ -1,8 +1,10 @@
 .venv/
 .idea/
+.trae/
 __pycache__/
 build/
 dist/
+MousePointer.WinUI/
 *.spec
 *.pyc
 *.pyo
@@ -10,6 +12,8 @@ dist/
 _build/
 PyQt-Fluent-Widgets-master/
 PyQt-Fluent-Widgets-master.zip
+release-assets/*.exe
 release-assets/MousePointer_Portable_Directory/
 release-assets/MousePointer_Portable_Directory.zip
 release-assets/SHA256SUMS.txt
+runtime-bundles/
