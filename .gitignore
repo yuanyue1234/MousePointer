@@ -9,6 +9,7 @@ MousePointer.WinUI/
 *.pyc
 *.pyo
 *.log
+*.rar
 _build/
 PyQt-Fluent-Widgets-master/
 PyQt-Fluent-Widgets-master.zip

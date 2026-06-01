@@ -1,4 +1,4 @@
-# 第一批修复验收说明
+﻿# 第一批修复验收说明
 
 本轮修改方向是正确的，语法检查已通过，资源库地址、`.ani` 预览兜底、RAR 多后端导入路径都已经进入正确方向。当前还需要补齐 3 个明确点，补完后再进入下一轮验收会更稳。
 
@@ -67,7 +67,7 @@ resource_path("runtime/python/python.exe")
 
 以下改动可以保留，并在修复上述问题后继续验收：
 
-- 在线资源库地址改为 `http://8.135.33.2:5002/`。
+- 在线资源库地址改为 `https://yuanyue1234.github.io/MousePointer/resources/`。
 - `.ani` 预览失败时显示占位图。
 - Fluent UI 统一走后端预览链路。
 - RAR 导入改为 7-Zip、WinRAR、rarfile 多后端尝试。

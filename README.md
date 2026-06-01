@@ -14,7 +14,7 @@
   <p align="center">
     <h3>给新手用户和鼠标指针制作者的图形化管理工具</h3>
     <br />
-    <a href="https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.1/MousePointer_Portable.exe"><strong>下载 v2.1.1 单文件绿色版 &raquo;</strong></a>
+    <a href="https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.2/MousePointer_Portable.exe"><strong>下载 v2.1.2 单文件绿色版 &raquo;</strong></a>
     <br />
     <br />
     <a href="README.en.md">English</a>
@@ -64,7 +64,7 @@
 ### Step 1：下载安装
 
 - GitHub Releases：
-  [下载单文件绿色版 v2.1.1](https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.1/MousePointer_Portable.exe)
+  [下载单文件绿色版 v2.1.2](https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.2/MousePointer_Portable.exe)
 - 在线资源库：
   [打开鼠标指针资源库](https://yuanyue1234.github.io/MousePointer/resources/)
 

@@ -14,7 +14,7 @@
   <p align="center">
     <h3>A graphical cursor manager for beginners and cursor creators</h3>
     <br />
-    <a href="https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.1/MousePointer_Portable.exe"><strong>Download v2.1.1 Single-File Portable Build &raquo;</strong></a>
+    <a href="https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.2/MousePointer_Portable.exe"><strong>Download v2.1.2 Single-File Portable Build &raquo;</strong></a>
     <br />
     <br />
     <a href="README.en.md">English</a>
@@ -64,7 +64,7 @@
 ### Step 1: Download
 
 - GitHub Releases:  
-  [Download v2.1.1 single-file portable build](https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.1/MousePointer_Portable.exe)
+  [Download v2.1.2 single-file portable build](https://github.com/yuanyue1234/MousePointer/releases/download/v2.1.2/MousePointer_Portable.exe)
 - Online resource library:  
   [Open cursor resource library](https://yuanyue1234.github.io/MousePointer/resources/)
 
